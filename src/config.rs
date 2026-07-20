@@ -30,7 +30,10 @@ impl Config {
         match fs::read_to_string(&path) {
             Ok(source) => Self::parse(&source),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(format!("cannot read configuration {}: {error}", path.display())),
+            Err(error) => Err(format!(
+                "cannot read configuration {}: {error}",
+                path.display()
+            )),
         }
     }
 
@@ -45,7 +48,10 @@ impl Config {
             }
 
             let Some((field, value)) = line.split_once('=') else {
-                return Err(format!("configuration line {}: expected FIELD = VALUE", index + 1));
+                return Err(format!(
+                    "configuration line {}: expected FIELD = VALUE",
+                    index + 1
+                ));
             };
             let field = field.trim();
             let value = value.trim();
@@ -160,7 +166,10 @@ fn parse_scrollback(field: &str, value: &str) -> Result<u16, String> {
     if value <= 10_000 {
         Ok(value)
     } else {
-        Err(field_error(field, "expected an integer from 0 through 10000"))
+        Err(field_error(
+            field,
+            "expected an integer from 0 through 10000",
+        ))
     }
 }
 

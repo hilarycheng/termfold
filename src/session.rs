@@ -162,7 +162,10 @@ impl Session {
     }
 
     pub fn split_active(&mut self, split: Split, size: Size) -> Result<PaneId, StateError> {
-        let tab = self.tabs.get(self.active_tab).ok_or(StateError::EmptySession)?;
+        let tab = self
+            .tabs
+            .get(self.active_tab)
+            .ok_or(StateError::EmptySession)?;
         if tab.layout.pane_count() == MAX_PANES_PER_TAB {
             return Err(StateError::PaneLimit);
         }
@@ -189,7 +192,10 @@ impl Session {
     }
 
     pub fn focus(&mut self, direction: Direction, size: Size) -> Result<PaneId, StateError> {
-        let tab = self.tabs.get_mut(self.active_tab).ok_or(StateError::EmptySession)?;
+        let tab = self
+            .tabs
+            .get_mut(self.active_tab)
+            .ok_or(StateError::EmptySession)?;
         let rects = tab.layout.rects(size);
         let active_rect = rects
             .iter()
@@ -199,7 +205,9 @@ impl Session {
         let next = rects
             .into_iter()
             .filter(|(pane, _)| *pane != tab.active)
-            .filter_map(|(pane, rect)| direction_rank(active_rect, rect, direction).map(|rank| (rank, pane)))
+            .filter_map(|(pane, rect)| {
+                direction_rank(active_rect, rect, direction).map(|rank| (rank, pane))
+            })
             .min()
             .map(|(_, pane)| pane)
             .ok_or(StateError::NoAdjacentPane)?;
@@ -208,7 +216,10 @@ impl Session {
     }
 
     pub fn resize(&mut self, direction: Direction, size: Size) -> Result<(), StateError> {
-        let tab = self.tabs.get_mut(self.active_tab).ok_or(StateError::EmptySession)?;
+        let tab = self
+            .tabs
+            .get_mut(self.active_tab)
+            .ok_or(StateError::EmptySession)?;
         match tab.layout.resize(tab.active, direction, full_rect(size)) {
             ResizeResult::Moved => Ok(()),
             ResizeResult::Blocked => Err(StateError::CannotResize),
@@ -223,7 +234,10 @@ impl Session {
     }
 
     pub fn close_active_pane(&mut self, size: Size) -> Result<CloseResult, StateError> {
-        let tab = self.tabs.get(self.active_tab).ok_or(StateError::EmptySession)?;
+        let tab = self
+            .tabs
+            .get(self.active_tab)
+            .ok_or(StateError::EmptySession)?;
         let active = tab.active;
         let rects = tab.layout.rects(size);
         let active_rect = rects
@@ -377,7 +391,8 @@ impl Layout {
                 first,
                 second,
             } => {
-                let (first_rect, second_rect) = child_rects(rect, *direction, *offset, first, second);
+                let (first_rect, second_rect) =
+                    child_rects(rect, *direction, *offset, first, second);
                 first.collect_rects(first_rect, output);
                 second.collect_rects(second_rect, output);
             }
@@ -400,7 +415,10 @@ impl Layout {
                 let second = second.minimum_size();
                 match direction {
                     Split::LeftRight => Size {
-                        columns: first.columns.saturating_add(second.columns).saturating_add(1),
+                        columns: first
+                            .columns
+                            .saturating_add(second.columns)
+                            .saturating_add(1),
                         rows: first.rows.max(second.rows),
                     },
                     Split::TopBottom => Size {
@@ -486,17 +504,19 @@ fn full_rect(size: Size) -> Rect {
     }
 }
 
-fn child_rects(rect: Rect, split: Split, offset: i32, first: &Layout, second: &Layout) -> (Rect, Rect) {
+fn child_rects(
+    rect: Rect,
+    split: Split,
+    offset: i32,
+    first: &Layout,
+    second: &Layout,
+) -> (Rect, Rect) {
     let first_min = first.minimum_size();
     let second_min = second.minimum_size();
     match split {
         Split::LeftRight => {
-            let (first_width, second_width) = split_lengths(
-                rect.width,
-                offset,
-                first_min.columns,
-                second_min.columns,
-            );
+            let (first_width, second_width) =
+                split_lengths(rect.width, offset, first_min.columns, second_min.columns);
             (
                 Rect {
                     width: first_width,
@@ -546,18 +566,22 @@ fn split_lengths(total: u16, offset: i32, first_minimum: u16, second_minimum: u1
 
 fn direction_rank(from: Rect, to: Rect, direction: Direction) -> Option<(u32, u32, u32)> {
     let (primary, perpendicular) = match direction {
-        Direction::Left if right(to) <= u32::from(from.x) => {
-            (u32::from(from.x) - right(to), interval_gap(from.y, from.height, to.y, to.height))
-        }
-        Direction::Right if u32::from(to.x) >= right(from) => {
-            (u32::from(to.x) - right(from), interval_gap(from.y, from.height, to.y, to.height))
-        }
-        Direction::Up if bottom(to) <= u32::from(from.y) => {
-            (u32::from(from.y) - bottom(to), interval_gap(from.x, from.width, to.x, to.width))
-        }
-        Direction::Down if u32::from(to.y) >= bottom(from) => {
-            (u32::from(to.y) - bottom(from), interval_gap(from.x, from.width, to.x, to.width))
-        }
+        Direction::Left if right(to) <= u32::from(from.x) => (
+            u32::from(from.x) - right(to),
+            interval_gap(from.y, from.height, to.y, to.height),
+        ),
+        Direction::Right if u32::from(to.x) >= right(from) => (
+            u32::from(to.x) - right(from),
+            interval_gap(from.y, from.height, to.y, to.height),
+        ),
+        Direction::Up if bottom(to) <= u32::from(from.y) => (
+            u32::from(from.y) - bottom(to),
+            interval_gap(from.x, from.width, to.x, to.width),
+        ),
+        Direction::Down if u32::from(to.y) >= bottom(from) => (
+            u32::from(to.y) - bottom(from),
+            interval_gap(from.x, from.width, to.x, to.width),
+        ),
         _ => return None,
     };
     Some((primary, perpendicular, center_distance(from, to)))
@@ -578,10 +602,8 @@ fn interval_gap(first_start: u16, first_length: u16, second_start: u16, second_l
     let second_end = second_start + u32::from(second_length);
     if first_end <= second_start {
         second_start - first_end
-    } else if second_end <= first_start {
-        first_start - second_end
     } else {
-        0
+        first_start.saturating_sub(second_end)
     }
 }
 
@@ -621,7 +643,10 @@ mod tests {
             }
         }
         assert_eq!(session.pane_count(), MAX_PANES_PER_TAB);
-        assert_eq!(session.split_active(Split::LeftRight, SIZE), Err(StateError::PaneLimit));
+        assert_eq!(
+            session.split_active(Split::LeftRight, SIZE),
+            Err(StateError::PaneLimit)
+        );
 
         while session.tab_count() < MAX_TABS {
             session.create_tab().unwrap();
@@ -642,7 +667,10 @@ mod tests {
 
         assert_eq!(session.close_active_pane(SIZE), Ok(CloseResult::PaneClosed));
         assert_eq!(session.active_pane(), Some(second));
-        assert_eq!(session.close_active_pane(SIZE), Ok(CloseResult::SessionEmpty));
+        assert_eq!(
+            session.close_active_pane(SIZE),
+            Ok(CloseResult::SessionEmpty)
+        );
         assert_eq!(session.active_pane(), None);
     }
 

@@ -1,7 +1,8 @@
 mod config;
+pub mod ipc;
 #[cfg(target_os = "linux")]
 pub mod runtime;
-mod session;
+pub mod session;
 
 use std::{env, ffi::OsString, process::ExitCode};
 
@@ -62,11 +63,19 @@ fn run() -> Result<(), String> {
 
     Err(match command {
         Command::Select => "session discovery is not implemented".into(),
-        Command::SelectPid(pid) => format!("cannot attach process {pid}: session discovery is not implemented"),
-        Command::New(name) => format!("cannot create session '{name}': session runtime is not implemented"),
-        Command::Attach(name) => format!("cannot attach session '{name}': session runtime is not implemented"),
+        Command::SelectPid(pid) => {
+            format!("cannot attach process {pid}: session discovery is not implemented")
+        }
+        Command::New(name) => {
+            format!("cannot create session '{name}': session runtime is not implemented")
+        }
+        Command::Attach(name) => {
+            format!("cannot attach session '{name}': session runtime is not implemented")
+        }
         Command::List => "cannot list sessions: session discovery is not implemented".into(),
-        Command::Kill(name) => format!("cannot kill session '{name}': session runtime is not implemented"),
+        Command::Kill(name) => {
+            format!("cannot kill session '{name}': session runtime is not implemented")
+        }
         Command::Help | Command::Version => unreachable!(),
     })
 }
@@ -74,7 +83,11 @@ fn run() -> Result<(), String> {
 fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
     let arguments = arguments
         .into_iter()
-        .map(|argument| argument.into_string().map_err(|_| "arguments must be valid UTF-8".to_owned()))
+        .map(|argument| {
+            argument
+                .into_string()
+                .map_err(|_| "arguments must be valid UTF-8".to_owned())
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     match arguments.as_slice() {
