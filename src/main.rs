@@ -1,4 +1,5 @@
 mod config;
+mod session;
 
 use std::{env, ffi::OsString, process::ExitCode};
 
