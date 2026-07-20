@@ -9,6 +9,7 @@ pub mod runtime;
 #[cfg(target_os = "linux")]
 mod server;
 pub mod session;
+pub mod terminal;
 
 use std::{env, ffi::OsString, process::ExitCode};
 
