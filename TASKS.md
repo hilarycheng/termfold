@@ -92,7 +92,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T05, T08.
   - Done when: every supported exit path restores the outer terminal.
 
-- [ ] **T10 — Implement pane and status rendering**
+- [*] **T10 — Implement pane and status rendering**
   - Render pane content, ASCII borders, active-pane state, and the one-row status
     bar with required truncation priorities and clock-only redraws.
   - Requirements: Tabs and Panes; Status Bar.

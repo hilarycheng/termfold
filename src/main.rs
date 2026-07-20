@@ -5,6 +5,8 @@ pub mod ipc;
 #[cfg(target_os = "linux")]
 pub mod pty;
 #[cfg(target_os = "linux")]
+mod render;
+#[cfg(target_os = "linux")]
 pub mod runtime;
 #[cfg(target_os = "linux")]
 mod server;
@@ -64,12 +66,17 @@ fn run() -> Result<(), String> {
         _ => {}
     }
 
+    let config = config::Config::load()?;
+
     #[cfg(target_os = "linux")]
     if let Command::Server { name, size } = &command {
-        return server::run(runtime::RuntimeDir::discover()?, name.clone(), *size);
+        return server::run(
+            runtime::RuntimeDir::discover()?,
+            name.clone(),
+            *size,
+            config,
+        );
     }
-
-    let config = config::Config::load()?;
     let _ = (
         config.prefix,
         config.mouse,
