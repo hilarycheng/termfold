@@ -737,7 +737,10 @@ impl Perform for State {
             }
             return;
         }
-        if !private && matches!(action, 'h' | 'l') {
+        if !intermediates.is_empty() {
+            return;
+        }
+        if matches!(action, 'h' | 'l') {
             if values.contains(&4) {
                 self.insert = action == 'h';
             }
@@ -1160,5 +1163,13 @@ mod tests {
             .unwrap();
         assert_eq!(line(&terminal, 0), "abc");
         assert_eq!(line(&terminal, 2), "   ");
+    }
+
+    #[test]
+    fn ignores_extended_keyboard_sequences_without_restoring_cursor() {
+        let mut terminal = terminal(20, 4);
+        terminal.advance(b"prompt\r\n> \x1b[=5u\x1b[>4;1m");
+        assert_eq!(terminal.screen().cursor(), Cursor { row: 1, column: 2 });
+        assert_eq!(terminal.screen().rows()[1][0].character(), '>');
     }
 }

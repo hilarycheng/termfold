@@ -5,14 +5,17 @@ use std::{
     os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use crate::{
+    config::Config,
     ipc::{self, Message},
     pty::{self, LaunchContext, PtyChild},
+    render::{self, Clock},
     runtime::{self, RuntimeDir},
     session::{CloseResult, PaneId, Session, Size},
+    terminal::{MAX_SCREEN_CELLS, Terminal},
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
@@ -38,6 +41,8 @@ struct Client {
 struct PaneProcess {
     id: PaneId,
     child: PtyChild,
+    terminal: Terminal,
+    pending_input: PendingInput,
 }
 
 struct PendingInput {
@@ -92,7 +97,12 @@ struct PendingBroadcast {
     remaining: Vec<u64>,
 }
 
-pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), String> {
+pub fn run(
+    runtime: RuntimeDir,
+    name: String,
+    initial_size: Size,
+    config: Config,
+) -> Result<(), String> {
     let socket = runtime.bind(&name)?;
     socket
         .listener()
@@ -105,17 +115,25 @@ pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), 
     let first_pane = session
         .active_pane()
         .expect("new session always contains one pane");
-    let first_child = PtyChild::spawn(&context, initial_size)
+    let content_size = pane_area(initial_size);
+    let first_child = PtyChild::spawn(&context, content_size)
         .map_err(|error| format!("cannot start shell: {error}"))?;
     let mut panes = vec![PaneProcess {
         id: first_pane,
         child: first_child,
+        terminal: Terminal::new(content_size)
+            .map_err(|error| format!("cannot create terminal screen: {error}"))?,
+        pending_input: PendingInput::new(),
     }];
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
     let mut authoritative_size = initial_size;
-    let mut pending_input = PendingInput::new();
     let mut pending_broadcast: Option<PendingBroadcast> = None;
+    let clock_has_seconds = config.date_format.contains("%S") || config.time_format.contains("%S");
+    let mut rendered_clock = None;
+    let mut snapshot = render::Snapshot::new();
+    let mut full_dirty = false;
+    let mut content_dirty = false;
     let mut terminate = false;
 
     while !terminate {
@@ -127,13 +145,14 @@ pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), 
         );
         flush_client_controls(&mut clients);
 
-        if let Some(pane) = panes.first_mut()
-            && pending_input.flush(pane.child.master()).is_err()
-        {
-            terminate = true;
+        for pane in &mut panes {
+            if pane.pending_input.flush(pane.child.master()).is_err() {
+                terminate = true;
+                break;
+            }
         }
 
-        if pending_input.is_empty() {
+        if panes.iter().all(|pane| pane.pending_input.is_empty()) {
             let events = collect_client_events(&clients);
             for (client_id, event) in events {
                 match event {
@@ -145,7 +164,8 @@ pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), 
                             message,
                             &mut panes,
                             &mut authoritative_size,
-                            &mut pending_input,
+                            &session,
+                            &mut full_dirty,
                         ) {
                             terminate = true;
                             break;
@@ -156,28 +176,75 @@ pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), 
         }
 
         flush_broadcast(&mut pending_broadcast, &clients);
-        if pending_broadcast.is_none()
-            && clients.iter().any(|client| client.attached)
-            && let Some(pane) = panes.first_mut()
-        {
-            let mut buffer = vec![0; 8192];
-            match pane.child.master().read(&mut buffer) {
-                Ok(0) => {}
-                Ok(length) => {
-                    buffer.truncate(length);
-                    pending_broadcast = Some(PendingBroadcast {
-                        bytes: buffer,
-                        remaining: clients
-                            .iter()
-                            .filter(|client| client.attached)
-                            .map(|client| client.id)
-                            .collect(),
-                    });
-                    flush_broadcast(&mut pending_broadcast, &clients);
+        if pending_broadcast.is_none() && clients.iter().any(|client| client.attached) {
+            for pane in &mut panes {
+                let mut buffer = [0; 8192];
+                match pane.child.master().read(&mut buffer) {
+                    Ok(0) => {}
+                    Ok(length) => {
+                        pane.terminal.advance(&buffer[..length]);
+                        pane.pending_input.push(pane.terminal.take_responses());
+                        content_dirty = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
+                    Err(_) => terminate = true,
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
-                Err(_) => terminate = true,
+            }
+        }
+
+        if pending_broadcast.is_none() && clients.iter().any(|client| client.attached) {
+            let key = render::clock_key(SystemTime::now(), clock_has_seconds);
+            let pane_screens = panes
+                .iter()
+                .map(|pane| (pane.id, &pane.terminal))
+                .collect::<Vec<_>>();
+            let bytes = if full_dirty {
+                full_dirty = false;
+                content_dirty = false;
+                rendered_clock = Some(key);
+                let bytes = render::full(
+                    &session,
+                    &pane_screens,
+                    authoritative_size,
+                    Clock {
+                        date_format: &config.date_format,
+                        time_format: &config.time_format,
+                    },
+                );
+                snapshot = render::snapshot(&pane_screens);
+                Some(bytes)
+            } else if content_dirty {
+                content_dirty = false;
+                Some(render::changes(
+                    &session,
+                    &pane_screens,
+                    authoritative_size,
+                    &mut snapshot,
+                ))
+            } else if rendered_clock != Some(key) {
+                rendered_clock = Some(key);
+                Some(render::status(
+                    &session,
+                    authoritative_size,
+                    &config.date_format,
+                    &config.time_format,
+                    true,
+                ))
+            } else {
+                None
+            };
+            if let Some(bytes) = bytes {
+                pending_broadcast = Some(PendingBroadcast {
+                    bytes,
+                    remaining: clients
+                        .iter()
+                        .filter(|client| client.attached)
+                        .map(|client| client.id)
+                        .collect(),
+                });
+                flush_broadcast(&mut pending_broadcast, &clients);
             }
         }
 
@@ -191,9 +258,9 @@ pub fn run(runtime: RuntimeDir, name: String, initial_size: Size) -> Result<(), 
         }
         for pane_id in exited {
             panes.retain(|pane| pane.id != pane_id);
-            match session.close_pane(pane_id, authoritative_size) {
+            match session.close_pane(pane_id, pane_area(authoritative_size)) {
                 Ok(CloseResult::SessionEmpty) => terminate = true,
-                Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => {}
+                Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => full_dirty = true,
                 Err(_) => terminate = true,
             }
         }
@@ -298,12 +365,13 @@ fn handle_message(
     message: Message,
     panes: &mut [PaneProcess],
     authoritative_size: &mut Size,
-    pending_input: &mut PendingInput,
+    session: &Session,
+    full_dirty: &mut bool,
 ) -> bool {
     match message {
         Message::Attach { columns, rows } => {
             let size = Size { columns, rows };
-            if resize_all(panes, size, *authoritative_size).is_err() {
+            if resize_all(session, panes, size, *authoritative_size).is_err() {
                 queue_control(
                     clients,
                     client_id,
@@ -317,6 +385,7 @@ fn handle_message(
                 client.size = Some(size);
             }
             queue_control(clients, client_id, Message::Attached);
+            *full_dirty = true;
         }
         Message::Resize { columns, rows } => {
             let Some(client) = clients.iter_mut().find(|client| client.id == client_id) else {
@@ -328,10 +397,11 @@ fn handle_message(
             }
             let size = Size { columns, rows };
             client.size = Some(size);
-            if resize_all(panes, size, *authoritative_size).is_err() {
+            if resize_all(session, panes, size, *authoritative_size).is_err() {
                 remove_client(clients, client_id);
             } else {
                 *authoritative_size = size;
+                *full_dirty = true;
             }
         }
         Message::Input(bytes) => {
@@ -343,13 +413,18 @@ fn handle_message(
                 return false;
             }
             if let Some(size) = client.size {
-                if resize_all(panes, size, *authoritative_size).is_err() {
+                if resize_all(session, panes, size, *authoritative_size).is_err() {
                     remove_client(clients, client_id);
                     return false;
                 }
+                *full_dirty |= size != *authoritative_size;
                 *authoritative_size = size;
             }
-            pending_input.push(bytes);
+            if let Some(active) = session.active_pane()
+                && let Some(pane) = panes.iter_mut().find(|pane| pane.id == active)
+            {
+                pane.pending_input.push(bytes);
+            }
         }
         Message::Detach => remove_client(clients, client_id),
         Message::StatusRequest => {
@@ -373,16 +448,61 @@ fn handle_message(
     false
 }
 
-fn resize_all(panes: &[PaneProcess], size: Size, rollback: Size) -> io::Result<()> {
-    for (index, pane) in panes.iter().enumerate() {
-        if let Err(error) = pane.child.resize(size) {
-            for resized in &panes[..index] {
-                let _ = resized.child.resize(rollback);
+fn resize_all(
+    session: &Session,
+    panes: &mut [PaneProcess],
+    size: Size,
+    rollback: Size,
+) -> io::Result<()> {
+    let rects = session.pane_rects(pane_area(size));
+    let rollback_rects = session.pane_rects(pane_area(rollback));
+    if rects.iter().any(|(_, rect)| {
+        rect.width == 0
+            || rect.height == 0
+            || usize::from(rect.width) * usize::from(rect.height) > MAX_SCREEN_CELLS
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal dimensions are outside supported limits",
+        ));
+    }
+    for index in 0..panes.len() {
+        let pane_size = rects
+            .iter()
+            .find(|(id, _)| *id == panes[index].id)
+            .map(|(_, rect)| Size {
+                columns: rect.width,
+                rows: rect.height,
+            })
+            .unwrap_or_else(|| pane_area(size));
+        if let Err(error) = panes[index].child.resize(pane_size) {
+            for resized in &mut panes[..index] {
+                let old = rollback_rects
+                    .iter()
+                    .find(|(id, _)| *id == resized.id)
+                    .map(|(_, rect)| Size {
+                        columns: rect.width,
+                        rows: rect.height,
+                    })
+                    .unwrap_or_else(|| pane_area(rollback));
+                let _ = resized.child.resize(old);
+                let _ = resized.terminal.resize(old);
             }
             return Err(error);
         }
+        panes[index]
+            .terminal
+            .resize(pane_size)
+            .map_err(io::Error::other)?;
     }
     Ok(())
+}
+
+fn pane_area(size: Size) -> Size {
+    Size {
+        columns: size.columns.max(1),
+        rows: size.rows.saturating_sub(1).max(1),
+    }
 }
 
 fn queue_control(clients: &mut [Client], client_id: u64, message: Message) {
@@ -441,5 +561,28 @@ fn remove_client(clients: &mut Vec<Client>, client_id: u64) {
     if let Some(index) = clients.iter().position(|client| client.id == client_id) {
         let client = clients.swap_remove(index);
         let _ = client.control.shutdown(Shutdown::Both);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_protocol_responses_use_the_pane_input_queue() {
+        let mut terminal = Terminal::new(Size {
+            columns: 80,
+            rows: 24,
+        })
+        .unwrap();
+        terminal.advance(b"\x1b[6n\x1b[c");
+
+        let mut pending = PendingInput::new();
+        pending.push(terminal.take_responses());
+        let mut output = Vec::new();
+        pending.flush(&mut output).unwrap();
+
+        assert_eq!(output, b"\x1b[1;1R\x1b[?1;2c");
+        assert!(pending.is_empty());
     }
 }
