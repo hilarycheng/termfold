@@ -24,7 +24,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: none.
   - Done when: each value is added to the normative requirements with approval.
 
-- [ ] **T01 — Create the Rust baseline**
+- [*] **T01 — Create the Rust baseline**
   - Create the binary crate, lockfile, stable-toolchain policy, musl target setup,
     and size-focused release profile.
   - Requirements: Implementation and Acceptance; release rules in `AGENTS.md`.
