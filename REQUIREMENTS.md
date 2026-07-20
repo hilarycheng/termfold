@@ -55,8 +55,10 @@ its process ID and attached or detached state. A decimal `PID_PREFIX` MUST attac
 only when it uniquely matches a detached Termfold session process. An unknown or
 ambiguous prefix MUST NOT attach and MUST instead list the Termfold process IDs.
 Invalid commands or names MUST return a non-zero status and a short actionable
-error. Multiple clients owned by the same user MUST be able to attach to one
-session concurrently.
+error. Each user MUST have an independent session namespace and MAY run up to the
+configured concurrent-session limit. Different users MAY use the same session
+name, but MUST NOT discover or attach to each other's sessions. Multiple clients
+owned by the same user MUST be able to attach to one session concurrently.
 Attaching a client MUST NOT detach or interrupt existing clients. Every attached
 client MUST receive display updates and MAY send input and commands; resulting
 session, tab, pane, and focus changes are shared by all attached clients.
