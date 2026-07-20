@@ -61,7 +61,8 @@ multi-client display sharing is not part of the first release.
 - A pane child exit MUST close that pane. An empty tab MUST close; an empty session
   MUST terminate.
 - Closing a live pane or session MUST request graceful child termination before
-  forced termination and MUST reap every child.
+  forced termination and MUST reap every child. Send `SIGTERM`, wait up to 2
+  seconds, then send `SIGKILL` to remaining children.
 - The server MUST never listen on a network socket.
 
 ## Shell Launch
@@ -176,6 +177,11 @@ Unknown fields, invalid key syntax, invalid time formats, and out-of-range value
 MUST identify the exact field and fail startup. Termfold MUST never rewrite the
 configuration file automatically.
 
+- `prefix` MUST be one ASCII control key from `C-a` through `C-z`.
+- `scrollback_lines` MUST be between 0 and 10,000 inclusive.
+- `date_format` and `time_format` MUST each contain at most 64 characters and
+  support only `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`, `%p`, and `%%` directives.
+
 ## IPC and Filesystem Security
 
 - Prefer `$XDG_RUNTIME_DIR/termfold` only when the runtime directory is absolute,
@@ -204,9 +210,9 @@ The first release MUST enforce these hard limits:
 | Control sequence | 4 KiB |
 | Default scrollback per pane | 2,000 lines |
 
-Queues and pending pane output MUST also be bounded. Their exact caps MAY follow
-the chosen event-loop design but MUST be documented before that implementation is
-approved.
+Each queue MUST hold at most 256 items and 4 MiB of payload. Pending PTY output
+MUST be limited to 1 MiB per pane. Reaching a cap MUST pause reads to apply
+backpressure; terminal data MUST NOT be silently discarded.
 
 ## Implementation and Acceptance
 
@@ -221,6 +227,12 @@ approved.
   terminal restoration.
 - A release is not acceptable until the release checklist in `AGENTS.md` passes.
 
-Binary size, startup latency, idle memory, idle CPU, and minimum Linux kernel need
-owner-approved numeric budgets before the first release. Until then, report actual
-measurements without claiming those goals are satisfied.
+The first release MUST meet these owner-approved budgets:
+
+| Measure | Budget |
+| --- | ---: |
+| Stripped release binary | 5 MiB maximum |
+| Startup latency | 100 ms maximum |
+| Idle resident memory | 16 MiB maximum |
+| Idle CPU usage | 0.1% maximum |
+| Minimum Linux kernel | 4.18 |
