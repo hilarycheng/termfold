@@ -46,7 +46,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: state transitions cannot violate the documented limits or hierarchy.
 
-- [ ] **T04 — Implement secure runtime paths**
+- [*] **T04 — Implement secure runtime paths**
   - Validate runtime-directory ownership and permissions, reject symlinks, create
     the Unix socket securely, and handle stale sockets safely.
   - Requirements: IPC and Filesystem Security.
