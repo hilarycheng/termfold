@@ -14,7 +14,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
 
 ## Tasks
 
-- [ ] **T00 — Resolve blocking decisions**
+- [x] **T00 — Resolve blocking decisions**
   - Define bounded queue and pending PTY-output caps before event-loop work.
   - Define graceful child-termination timeout.
   - Define valid configuration ranges and supported date/time format syntax.
