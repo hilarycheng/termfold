@@ -31,9 +31,9 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: none.
   - Done when: the minimal project structure and required build configuration exist.
 
-- [ ] **T02 — Implement CLI and configuration**
-  - Implement the required commands, defaults, session-name validation, strict
-    configuration parsing, and actionable errors.
+- [*] **T02 — Implement CLI and configuration**
+  - Implement the required commands, PID-prefix selector, defaults, session-name
+    validation, strict configuration parsing, and actionable errors.
   - Requirements: Command-Line Contract; Configuration.
   - Depends on: T00, T01.
   - Done when: every documented command and configuration validation path behaves
@@ -68,8 +68,9 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: pane processes start, resize, terminate, and reap deterministically.
 
 - [ ] **T07 — Implement server lifecycle**
-  - Add server auto-start, create, attach, detach, list, kill, empty-pane cascading,
-    and shutdown after the last session.
+  - Add one server process per session, auto-start, PID-prefix discovery, create,
+    attach, detach, list with attachment state, kill, empty-pane cascading, and
+    shutdown with the session.
   - Requirements: Command-Line Contract; Session and Process Lifecycle.
   - Depends on: T02, T03, T05, T06.
   - Done when: sessions persist only while required and a second client is rejected.
