@@ -37,7 +37,8 @@ The non-goals in `AGENTS.md` remain out of scope.
 The initial CLI MUST support:
 
 ```text
-termfold                       Attach to "default", creating it if absent
+termfold                       Attach the only detached session, or list sessions
+termfold PID_PREFIX            Attach the uniquely matching detached session
 termfold new [NAME]            Create and attach to a session
 termfold attach [NAME]         Attach to an existing session
 termfold list                  List sessions
@@ -47,15 +48,21 @@ termfold --version
 ```
 
 `NAME` defaults to `default` where applicable. Session names MUST match
-`[A-Za-z0-9_-]{1,64}`. Invalid commands or names MUST return a non-zero status and
-a short actionable error. A second attached client to the same session MUST fail;
-multi-client display sharing is not part of the first release.
+`[A-Za-z0-9_-]{1,64}`. Each session MUST run in its own Termfold server process.
+With no arguments, Termfold MUST create `default` when no session exists, attach
+when exactly one detached session exists, and otherwise list every session with
+its process ID and attached or detached state. A decimal `PID_PREFIX` MUST attach
+only when it uniquely matches a detached Termfold session process. An unknown or
+ambiguous prefix MUST NOT attach and MUST instead list the Termfold process IDs.
+Invalid commands or names MUST return a non-zero status and a short actionable
+error. A second attached client to the same session MUST fail; multi-client
+display sharing is not part of the first release.
 
 ## Session and Process Lifecycle
 
-- A client MUST start the per-user server when creation requires one.
+- A client MUST start one dedicated server process for each created session.
 - Detaching MUST leave the session and child processes running.
-- The server MUST exit after its last session is terminated.
+- A session server MUST exit when its session is terminated.
 - The attached client's current size is authoritative and MUST be propagated to
   every affected PTY on attach and `SIGWINCH`.
 - A pane child exit MUST close that pane. An empty tab MUST close; an empty session
@@ -203,7 +210,7 @@ The first release MUST enforce these hard limits:
 
 | Resource | Limit |
 | --- | ---: |
-| Sessions per server | 32 |
+| Concurrent sessions per user | 32 |
 | Tabs per session | 32 |
 | Panes per tab | 16 |
 | IPC frame | 1 MiB |
