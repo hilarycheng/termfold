@@ -1,4 +1,6 @@
 mod config;
+#[cfg(target_os = "linux")]
+pub mod runtime;
 mod session;
 
 use std::{env, ffi::OsString, process::ExitCode};
