@@ -61,7 +61,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: clients and server exchange only bounded, valid protocol messages,
     and one client failure cannot disrupt the session or another client.
 
-- [ ] **T06 — Implement PTY and child-process lifecycle**
+- [*] **T06 — Implement PTY and child-process lifecycle**
   - Launch the approved shell directly with the required environment and working
     directory, propagate sizes, terminate gracefully, and reap every child.
   - Requirements: Shell Launch; Session and Process Lifecycle.

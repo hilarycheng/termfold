@@ -1,6 +1,8 @@
 mod config;
 pub mod ipc;
 #[cfg(target_os = "linux")]
+pub mod pty;
+#[cfg(target_os = "linux")]
 pub mod runtime;
 pub mod session;
 
