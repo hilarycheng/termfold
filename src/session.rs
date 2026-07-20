@@ -234,39 +234,50 @@ impl Session {
     }
 
     pub fn close_active_pane(&mut self, size: Size) -> Result<CloseResult, StateError> {
-        let tab = self
+        let active = self.active_pane().ok_or(StateError::EmptySession)?;
+        self.close_pane(active, size)
+    }
+
+    pub fn close_pane(&mut self, pane: PaneId, size: Size) -> Result<CloseResult, StateError> {
+        let tab_index = self
             .tabs
-            .get(self.active_tab)
-            .ok_or(StateError::EmptySession)?;
-        let active = tab.active;
-        let rects = tab.layout.rects(size);
-        let active_rect = rects
             .iter()
-            .find(|(pane, _)| *pane == active)
+            .position(|tab| tab.layout.contains(pane))
+            .ok_or(StateError::NoAdjacentPane)?;
+        let tab = self.tabs.get(tab_index).ok_or(StateError::EmptySession)?;
+        let rects = tab.layout.rects(size);
+        let pane_rect = rects
+            .iter()
+            .find(|(candidate, _)| *candidate == pane)
             .map(|(_, rect)| *rect)
-            .expect("active pane belongs to its tab");
+            .expect("pane belongs to its tab");
         let nearest = rects
             .into_iter()
-            .filter(|(pane, _)| *pane != active)
-            .min_by_key(|(pane, rect)| (rect_distance(active_rect, *rect), *pane))
-            .map(|(pane, _)| pane);
+            .filter(|(candidate, _)| *candidate != pane)
+            .min_by_key(|(candidate, rect)| (rect_distance(pane_rect, *rect), *candidate))
+            .map(|(candidate, _)| candidate);
 
-        if let Some(pane) = nearest {
-            let tab = &mut self.tabs[self.active_tab];
+        if let Some(nearest) = nearest {
+            let tab = &mut self.tabs[tab_index];
             tab.layout = tab
                 .layout
                 .clone()
-                .remove(active)
+                .remove(pane)
                 .expect("another pane survives the close");
-            tab.active = pane;
+            if tab.active == pane {
+                tab.active = nearest;
+            }
             return Ok(CloseResult::PaneClosed);
         }
 
-        self.tabs.remove(self.active_tab);
+        self.tabs.remove(tab_index);
         if self.tabs.is_empty() {
             self.active_tab = 0;
             Ok(CloseResult::SessionEmpty)
         } else {
+            if tab_index < self.active_tab {
+                self.active_tab -= 1;
+            }
             self.active_tab = self.active_tab.min(self.tabs.len() - 1);
             Ok(CloseResult::TabClosed)
         }
@@ -687,6 +698,21 @@ mod tests {
             ),
             Err(StateError::TooSmall)
         );
+        assert_eq!(session.pane_count(), 1);
+    }
+
+    #[test]
+    fn child_exit_can_close_a_non_active_pane() {
+        let mut session = Session::new("work".into());
+        let first = session.active_pane().unwrap();
+        let second = session.split_active(Split::LeftRight, SIZE).unwrap();
+        assert!(session.select_pane(first));
+
+        assert_eq!(
+            session.close_pane(second, SIZE),
+            Ok(CloseResult::PaneClosed)
+        );
+        assert_eq!(session.active_pane(), Some(first));
         assert_eq!(session.pane_count(), 1);
     }
 }

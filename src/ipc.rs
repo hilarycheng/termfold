@@ -13,7 +13,7 @@ pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const PREFIX_SIZE: usize = 4;
 const HEADER_SIZE: usize = 2;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
     Attach { columns: u16, rows: u16 },
     Detach,
@@ -22,6 +22,10 @@ pub enum Message {
     Attached,
     Screen(Vec<u8>),
     Error(String),
+    StatusRequest,
+    Status { pid: u32, attached_clients: u32 },
+    Kill,
+    Terminating,
 }
 
 #[derive(Debug)]
@@ -140,9 +144,17 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
         Message::Attached => (5, &[]),
         Message::Screen(payload) => (6, payload),
         Message::Error(message) => (7, message.as_bytes()),
+        Message::StatusRequest => (8, &[]),
+        Message::Status { .. } => (9, &[]),
+        Message::Kill => (10, &[]),
+        Message::Terminating => (11, &[]),
     };
-    let fixed = matches!(message, Message::Attach { .. } | Message::Resize { .. });
-    let body_len = HEADER_SIZE + payload.len() + if fixed { 4 } else { 0 };
+    let fixed_len = match message {
+        Message::Attach { .. } | Message::Resize { .. } => 4,
+        Message::Status { .. } => 8,
+        _ => 0,
+    };
+    let body_len = HEADER_SIZE + payload.len() + fixed_len;
     if body_len > MAX_FRAME_SIZE - PREFIX_SIZE {
         return Err(ProtocolError::FrameTooLarge);
     }
@@ -155,6 +167,13 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
             valid_size(*columns, *rows)?;
             frame.extend_from_slice(&columns.to_be_bytes());
             frame.extend_from_slice(&rows.to_be_bytes());
+        }
+        Message::Status {
+            pid,
+            attached_clients,
+        } => {
+            frame.extend_from_slice(&pid.to_be_bytes());
+            frame.extend_from_slice(&attached_clients.to_be_bytes());
         }
         _ => frame.extend_from_slice(payload),
     }
@@ -182,7 +201,14 @@ fn decode(body: &[u8]) -> Result<Message, ProtocolError> {
         7 => String::from_utf8(payload.to_vec())
             .map(Message::Error)
             .map_err(|_| ProtocolError::Malformed("error message is not UTF-8")),
-        2 | 5 => Err(ProtocolError::Malformed(
+        8 if payload.is_empty() => Ok(Message::StatusRequest),
+        9 if payload.len() == 8 => Ok(Message::Status {
+            pid: u32::from_be_bytes(payload[..4].try_into().expect("checked length")),
+            attached_clients: u32::from_be_bytes(payload[4..].try_into().expect("checked length")),
+        }),
+        10 if payload.is_empty() => Ok(Message::Kill),
+        11 if payload.is_empty() => Ok(Message::Terminating),
+        2 | 5 | 8 | 9 | 10 | 11 => Err(ProtocolError::Malformed(
             "message has an unexpected payload",
         )),
         kind => Err(ProtocolError::UnsupportedMessage(kind)),
@@ -228,6 +254,13 @@ mod tests {
             },
             Message::Screen(b"screen".to_vec()),
             Message::Error("failed".into()),
+            Message::StatusRequest,
+            Message::Status {
+                pid: 1234,
+                attached_clients: 2,
+            },
+            Message::Kill,
+            Message::Terminating,
             Message::Detach,
         ];
 

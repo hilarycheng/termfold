@@ -9,8 +9,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    ptr,
-    thread,
+    ptr, thread,
     time::{Duration, Instant},
 };
 
@@ -137,10 +136,7 @@ pub fn terminate_all(children: &mut [&mut PtyChild]) -> io::Result<()> {
     terminate_all_with_grace(children, TERMINATION_GRACE)
 }
 
-fn terminate_all_with_grace(
-    children: &mut [&mut PtyChild],
-    grace: Duration,
-) -> io::Result<()> {
+fn terminate_all_with_grace(children: &mut [&mut PtyChild], grace: Duration) -> io::Result<()> {
     let mut first_error = None;
     for child in children.iter_mut() {
         match child.try_wait() {
@@ -169,7 +165,9 @@ fn terminate_all_with_grace(
         if !running || Instant::now() >= deadline {
             break;
         }
-        thread::sleep(Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())));
+        thread::sleep(
+            Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 
     for child in children.iter_mut() {
@@ -321,7 +319,10 @@ mod tests {
                 Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
                 Err(error) => return Err(error),
             }
-            if output.windows(expected.len()).any(|window| window == expected) {
+            if output
+                .windows(expected.len())
+                .any(|window| window == expected)
+            {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
@@ -379,7 +380,11 @@ mod tests {
                 b"trap '' TERM; printf '\\162\\145\\141\\144\\171'; while :; do sleep 1; done\n",
             )
             .unwrap();
-        assert!(read_until(&mut child, b"ready").unwrap().ends_with(b"ready"));
+        assert!(
+            read_until(&mut child, b"ready")
+                .unwrap()
+                .ends_with(b"ready")
+        );
 
         terminate_all_with_grace(&mut [&mut child], Duration::from_millis(20)).unwrap();
         assert!(child.try_wait().unwrap().is_some());

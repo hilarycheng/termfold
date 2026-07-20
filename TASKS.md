@@ -68,13 +68,14 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T00, T01.
   - Done when: pane processes start, resize, terminate, and reap deterministically.
 
-- [ ] **T07 — Implement server lifecycle**
+- [*] **T07 — Implement server lifecycle**
   - Add one server process per session, auto-start, PID-prefix discovery, create,
     attach, detach, list with attachment state, kill, empty-pane cascading, and
     shutdown with the session.
   - Requirements: Command-Line Contract; Session and Process Lifecycle.
   - Depends on: T02, T03, T05, T06.
-  - Done when: sessions persist only while required and a second client is rejected.
+  - Done when: sessions persist only while required, duplicate names are rejected
+    per user, and concurrent same-user clients can share one session.
 
 - [ ] **T08 — Implement the terminal parser and screen model**
   - Support the required UTF-8, cell-width, cursor, scrolling, editing, SGR, screen,
