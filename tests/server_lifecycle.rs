@@ -1,7 +1,10 @@
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::{fs::DirBuilderExt, net::UnixStream},
+    os::{
+        fd::{AsRawFd, FromRawFd, RawFd},
+        unix::{fs::DirBuilderExt, net::UnixStream},
+    },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -121,6 +124,34 @@ fn initial_child_exit_removes_the_empty_session() {
     assert!(!runtime.socket("gone").exists());
 }
 
+#[test]
+fn termination_signal_restores_the_client_terminal() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let (master, slave) = open_pty();
+    let original = termios(slave.as_raw_fd());
+    let mut client = runtime
+        .command()
+        .args(["attach", "one"])
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_attached_count(&runtime.socket("one"), 1);
+    wait_for_raw(slave.as_raw_fd());
+
+    // SAFETY: client.id() names the live child process created above.
+    assert_eq!(
+        unsafe { libc::kill(client.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    wait_for_exit(&mut client);
+    assert_eq!(client.wait().unwrap().code(), Some(128 + libc::SIGTERM));
+    assert_same_termios(termios(slave.as_raw_fd()), original);
+    drop(master);
+}
+
 fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
     runtime
         .command()
@@ -178,4 +209,50 @@ fn wait_for_missing(path: &Path) {
         thread::sleep(Duration::from_millis(10));
     }
     panic!("session socket {} was not removed", path.display());
+}
+
+fn open_pty() -> (fs::File, fs::File) {
+    let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
+    // SAFETY: openpty initializes both descriptors; null optional arguments are permitted.
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &raw mut master,
+                &raw mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        },
+        0
+    );
+    // SAFETY: openpty returned two newly owned descriptors.
+    unsafe { (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave)) }
+}
+
+fn wait_for_raw(fd: RawFd) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if termios(fd).c_lflag & libc::ICANON == 0 {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("client did not enable raw terminal mode");
+}
+
+fn termios(fd: RawFd) -> libc::termios {
+    // SAFETY: terminal is initialized by tcgetattr before it is read.
+    let mut terminal = unsafe { std::mem::zeroed() };
+    // SAFETY: fd is a live PTY descriptor and terminal is writable.
+    assert_eq!(unsafe { libc::tcgetattr(fd, &raw mut terminal) }, 0);
+    terminal
+}
+
+fn assert_same_termios(actual: libc::termios, expected: libc::termios) {
+    assert_eq!(actual.c_iflag, expected.c_iflag);
+    assert_eq!(actual.c_oflag, expected.c_oflag);
+    assert_eq!(actual.c_cflag, expected.c_cflag);
+    assert_eq!(actual.c_lflag, expected.c_lflag);
+    assert_eq!(actual.c_cc, expected.c_cc);
 }

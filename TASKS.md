@@ -85,7 +85,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: the advertised `xterm-256color` subset is represented correctly.
 
-- [ ] **T09 — Implement client terminal safety**
+- [*] **T09 — Implement client terminal safety**
   - Manage terminal modes, alternate screen, resize signals, disconnects, normal
     exit, panic, and catchable termination signals with deterministic restoration.
   - Requirements: First-Release Scope; Terminal Behaviour; Mouse and Scrollback.
