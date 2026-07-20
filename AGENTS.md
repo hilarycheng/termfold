@@ -51,7 +51,10 @@ Before changing code:
 3. Wait for an in-scope `APPROVE`.
 4. Make the smallest practical change.
 5. Run focused tests.
-6. Report only the result, risks, and remaining issues.
+6. Run the approved build and verification.
+7. Mark the completed task `[*]` in `TASKS.md`.
+8. Commit only after the preceding checks pass.
+9. Report only the result, risks, and remaining issues.
 
 All Git commit messages MUST follow the Conventional Commits specification.
 
