@@ -55,16 +55,19 @@ its process ID and attached or detached state. A decimal `PID_PREFIX` MUST attac
 only when it uniquely matches a detached Termfold session process. An unknown or
 ambiguous prefix MUST NOT attach and MUST instead list the Termfold process IDs.
 Invalid commands or names MUST return a non-zero status and a short actionable
-error. A second attached client to the same session MUST fail; multi-client
-display sharing is not part of the first release.
+error. Multiple clients owned by the same user MUST be able to attach to one
+session concurrently.
+Attaching a client MUST NOT detach or interrupt existing clients. Every attached
+client MUST receive display updates and MAY send input and commands; resulting
+session, tab, pane, and focus changes are shared by all attached clients.
 
 ## Session and Process Lifecycle
 
 - A client MUST start one dedicated server process for each created session.
 - Detaching MUST leave the session and child processes running.
 - A session server MUST exit when its session is terminated.
-- The attached client's current size is authoritative and MUST be propagated to
-  every affected PTY on attach and `SIGWINCH`.
+- The most recently active attached client's current size is authoritative and
+  MUST be propagated to every affected PTY on attach, input, and `SIGWINCH`.
 - A pane child exit MUST close that pane. An empty tab MUST close; an empty session
   MUST terminate.
 - Closing a live pane or session MUST request graceful child termination before
@@ -202,6 +205,10 @@ configuration file automatically.
   failed connection proving no server accepts it.
 - IPC MUST be framed, versioned, reject malformed messages, and cap each frame at
   1 MiB.
+- Each client connection MUST have independent parsing, queues, and cleanup. A
+  malformed message, queue overflow, resize failure, or disconnect from one
+  client MUST NOT detach, block, corrupt, or terminate another client or the
+  session. Unsent data MUST NOT be silently discarded.
 - Session names MUST never be used as unchecked filesystem paths.
 
 ## Resource Limits

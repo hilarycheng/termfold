@@ -53,12 +53,13 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: runtime paths and sockets meet every ownership, mode, and type rule.
 
-- [ ] **T05 — Implement framed IPC**
+- [*] **T05 — Implement framed IPC**
   - Add versioned messages, the 1 MiB frame limit, malformed-frame rejection, and
-    single-client attachment enforcement.
+    independently bounded multi-client connections with failure isolation.
   - Requirements: IPC and Filesystem Security; Command-Line Contract.
   - Depends on: T00, T04.
-  - Done when: client and server exchange only bounded, valid protocol messages.
+  - Done when: clients and server exchange only bounded, valid protocol messages,
+    and one client failure cannot disrupt the session or another client.
 
 - [ ] **T06 — Implement PTY and child-process lifecycle**
   - Launch the approved shell directly with the required environment and working
