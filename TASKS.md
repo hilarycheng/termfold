@@ -39,7 +39,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: every documented command and configuration validation path behaves
     as specified.
 
-- [ ] **T03 — Implement session, tab, pane, and layout state**
+- [*] **T03 — Implement session, tab, pane, and layout state**
   - Enforce resource limits, split constraints, deterministic focus, resize, and
     close behaviour without starting PTYs yet.
   - Requirements: Tabs and Panes; Resource Limits; Session and Process Lifecycle.
