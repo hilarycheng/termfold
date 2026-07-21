@@ -31,14 +31,14 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: none.
   - Done when: the minimal project structure and required build configuration exist.
 
-- [ ] **T02 — Implement CLI and configuration**
-  - Implement the required commands including `diagnose`, PID-prefix selector,
+- [*] **T02 — Implement CLI and configuration**
+  - Implement the required commands including `diagnose` routing, PID-prefix selector,
     defaults, session-name validation, strict configuration parsing including
     `terminal_profile` and `inner_term`, and actionable errors.
   - Requirements: Command-Line Contract; Configuration.
   - Depends on: T00, T01.
-  - Done when: every documented command and configuration validation path behaves
-    as specified.
+  - Done when: every documented command parses and every configuration validation
+    path behaves as specified. T10A completes `diagnose` output and compatibility.
 
 - [*] **T03 — Implement session, tab, pane, and layout state**
   - Enforce resource limits, split constraints, deterministic focus, resize, and

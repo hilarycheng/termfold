@@ -7,6 +7,8 @@ pub struct Config {
     pub scrollback_lines: u16,
     pub date_format: String,
     pub time_format: String,
+    pub terminal_profile: String,
+    pub inner_term: String,
 }
 
 impl Default for Config {
@@ -17,6 +19,8 @@ impl Default for Config {
             scrollback_lines: 2_000,
             date_format: "%Y-%m-%d".into(),
             time_format: "%H:%M".into(),
+            terminal_profile: "auto".into(),
+            inner_term: "termfold-256color".into(),
         }
     }
 }
@@ -61,6 +65,8 @@ impl Config {
                 "scrollback_lines" => 4,
                 "date_format" => 8,
                 "time_format" => 16,
+                "terminal_profile" => 32,
+                "inner_term" => 64,
                 _ => return Err(field_error(field, "unknown field")),
             };
             if seen & bit != 0 {
@@ -74,6 +80,8 @@ impl Config {
                 "scrollback_lines" => config.scrollback_lines = parse_scrollback(field, value)?,
                 "date_format" => config.date_format = parse_format(field, value)?,
                 "time_format" => config.time_format = parse_format(field, value)?,
+                "terminal_profile" => config.terminal_profile = parse_profile(field, value)?,
+                "inner_term" => config.inner_term = parse_inner_term(field, value)?,
                 _ => unreachable!(),
             }
         }
@@ -196,6 +204,47 @@ fn parse_format(field: &str, value: &str) -> Result<String, String> {
     Ok(value)
 }
 
+fn parse_profile(field: &str, value: &str) -> Result<String, String> {
+    let value = parse_string(field, value)?;
+    match value.as_str() {
+        "auto" | "dumb" | "ansi" | "vt100" | "linux" | "xterm" | "xterm-256color"
+        | "screen" | "screen-256color" | "tmux" | "tmux-256color" => Ok(value),
+        _ => Err(field_error(field, "unknown built-in terminal profile")),
+    }
+}
+
+fn parse_inner_term(field: &str, value: &str) -> Result<String, String> {
+    let value = parse_string(field, value)?;
+    match value.as_str() {
+        "termfold-256color" | "xterm-256color" => Ok(value),
+        _ => Err(field_error(field, "unsupported inner terminal value")),
+    }
+}
+
 fn field_error(field: &str, message: &str) -> String {
     format!("configuration field '{field}': {message}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn parses_terminal_configuration_and_rejects_invalid_values() {
+        let config = Config::parse(
+            "terminal_profile = \"tmux-256color\"\ninner_term = \"xterm-256color\"",
+        )
+        .unwrap();
+        assert_eq!(config.terminal_profile, "tmux-256color");
+        assert_eq!(config.inner_term, "xterm-256color");
+
+        assert_eq!(
+            Config::parse("terminal_profile = \"unknown\"").unwrap_err(),
+            "configuration field 'terminal_profile': unknown built-in terminal profile"
+        );
+        assert_eq!(
+            Config::parse("inner_term = \"screen-256color\"").unwrap_err(),
+            "configuration field 'inner_term': unsupported inner terminal value"
+        );
+    }
 }
