@@ -11,18 +11,82 @@ This document defines product behaviour. `AGENTS.md` defines the AI workflow.
 - Do not invent behaviour where this document is silent; propose the smallest
   decision and wait for `APPROVE`.
 
+## Product Positioning
+
+Termfold is an intentionally small, self-contained terminal multiplexer for
+Linux and WSL. It provides persistent named sessions, tabs, panes, and an
+always-visible one-row status bar without becoming a terminal workspace
+platform.
+
+The primary product contract is:
+
+```text
+one downloadable executable
++ no required runtime libraries, plugins, helper programs, or system terminfo data
++ persistent local sessions, tabs, panes, colour, and a permanent status row
+- no web service, network transport, AI integration, plugin ecosystem, workspace
+  model, or sidebar
+```
+
+Termfold is not intended to replace every tmux, screen, or Zellij feature. It is
+intended for users who need a dependable multiplexer on machines where they
+cannot assume that a multiplexer or its runtime dependencies are installed.
+
+The status bar is a safety and context boundary, not decoration. An attached
+client MUST always have an unambiguous visible indication that it is inside a
+Termfold session, including the session identity and active tab whenever the
+terminal is wide enough.
+
+The first release MUST NOT provide:
+
+- runtime executable plugins or a stable plugin ABI;
+- a web client or network listener;
+- AI-agent awareness or integration;
+- floating panes, sidebars, file browsers, or workspace/project management;
+- a layout or scripting language;
+- remote access, authentication, encryption, or network transport; or
+- restoration after the Termfold server process or host has ceased to exist.
+
+## Distribution and Dependency Contract
+
+The official Linux release artifact MUST be one statically linked executable for
+each supported architecture.
+
+Termfold itself MUST NOT require:
+
+- dynamically linked runtime libraries;
+- an init-system service;
+- external helper executables such as `tic`, `tput`, or `infocmp`;
+- runtime-loaded code plugins;
+- system-wide configuration files; or
+- a system terminfo database in order to start and operate.
+
+The user shell is an external program invoked by Termfold and is not a Termfold
+runtime library. Configuration MUST remain optional; a missing configuration
+file MUST produce a complete usable default experience.
+
+Build-time source dependencies MAY be used only when they are statically linked,
+version-pinned, auditable, and materially reduce correctness risk or maintenance
+cost. Adding a dependency MUST document its purpose, licence, binary-size impact,
+and why a smaller existing dependency or standard-library implementation is not
+sufficient.
+
 ## First-Release Scope
 
 The first release MUST provide:
 
+- a self-contained static Linux executable;
 - persistent same-user sessions while the server is alive;
-- attach and detach;
+- local attach and detach;
 - tabs and panes;
 - horizontal and vertical splits, focus movement, and resize;
 - PTY resize propagation;
 - a one-row bottom status bar;
 - configurable prefix, date, and time formats;
 - bounded scrollback;
+- a self-contained inner terminal description;
+- safe adaptation to common outer terminal capabilities;
+- 16-colour, 256-colour, and true-colour rendering with safe downgrade;
 - optional mouse input, disabled by default; and
 - deterministic terminal restoration for normal exit, panic, client disconnect,
   and catchable termination signals.
@@ -43,6 +107,7 @@ termfold new [NAME]            Create and attach to a session
 termfold attach [NAME]         Attach to an existing session
 termfold list                  List sessions
 termfold kill [NAME]           Terminate a session
+termfold diagnose              Report terminal and compatibility decisions
 termfold --help
 termfold --version
 ```
@@ -55,7 +120,9 @@ its process ID and attached or detached state. A decimal `PID_PREFIX` MUST attac
 only when it uniquely matches a detached Termfold session process. An unknown or
 ambiguous prefix MUST NOT attach and MUST instead list the Termfold process IDs.
 Invalid commands or names MUST return a non-zero status and a short actionable
-error. Each user MUST have an independent session namespace and MAY run up to the
+error.
+
+Each user MUST have an independent session namespace and MAY run up to the
 configured concurrent-session limit. Different users MAY use the same session
 name, but MUST NOT discover or attach to each other's sessions. Multiple clients
 owned by the same user MUST be able to attach to one session concurrently.
@@ -77,15 +144,41 @@ session, tab, pane, and focus changes are shared by all attached clients.
   seconds, then send `SIGKILL` to remaining children.
 - The server MUST never listen on a network socket.
 
-## Shell Launch
+## Shell Launch and Inner Terminal Identity
 
 - Use `$SHELL` only when it is an absolute executable path; otherwise use `/bin/sh`.
 - Execute the shell directly without command interpolation.
 - The first pane MUST inherit the creating client's working directory and
   environment, except for Termfold-controlled terminal variables.
-- Inner applications MUST receive `TERM=xterm-256color` and
-  `COLORTERM=truecolor`.
 - New panes and tabs MUST inherit the session's initial working directory.
+- Inner applications MUST receive a stable terminal identity that does not
+  change when clients attach from different outer terminals.
+
+The default inner environment MUST be:
+
+```text
+TERM=termfold-256color
+COLORTERM=truecolor
+TERMINFO=<validated per-user Termfold runtime terminfo root>
+```
+
+Termfold MUST ship a checked-in source description for `termfold-256color` and a
+compiled form embedded in the release binary. At runtime Termfold MUST materialize
+that entry inside its validated user-owned runtime directory before launching the
+first pane. It MUST NOT invoke `tic` or require a system installation step.
+
+The embedded entry MUST describe only capabilities that the Termfold parser and
+renderer actually implement. A release MUST NOT advertise a capability merely
+because common xterm-compatible terminals support it.
+
+Failure to create or validate the private terminfo entry MUST fail session
+creation with an actionable error; Termfold MUST NOT silently advertise an
+unknown or unsupported terminal identity.
+
+A documented compatibility override MAY allow `TERM=xterm-256color` for a known
+application that rejects custom terminal names, but this mode MUST be explicit,
+MUST warn that it broadens the advertised contract, and MUST remain covered by
+compatibility tests.
 
 ## Default Keys
 
@@ -121,10 +214,27 @@ enabled.
 - Pane borders MUST use an ASCII fallback. Unicode MUST remain supported in
   application content.
 
-## Terminal Behaviour
+## Terminal Architecture
 
-Termfold advertises `xterm-256color`; therefore it MUST implement the subset used
-by ordinary interactive Linux applications:
+Termfold MUST treat terminal compatibility as two separate contracts:
+
+```text
+inner application -> Termfold virtual terminal -> attached outer terminal
+```
+
+The inner contract is the fixed `termfold-256color` behaviour implemented by the
+terminal parser and cell model. The outer contract is a capability-adapted
+renderer selected independently for each attached client.
+
+Terminal profiles MUST NOT be allowed to alter parser semantics, the cell model,
+UTF-8 decoding, control-sequence framing, scroll-region behaviour, or alternate
+screen semantics. Those behaviours belong to one testable core implementation.
+
+## Inner Terminal Behaviour
+
+Because Termfold advertises `termfold-256color`, its checked-in terminfo entry and
+implementation MUST agree on the subset used by ordinary interactive Linux
+applications:
 
 - incremental UTF-8 decoding, combining characters, and wide-cell accounting;
 - cursor movement, save/restore, scrolling regions, insertion, deletion, erase,
@@ -132,12 +242,104 @@ by ordinary interactive Linux applications:
 - 16-colour, 256-colour, and true-colour SGR;
 - normal and alternate screen buffers;
 - application cursor keys, bracketed paste, cursor visibility, and PTY resize;
-- standard xterm mouse modes required by the mouse contract; and
+- standard xterm-compatible mouse modes required by the mouse contract; and
 - safe skipping of unsupported CSI, OSC, and DCS sequences without parser loss.
 
 OSC 52 clipboard writes MUST be ignored by default. A control sequence longer
 than 4096 bytes MUST be discarded safely. Pasted input MUST use bracketed-paste
 markers only when the active application enabled that mode.
+
+Termfold MUST maintain a capability-to-test mapping for the embedded terminfo
+entry. Every advertised string, numeric, or boolean capability that changes
+runtime behaviour MUST have a focused automated or interactive acceptance check.
+
+## Outer Terminal Capabilities and Profiles
+
+Terminfo is a capability description, not only a list of escape sequences. The
+outer compatibility layer MUST account for string capabilities, numeric limits,
+boolean behaviour, and known terminal quirks.
+
+Termfold MUST be able to start and render without a system terminfo database. It
+MAY read system terminfo data when safely available, but MUST NOT require ncurses,
+link to a terminfo library, or execute `tput`, `infocmp`, or `tic` at runtime.
+
+The release binary MUST contain data-only profiles for at least these families:
+
+```text
+dumb
+ansi
+vt100
+linux
+xterm
+xterm-256color
+screen
+screen-256color
+tmux
+tmux-256color
+```
+
+Common aliases such as Kitty, Foot, Alacritty, and WezTerm SHOULD resolve through
+an audited xterm-compatible family profile unless a documented quirk requires a
+specific override.
+
+Profile selection precedence MUST be:
+
+1. an explicit validated configuration override;
+2. an exact built-in terminal name or alias;
+3. an audited family match;
+4. a conservative ANSI fallback.
+
+`TERM=dumb` or a terminal without the cursor-addressing capabilities required for
+a full-screen interface MUST reject attach with an actionable error.
+
+`COLORTERM=truecolor` or `COLORTERM=24bit` MAY be used as a positive colour hint,
+but MUST NOT override a known incompatible terminal profile. Unknown environment
+variables or terminal brand names MUST NOT automatically enable advanced modes.
+
+Terminal-specific compatibility extensions MUST be data-only profiles compiled
+into the binary. The first release MUST NOT load executable terminal plugins,
+dynamic libraries, scripts, or profile files from untrusted paths. Contributors
+MAY add or correct built-in profiles through normal source changes and focused
+compatibility tests.
+
+## Colour and Attribute Adaptation
+
+Termfold MUST preserve the application's logical colour and attribute state in
+its virtual terminal. Rendering to each attached client MUST safely degrade:
+
+```text
+true colour -> 256 colours -> 16 colours -> monochrome attributes
+```
+
+The downgrade MUST be deterministic. Unsupported attributes such as italic or
+dim MUST be omitted or mapped conservatively without corrupting later terminal
+state. Default foreground and background colours MUST remain distinguishable from
+explicit palette colours.
+
+Termfold-owned UI, including the status bar, MAY use true colour internally but
+MUST follow the same downgrade rules. Information MUST NOT be communicated by
+colour alone.
+
+## Terminal Diagnostics
+
+`termfold diagnose` MUST report enough information to reproduce a compatibility
+problem without exposing secrets. At minimum it MUST show:
+
+```text
+outer TERM
+outer COLORTERM
+selected outer profile and match reason
+selected colour level
+mouse and alternate-screen support
+inner TERM value
+private TERMINFO path and validation result
+terminal rows and columns
+Termfold version and target architecture
+```
+
+The command MUST NOT print arbitrary environment values, socket contents, or
+user input. A machine-readable output mode MAY be added later but is
+not required for the first release.
 
 ## Mouse and Scrollback
 
@@ -161,6 +363,8 @@ The default layout is:
 [session]  [1:shell]  2:logs  3:db  |  2026-07-19 18:42
 ```
 
+- The status row MUST remain visible during ordinary attached operation and MUST
+  make it unambiguous that the client is inside Termfold.
 - Brackets and terminal attributes MUST distinguish the active tab; colour alone
   is insufficient.
 - The active tab and clock MUST remain visible when width permits.
@@ -168,6 +372,9 @@ The default layout is:
   insufficient. `<` and `>` MUST indicate omitted tabs.
 - At extremely narrow widths, show active tab, then time, then session in that
   priority order.
+- Temporary errors and unsupported-prefix messages MAY replace non-essential
+  status content but MUST NOT hide the session and active-tab identity when width
+  permits.
 - Only the status row MUST be redrawn for a clock-only update.
 - Minute-resolution formats update once per minute; formats containing seconds
   update once per second.
@@ -183,16 +390,22 @@ mouse = false
 scrollback_lines = 2000
 date_format = "%Y-%m-%d"
 time_format = "%H:%M"
+terminal_profile = "auto"
+inner_term = "termfold-256color"
 ```
 
-Unknown fields, invalid key syntax, invalid time formats, and out-of-range values
-MUST identify the exact field and fail startup. Termfold MUST never rewrite the
-configuration file automatically.
+Unknown fields, invalid key syntax, invalid time formats, unknown terminal
+profiles, unsupported inner terminal values, and out-of-range values MUST identify
+the exact field and fail startup. Termfold MUST never rewrite the configuration
+file automatically.
 
 - `prefix` MUST be one ASCII control key from `C-a` through `C-z`.
 - `scrollback_lines` MUST be between 0 and 10,000 inclusive.
 - `date_format` and `time_format` MUST each contain at most 64 characters and
   support only `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`, `%p`, and `%%` directives.
+- `terminal_profile` MUST be `auto` or the exact name of a built-in profile.
+- `inner_term` MUST be `termfold-256color` or the explicitly supported
+  compatibility value `xterm-256color`.
 
 ## IPC and Filesystem Security
 
@@ -201,6 +414,11 @@ configuration file automatically.
 - Otherwise use `/tmp/termfold-UID`, created with mode `0700` and verified as a
   real directory owned by the current user.
 - The Unix socket MUST use mode `0600`.
+- The private terminfo root MUST live below the validated Termfold runtime
+  directory, MUST be owned by the current user, and MUST NOT be writable by other
+  users.
+- Embedded terminfo extraction MUST use atomic creation and MUST NOT follow
+  symlinks or replace a non-regular file.
 - Symlinks MUST NOT be followed while creating, validating, or removing runtime
   paths.
 - A stale socket MAY be removed only after type and ownership validation and a
@@ -230,17 +448,52 @@ Each queue MUST hold at most 256 items and 4 MiB of payload. Pending PTY output
 MUST be limited to 1 MiB per pane. Reaching a cap MUST pause reads to apply
 backpressure; terminal data MUST NOT be silently discarded.
 
+## Implementation Warnings
+
+The following distinctions MUST remain explicit during implementation and review:
+
+- raw PTY passthrough cannot provide a permanent status row, independent panes,
+  or deterministic redraw after attach; those features require a virtual terminal
+  state model;
+- adding a new outer profile cannot repair a missing or incorrect inner parser
+  behaviour;
+- setting `TERM` is a behavioural promise, not a branding string;
+- a terminal family name alone is insufficient evidence for true colour, mouse,
+  alternate-screen, or keyboard-mode support;
+- generated code that compiles and renders a demo is not accepted without tests
+  for partial escape sequences, partial UTF-8, alternate screen, resize, signal
+  cleanup, slow clients, and unsupported capability downgrade; and
+- AI-generated implementation MUST NOT invent terminal behaviour or broaden the
+  embedded terminfo entry beyond approved and tested requirements.
+
+## Prior Art and Acknowledgements
+
+Project documentation MUST include a prior-art section crediting at least:
+
+- `zmx` for the small self-contained session-wrapper approach;
+- `tmux` for established session, tab/window, pane, prefix, and status-line
+  interaction conventions; and
+- xterm and ncurses terminfo documentation for terminal protocol and capability
+  references.
+
+Credits MUST describe inspiration accurately and MUST NOT imply endorsement,
+affiliation, code reuse, or compatibility certification where none exists.
+
 ## Implementation and Acceptance
 
 - Start with the fewest modules that provide clear ownership; the module list in
   `AGENTS.md` is guidance, not required scaffolding.
-- Reuse the standard library and existing dependencies before adding code or a
-  dependency.
+- Reuse the standard library and approved existing dependencies before adding code
+  or a dependency.
 - Each approved change MUST identify the requirements it affects.
 - Each non-trivial behaviour MUST have one focused runnable check after separate
   in-scope `APPROVE` for tests.
-- Linux or WSL is authoritative for builds, PTYs, signals, permissions, and
-  terminal restoration.
+- Terminal profile changes MUST include a reproduction case and expected output.
+- Changes to the embedded `termfold-256color` description MUST include a matching
+  implementation or test change and MUST be reviewed as a public compatibility
+  contract.
+- Linux or WSL is authoritative for builds, PTYs, signals, permissions, static
+  linking, private terminfo loading, and terminal restoration.
 - A release is not acceptable until the release checklist in `AGENTS.md` passes.
 
 The first release MUST meet these owner-approved budgets:
