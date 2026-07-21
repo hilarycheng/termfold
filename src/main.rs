@@ -22,6 +22,7 @@ const HELP: &str = "Usage:
   termfold attach [NAME]
   termfold list
   termfold kill [NAME]
+  termfold diagnose
   termfold --help
   termfold --version";
 
@@ -33,6 +34,7 @@ enum Command {
     Attach(String),
     List,
     Kill(String),
+    Diagnose,
     Help,
     Version,
     #[cfg(target_os = "linux")]
@@ -68,6 +70,10 @@ fn run() -> Result<(), String> {
 
     let config = config::Config::load()?;
 
+    if matches!(command, Command::Diagnose) {
+        return Err("terminal diagnostics are not available in this build".into());
+    }
+
     #[cfg(target_os = "linux")]
     if let Command::Server { name, size } = &command {
         return server::run(
@@ -95,7 +101,9 @@ fn run() -> Result<(), String> {
             Command::Attach(name) => client::attach(&runtime, &name),
             Command::List => list(&runtime),
             Command::Kill(name) => client::kill(&runtime, &name),
-            Command::Help | Command::Version | Command::Server { .. } => unreachable!(),
+            Command::Help | Command::Version | Command::Diagnose | Command::Server { .. } => {
+                unreachable!()
+            }
         }
     }
 
@@ -168,6 +176,7 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
         [value] if value == "--help" => Ok(Command::Help),
         [value] if value == "--version" => Ok(Command::Version),
         [value] if value == "list" => Ok(Command::List),
+        [value] if value == "diagnose" => Ok(Command::Diagnose),
         [value] if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
             Ok(Command::SelectPid(value.clone()))
         }
@@ -207,5 +216,25 @@ fn valid_name(name: &str) -> Result<String, String> {
         Ok(name.to_owned())
     } else {
         Err("session name must match [A-Za-z0-9_-]{1,64}".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, parse_command, valid_name};
+
+    #[test]
+    fn parses_public_commands_and_validates_names() {
+        assert!(matches!(
+            parse_command(vec!["diagnose".into()]),
+            Ok(Command::Diagnose)
+        ));
+        assert!(matches!(
+            parse_command(vec!["123".into()]),
+            Ok(Command::SelectPid(value)) if value == "123"
+        ));
+        assert_eq!(valid_name("logs_1").unwrap(), "logs_1");
+        assert!(valid_name("../logs").is_err());
+        assert!(valid_name(&"a".repeat(65)).is_err());
     }
 }
