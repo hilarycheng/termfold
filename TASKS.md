@@ -47,13 +47,22 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: state transitions cannot violate the documented limits or hierarchy.
 
-- [ ] **T04 — Implement secure runtime paths**
+- [*] **T04 — Implement secure runtime paths**
   - Validate runtime-directory ownership and permissions, reject symlinks, create
-    the Unix socket securely, handle stale sockets safely, and atomically
-    materialize and validate the private embedded terminfo entry.
+    the Unix socket securely, and handle stale sockets safely.
   - Requirements: IPC and Filesystem Security.
   - Depends on: T01.
   - Done when: runtime paths and sockets meet every ownership, mode, and type rule.
+
+- [ ] **T04A — Materialize private terminfo**
+  - Check in and embed the approved `termfold-256color` entry, then atomically
+    materialize and validate it below the secure runtime directory without
+    following symlinks or replacing a non-regular file.
+  - Requirements: Shell Launch and Inner Terminal Identity; Inner Terminal
+    Behaviour; IPC and Filesystem Security.
+  - Depends on: T04, T08.
+  - Done when: the embedded entry matches the tested parser contract and session
+    creation fails safely if its private materialization cannot be validated.
 
 - [*] **T05 — Implement framed IPC**
   - Add versioned messages, the 1 MiB frame limit, malformed-frame rejection, and
@@ -69,7 +78,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     propagate sizes, terminate gracefully, and reap every child.
   - Requirements: Shell Launch and Inner Terminal Identity; Session and Process
     Lifecycle.
-  - Depends on: T00, T01.
+  - Depends on: T00, T01, T04A.
   - Done when: pane processes start, resize, terminate, and reap deterministically.
 
 - [*] **T07 — Implement server lifecycle**
@@ -113,7 +122,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     rejection of terminals that cannot support the full-screen interface.
   - Requirements: Terminal Architecture; Outer Terminal Capabilities and Profiles;
     Colour and Attribute Adaptation; Terminal Diagnostics.
-  - Depends on: T02, T04, T06, T08, T09, T10.
+  - Depends on: T02, T04A, T06, T08, T09, T10.
   - Done when: each supported client renders and restores according to its selected
     profile, and `diagnose` reports the required decisions without exposing secrets.
 

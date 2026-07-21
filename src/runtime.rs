@@ -339,15 +339,20 @@ fn valid_session_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn runtime_directory_and_socket_are_private_and_stale_socket_is_replaced() {
+    fn test_path() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = env::temp_dir().join(format!("termfold-test-{}-{unique}", std::process::id()));
+        env::temp_dir().join(format!("termfold-test-{}-{unique}", std::process::id()))
+    }
+
+    #[test]
+    fn runtime_directory_must_be_private_and_not_a_symlink() {
+        let path = test_path();
         let uid = current_uid().unwrap();
         ensure_private_dir(&path, uid).unwrap();
         assert_eq!(
@@ -355,6 +360,23 @@ mod tests {
             0o700
         );
 
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ensure_private_dir(&path, uid).is_err());
+        fs::remove_dir(&path).unwrap();
+
+        let target = test_path();
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(ensure_private_dir(&path, uid).is_err());
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(target).unwrap();
+    }
+
+    #[test]
+    fn socket_is_private_and_only_a_stale_socket_is_replaced() {
+        let path = test_path();
+        let uid = current_uid().unwrap();
+        ensure_private_dir(&path, uid).unwrap();
         let runtime = RuntimeDir {
             path: path.clone(),
             uid,
@@ -372,6 +394,10 @@ mod tests {
         drop(stale);
         let replacement = runtime.bind("work").unwrap();
         drop(replacement);
+
+        fs::write(&socket, b"not a socket").unwrap();
+        assert!(runtime.bind("work").is_err());
+        fs::remove_file(socket).unwrap();
         fs::remove_dir(path).unwrap();
     }
 }
