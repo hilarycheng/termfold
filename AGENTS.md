@@ -277,14 +277,17 @@ Preferred approach:
 - Provide conservative fallback behaviour
 - Do not assume every terminal supports mouse or true colour
 
-Inner applications should initially receive:
+Inner applications should receive the default identity defined in
+`REQUIREMENTS.md`:
 
 ```text
-TERM=xterm-256color
+TERM=termfold-256color
 COLORTERM=truecolor
+TERMINFO=<validated per-user Termfold runtime terminfo root>
 ```
 
-Do not introduce a custom `TERM` value unless Termfold also supplies the required terminfo entry.
+Termfold must supply and validate the required private terminfo entry before using
+the custom `TERM` value.
 
 ## Input and Mouse
 

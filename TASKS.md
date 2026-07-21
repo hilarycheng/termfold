@@ -31,9 +31,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: none.
   - Done when: the minimal project structure and required build configuration exist.
 
-- [*] **T02 — Implement CLI and configuration**
-  - Implement the required commands, PID-prefix selector, defaults, session-name
-    validation, strict configuration parsing, and actionable errors.
+- [ ] **T02 — Implement CLI and configuration**
+  - Implement the required commands including `diagnose`, PID-prefix selector,
+    defaults, session-name validation, strict configuration parsing including
+    `terminal_profile` and `inner_term`, and actionable errors.
   - Requirements: Command-Line Contract; Configuration.
   - Depends on: T00, T01.
   - Done when: every documented command and configuration validation path behaves
@@ -46,9 +47,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: state transitions cannot violate the documented limits or hierarchy.
 
-- [*] **T04 — Implement secure runtime paths**
+- [ ] **T04 — Implement secure runtime paths**
   - Validate runtime-directory ownership and permissions, reject symlinks, create
-    the Unix socket securely, and handle stale sockets safely.
+    the Unix socket securely, handle stale sockets safely, and atomically
+    materialize and validate the private embedded terminfo entry.
   - Requirements: IPC and Filesystem Security.
   - Depends on: T01.
   - Done when: runtime paths and sockets meet every ownership, mode, and type rule.
@@ -61,10 +63,12 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: clients and server exchange only bounded, valid protocol messages,
     and one client failure cannot disrupt the session or another client.
 
-- [*] **T06 — Implement PTY and child-process lifecycle**
+- [ ] **T06 — Implement PTY and child-process lifecycle**
   - Launch the approved shell directly with the required environment and working
-    directory, propagate sizes, terminate gracefully, and reap every child.
-  - Requirements: Shell Launch; Session and Process Lifecycle.
+    directory, including the approved inner `TERM`, `COLORTERM`, and `TERMINFO`;
+    propagate sizes, terminate gracefully, and reap every child.
+  - Requirements: Shell Launch and Inner Terminal Identity; Session and Process
+    Lifecycle.
   - Depends on: T00, T01.
   - Done when: pane processes start, resize, terminate, and reap deterministically.
 
@@ -77,13 +81,17 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: sessions persist only while required, duplicate names are rejected
     per user, and concurrent same-user clients can share one session.
 
-- [*] **T08 — Implement the terminal parser and screen model**
+- [ ] **T08 — Implement the terminal parser and screen model**
   - Support the required UTF-8, cell-width, cursor, scrolling, editing, SGR, screen,
     input-mode, and escape-sequence behaviour with bounded parsing.
   - Ignore OSC 52 writes and safely discard unsupported or oversized sequences.
-  - Requirements: Terminal Behaviour; Resource Limits.
+  - Keep the embedded terminfo capabilities aligned with focused parser and
+    renderer checks.
+  - Requirements: Terminal Architecture; Inner Terminal Behaviour; Resource
+    Limits.
   - Depends on: T01.
-  - Done when: the advertised `xterm-256color` subset is represented correctly.
+  - Done when: the advertised `termfold-256color` subset is represented correctly
+    and every behaviour-changing capability has a mapped check.
 
 - [*] **T09 — Implement client terminal safety**
   - Manage terminal modes, alternate screen, resize signals, disconnects, normal
@@ -98,6 +106,16 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Requirements: Tabs and Panes; Status Bar.
   - Depends on: T03, T08, T09.
   - Done when: normal and narrow layouts preserve the specified visibility order.
+
+- [ ] **T10A — Implement outer-terminal compatibility**
+  - Add the required data-only terminal profiles, deterministic profile selection,
+    per-client capability handling, safe colour and attribute downgrade, and
+    rejection of terminals that cannot support the full-screen interface.
+  - Requirements: Terminal Architecture; Outer Terminal Capabilities and Profiles;
+    Colour and Attribute Adaptation; Terminal Diagnostics.
+  - Depends on: T02, T04, T06, T08, T09, T10.
+  - Done when: each supported client renders and restores according to its selected
+    profile, and `diagnose` reports the required decisions without exposing secrets.
 
 - [ ] **T11 — Implement keyboard input**
   - Forward bytes unchanged outside prefix mode and implement every required prefix
@@ -124,13 +142,21 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Verify attach/detach persistence, pane-exit cascading, resize propagation,
     bounded queues, SSH behaviour, WSL behaviour, and narrow-terminal handling.
   - Requirements: all first-release behavioural sections.
-  - Depends on: T07 through T13.
+  - Depends on: T07 through T13; T10A.
   - Done when: all components operate together without terminal or process leaks.
+
+- [ ] **T14A — Add required project acknowledgements**
+  - Document the required prior art accurately without implying endorsement,
+    affiliation, code reuse, or compatibility certification.
+  - Requirements: Prior Art and Acknowledgements.
+  - Depends on: none.
+  - Done when: project documentation credits zmx, tmux, xterm, and ncurses terminfo
+    documentation as specified.
 
 - [ ] **T15 — Perform release validation**
   - Run the approved formatting, lint, test, security, musl build, static-linkage,
     checksum, compatibility, and resource-measurement checks.
   - Requirements: Implementation and Acceptance; release checklist in `AGENTS.md`.
-  - Depends on: T00 through T14.
+  - Depends on: T00 through T14; T10A; T14A.
   - Done when: every approved budget and release-checklist item passes or has a
     documented blocker.
