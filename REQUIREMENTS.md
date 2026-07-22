@@ -42,6 +42,8 @@ The first release MUST NOT provide:
 - runtime executable plugins or a stable plugin ABI;
 - a web client or network listener;
 - AI-agent awareness or integration;
+- Termfold-owned OS clipboard integration, copy mode, or copy/paste buffers;
+- arbitrary user-defined key tables beyond the configurable prefix;
 - floating panes, sidebars, file browsers, or workspace/project management;
 - a layout or scripting language;
 - remote access, authentication, encryption, or network transport; or
@@ -57,6 +59,7 @@ Termfold itself MUST NOT require:
 - dynamically linked runtime libraries;
 - an init-system service;
 - external helper executables such as `tic`, `tput`, or `infocmp`;
+- clipboard helpers such as `xclip` or `wl-copy`;
 - runtime-loaded code plugins;
 - system-wide configuration files; or
 - a system terminfo database in order to start and operate.
@@ -83,7 +86,8 @@ The first release MUST provide:
 - PTY resize propagation;
 - a one-row bottom status bar;
 - configurable prefix, date, and time formats;
-- bounded scrollback;
+- bounded per-pane scrollback, a read-only scroll view, and explicit plain-text
+  scrollback export;
 - a self-contained inner terminal description;
 - safe adaptation to common outer terminal capabilities;
 - 16-colour, 256-colour, and true-colour rendering with safe downgrade;
@@ -197,7 +201,8 @@ unchanged to the active application. After a prefix:
 | `Ctrl`+Arrow | Resize by one cell |
 | `x` | Close active pane after confirmation |
 | `d` | Detach |
-| `[` | Enter scrollback mode |
+| `[` | Enter read-only scroll view |
+| `S` | Save the active pane's retained scrollback as plain text after prompting for a filename |
 
 An unsupported prefix command MUST show a short status message and MUST NOT be
 forwarded. Keyboard-only operation MUST remain complete when mouse support is
@@ -354,6 +359,22 @@ Mouse support is required but MUST default to disabled. When enabled, it MUST:
 All enabled outer-terminal mouse modes MUST be disabled during detach and cleanup.
 Each pane MUST retain at most 2,000 scrollback lines by default. The limit MUST be
 configurable and MUST discard the oldest complete lines first.
+
+The scroll view MUST allow the user to navigate the active pane's retained
+history without providing text selection, copy commands, paste commands, or
+tmux-style copy/paste buffers. Termfold MUST render that history as ordinary
+terminal cells so the outer terminal can provide its native text selection and
+OS clipboard behaviour.
+
+Termfold MUST NOT invoke OS clipboard helpers or implement its own OS clipboard
+integration. Paste input received from the outer terminal MUST be forwarded to
+the active application, using bracketed-paste markers only when that application
+has enabled bracketed paste.
+
+`Ctrl-b S` MUST prompt for a filename and save the active pane's retained
+scrollback as UTF-8 plain text. Cancelling the prompt MUST NOT create or modify a
+file. Export MUST be user-triggered rather than continuous logging and MUST omit
+terminal control sequences and styling.
 
 ## Status Bar
 
