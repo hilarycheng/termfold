@@ -128,17 +128,21 @@ This file tracks implementation work. Product behaviour remains authoritative in
 
 - [ ] **T11 — Implement keyboard input**
   - Forward bytes unchanged outside prefix mode and implement every required prefix
-    command, unsupported-command message, and close confirmation.
+    command, unsupported-command message, close confirmation, and the filename
+    prompt and cancellation path for `Ctrl-b S` scrollback export.
   - Requirements: Default Keys.
   - Depends on: T03, T06, T09.
   - Done when: keyboard-only operation covers all first-release actions.
 
 - [ ] **T12 — Implement bounded scrollback**
   - Retain complete lines up to the configured limit, discard oldest lines first,
-    and implement scrollback mode.
+    implement the read-only scroll view, and save the active pane's retained
+    scrollback as UTF-8 plain text without terminal control sequences or styling.
+    Cancelling the filename prompt must not create or modify a file.
   - Requirements: Mouse and Scrollback; Configuration; Resource Limits.
   - Depends on: T00, T08, T11.
-  - Done when: history remains bounded and navigable without corrupting pane output.
+  - Done when: history remains bounded and navigable without corrupting pane output,
+    and explicit export writes only the requested plain-text scrollback.
 
 - [ ] **T13 — Implement optional mouse input**
   - Keep mouse disabled by default; add SGR click, drag, wheel, tab selection, pane
