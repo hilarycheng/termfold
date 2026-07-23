@@ -54,7 +54,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T01.
   - Done when: runtime paths and sockets meet every ownership, mode, and type rule.
 
-- [ ] **T04A — Materialize private terminfo**
+- [*] **T04A — Materialize private terminfo**
   - Check in and embed the approved `termfold-256color` entry, then atomically
     materialize and validate it below the secure runtime directory without
     following symlinks or replacing a non-regular file.

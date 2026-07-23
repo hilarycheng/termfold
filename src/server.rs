@@ -109,7 +109,8 @@ pub fn run(
         .set_nonblocking(true)
         .map_err(|error| format!("cannot configure session listener: {error}"))?;
 
-    let context = LaunchContext::capture()
+    let terminfo_root = runtime.materialize_terminfo()?;
+    let context = LaunchContext::capture(terminfo_root)
         .map_err(|error| format!("cannot capture shell environment: {error}"))?;
     let mut session = Session::new(name);
     let first_pane = session

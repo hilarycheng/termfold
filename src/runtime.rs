@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     fs::{File, OpenOptions},
-    io::ErrorKind,
+    io::{ErrorKind, Read, Write},
     os::fd::AsRawFd,
     os::linux::fs::MetadataExt,
     os::unix::{
@@ -10,6 +10,8 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+
+const TERMINFO_ENTRY: &[u8] = include_bytes!("../terminfo/compiled/t/termfold-256color");
 
 #[derive(Clone, Debug)]
 pub struct RuntimeDir {
@@ -140,6 +142,58 @@ impl RuntimeDir {
         Ok(CreationLock(file))
     }
 
+    pub fn materialize_terminfo(&self) -> Result<PathBuf, String> {
+        let root = self.path.join("terminfo");
+        let entries = root.join("t");
+        ensure_private_dir(&root, self.uid)?;
+        ensure_private_dir(&entries, self.uid)?;
+        let target = entries.join("termfold-256color");
+
+        if validate_terminfo(&target, self.uid)? {
+            return Ok(root);
+        }
+
+        for attempt in 0..100 {
+            let temporary = entries.join(format!(
+                ".termfold-256color.{}.{}.tmp",
+                std::process::id(),
+                attempt
+            ));
+            let mut file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+                .open(&temporary)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!("cannot create private terminfo entry: {error}"));
+                }
+            };
+            let result = file
+                .write_all(TERMINFO_ENTRY)
+                .and_then(|()| file.sync_all())
+                .and_then(|()| fs::hard_link(&temporary, &target));
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+
+            match result {
+                Ok(()) => return validate_materialized_terminfo(&target, self.uid).map(|()| root),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    return validate_materialized_terminfo(&target, self.uid).map(|()| root);
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "cannot materialize private terminfo entry: {error}"
+                    ));
+                }
+            }
+        }
+        Err("cannot create a temporary private terminfo entry".into())
+    }
+
     pub fn uid(&self) -> u32 {
         self.uid
     }
@@ -237,6 +291,76 @@ fn ensure_private_dir(path: &Path, uid: u32) -> Result<(), String> {
             path.display()
         )),
     }
+}
+
+fn validate_terminfo(path: &Path, uid: u32) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => validate_materialized_terminfo(path, uid).map(|()| true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "cannot inspect private terminfo entry {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<(), String> {
+    let expected = fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "cannot inspect private terminfo entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if !expected.file_type().is_file()
+        || expected.st_uid() != uid
+        || expected.st_mode() & 0o777 != 0o600
+    {
+        return Err(format!(
+            "private terminfo entry {} must be a regular file owned by the current user with mode 0600",
+            path.display()
+        ));
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "cannot open private terminfo entry {}: {error}",
+                path.display()
+            )
+        })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "cannot inspect private terminfo entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.st_uid() != uid
+        || metadata.st_mode() & 0o777 != 0o600
+        || metadata.st_dev() != expected.st_dev()
+        || metadata.st_ino() != expected.st_ino()
+    {
+        return Err(format!(
+            "private terminfo entry {} must be a regular file owned by the current user with mode 0600",
+            path.display()
+        ));
+    }
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents).map_err(|error| {
+        format!(
+            "cannot read private terminfo entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if contents != TERMINFO_ENTRY {
+        return Err(format!(
+            "private terminfo entry {} does not match this Termfold binary",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn secure_socket(listener: UnixListener, path: PathBuf, uid: u32) -> Result<SessionSocket, String> {
@@ -399,5 +523,31 @@ mod tests {
         assert!(runtime.bind("work").is_err());
         fs::remove_file(socket).unwrap();
         fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn terminfo_is_materialized_atomically_and_rejects_invalid_entries() {
+        let path = test_path();
+        let uid = current_uid().unwrap();
+        ensure_private_dir(&path, uid).unwrap();
+        let runtime = RuntimeDir {
+            path: path.clone(),
+            uid,
+        };
+        let root = runtime.materialize_terminfo().unwrap();
+        let entry = root.join("t/termfold-256color");
+        assert_eq!(fs::read(&entry).unwrap(), TERMINFO_ENTRY);
+        assert_eq!(
+            fs::symlink_metadata(&entry).unwrap().st_mode() & 0o777,
+            0o600
+        );
+
+        fs::write(&entry, b"invalid").unwrap();
+        assert!(runtime.materialize_terminfo().is_err());
+        fs::remove_file(&entry).unwrap();
+        fs::create_dir(&entry).unwrap();
+        assert!(runtime.materialize_terminfo().is_err());
+        assert!(entry.is_dir());
+        fs::remove_dir_all(path).unwrap();
     }
 }
