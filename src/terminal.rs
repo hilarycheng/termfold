@@ -323,14 +323,12 @@ enum SequenceGuard {
 impl SequenceGuard {
     fn accept(&mut self, byte: u8) -> bool {
         match *self {
-            Self::Ground if byte == 0x1b => {
-                *self = Self::Sequence {
-                    kind: SequenceKind::Escape,
-                    length: 1,
-                };
+            Self::Ground => {
+                if let Some(kind) = sequence_start(byte) {
+                    *self = Self::Sequence { kind, length: 1 };
+                }
                 true
             }
-            Self::Ground => true,
             Self::Sequence { kind, length } => {
                 if length == MAX_CONTROL_SEQUENCE {
                     *self = if discarded_sequence_ended(kind, false, byte) {
@@ -362,9 +360,26 @@ impl SequenceGuard {
     }
 }
 
+fn sequence_start(byte: u8) -> Option<SequenceKind> {
+    match byte {
+        0x1b => Some(SequenceKind::Escape),
+        0x90 => Some(SequenceKind::Dcs),
+        0x98 | 0x9e | 0x9f => Some(SequenceKind::String),
+        0x9b => Some(SequenceKind::Csi),
+        0x9d => Some(SequenceKind::Osc),
+        _ => None,
+    }
+}
+
 fn next_sequence(kind: SequenceKind, length: usize, byte: u8) -> SequenceGuard {
     use SequenceGuard::{Ground, Sequence};
     use SequenceKind::{Csi, Dcs, Escape, Osc, String as ControlString};
+    if matches!(byte, 0x18 | 0x1a | 0x9c) {
+        return Ground;
+    }
+    if let Some(kind) = sequence_start(byte) {
+        return Sequence { kind, length: 1 };
+    }
     match kind {
         Escape => match byte {
             b'[' => Sequence { kind: Csi, length },
@@ -381,28 +396,23 @@ fn next_sequence(kind: SequenceKind, length: usize, byte: u8) -> SequenceGuard {
             _ => Ground,
         },
         Csi => match byte {
-            0x18 | 0x1a | 0x40..=0x7e => Ground,
-            0x1b => Sequence {
-                kind: Escape,
-                length: 1,
-            },
+            0x40..=0x7e => Ground,
             _ => Sequence { kind, length },
         },
         Osc if byte == 0x07 => Ground,
-        Osc | Dcs | ControlString if byte == 0x1b => Sequence {
-            kind: Escape,
-            length: 1,
-        },
         _ => Sequence { kind, length },
     }
 }
 
 fn discarded_sequence_ended(kind: SequenceKind, escaped: bool, byte: u8) -> bool {
+    if matches!(byte, 0x18 | 0x1a) {
+        return true;
+    }
     match kind {
         SequenceKind::Escape => (0x30..=0x7e).contains(&byte),
         SequenceKind::Csi => (0x40..=0x7e).contains(&byte) || matches!(byte, 0x18 | 0x1a),
-        SequenceKind::Osc => byte == 0x07 || escaped && byte == b'\\',
-        SequenceKind::Dcs | SequenceKind::String => escaped && byte == b'\\',
+        SequenceKind::Osc => byte == 0x07 || byte == 0x9c || escaped && byte == b'\\',
+        SequenceKind::Dcs | SequenceKind::String => byte == 0x9c || escaped && byte == b'\\',
     }
 }
 
@@ -1148,6 +1158,20 @@ mod tests {
         oversized_csi.extend_from_slice(b"mOK");
         terminal.advance(&oversized_csi);
         assert_eq!(line(&terminal, 0), "safeOK  ");
+
+        terminal.advance(&[0x9b]);
+        assert!(matches!(
+            terminal.guard,
+            SequenceGuard::Sequence {
+                kind: SequenceKind::Csi,
+                length: 1
+            }
+        ));
+        terminal.advance(b"\x18");
+        assert!(matches!(terminal.guard, SequenceGuard::Ground));
+
+        terminal.advance(b"\x1b]52;c;ignored\x1a");
+        assert!(matches!(terminal.guard, SequenceGuard::Ground));
     }
 
     #[test]
