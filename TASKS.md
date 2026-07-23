@@ -90,7 +90,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: sessions persist only while required, duplicate names are rejected
     per user, and concurrent same-user clients can share one session.
 
-- [ ] **T08 — Implement the terminal parser and screen model**
+- [*] **T08 — Implement the terminal parser and screen model**
   - Support the required UTF-8, cell-width, cursor, scrolling, editing, SGR, screen,
     input-mode, and escape-sequence behaviour with bounded parsing.
   - Ignore OSC 52 writes and safely discard unsupported or oversized sequences.
