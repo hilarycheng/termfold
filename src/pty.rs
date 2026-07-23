@@ -22,14 +22,16 @@ pub struct LaunchContext {
     shell: OsString,
     working_directory: PathBuf,
     environment: Vec<(OsString, OsString)>,
+    terminfo_root: PathBuf,
 }
 
 impl LaunchContext {
-    pub fn capture() -> io::Result<Self> {
+    pub fn capture(terminfo_root: PathBuf) -> io::Result<Self> {
         Ok(Self {
             shell: approved_shell(),
             working_directory: env::current_dir()?,
             environment: env::vars_os().collect(),
+            terminfo_root,
         })
     }
 
@@ -61,8 +63,9 @@ impl PtyChild {
             .current_dir(&context.working_directory)
             .env_clear()
             .envs(context.environment.iter().cloned())
-            .env("TERM", "xterm-256color")
+            .env("TERM", "termfold-256color")
             .env("COLORTERM", "truecolor")
+            .env("TERMINFO", &context.terminfo_root)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(slave));
@@ -302,8 +305,10 @@ mod tests {
             environment: vec![
                 ("TERM".into(), "wrong".into()),
                 ("COLORTERM".into(), "wrong".into()),
+                ("TERMINFO".into(), "wrong".into()),
                 ("TERMFOLD_TEST".into(), "inherited".into()),
             ],
+            terminfo_root: "/tmp/terminfo".into(),
         }
     }
 
@@ -349,10 +354,10 @@ mod tests {
         child
             .master()
             .write_all(
-                b"printf '%s|%s|%s|%s|' \"$PWD\" \"$TERM\" \"$COLORTERM\" \"$TERMFOLD_TEST\"; /bin/stty size; exit\n",
+                b"printf '%s|%s|%s|%s|%s|' \"$PWD\" \"$TERM\" \"$COLORTERM\" \"$TERMINFO\" \"$TERMFOLD_TEST\"; /bin/stty size; exit\n",
             )
             .unwrap();
-        let expected = b"/tmp|xterm-256color|truecolor|inherited|40 100";
+        let expected = b"/tmp|termfold-256color|truecolor|/tmp/terminfo|inherited|40 100";
         let output = read_until(&mut child, expected).unwrap();
         assert!(
             output
