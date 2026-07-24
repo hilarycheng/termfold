@@ -2,6 +2,7 @@
 mod client;
 mod config;
 pub mod ipc;
+mod outer;
 #[cfg(target_os = "linux")]
 pub mod pty;
 #[cfg(target_os = "linux")]
@@ -71,7 +72,7 @@ fn run() -> Result<(), String> {
     let config = config::Config::load()?;
 
     if matches!(command, Command::Diagnose) {
-        return Err("terminal diagnostics are not available in this build".into());
+        return diagnose(&config);
     }
 
     #[cfg(target_os = "linux")]
@@ -87,18 +88,18 @@ fn run() -> Result<(), String> {
         config.prefix,
         config.mouse,
         config.scrollback_lines,
-        config.date_format,
-        config.time_format,
+        &config.date_format,
+        &config.time_format,
     );
 
     #[cfg(target_os = "linux")]
     {
         let runtime = runtime::RuntimeDir::discover()?;
         match command {
-            Command::Select => select(&runtime),
-            Command::SelectPid(prefix) => select_pid(&runtime, &prefix),
-            Command::New(name) => client::create_and_attach(&runtime, &name),
-            Command::Attach(name) => client::attach(&runtime, &name),
+            Command::Select => select(&runtime, &config),
+            Command::SelectPid(prefix) => select_pid(&runtime, &prefix, &config),
+            Command::New(name) => client::create_and_attach(&runtime, &name, &config),
+            Command::Attach(name) => client::attach(&runtime, &name, &config),
             Command::List => list(&runtime),
             Command::Kill(name) => client::kill(&runtime, &name),
             Command::Help | Command::Version | Command::Diagnose | Command::Server { .. } => {
@@ -112,16 +113,16 @@ fn run() -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn select(runtime: &runtime::RuntimeDir) -> Result<(), String> {
+fn select(runtime: &runtime::RuntimeDir, config: &config::Config) -> Result<(), String> {
     let sessions = client::discover(runtime)?;
     let detached = sessions
         .iter()
         .filter(|session| !session.is_attached())
         .collect::<Vec<_>>();
     if sessions.is_empty() {
-        client::create_and_attach(runtime, "default")
+        client::create_and_attach(runtime, "default", config)
     } else if detached.len() == 1 {
-        client::attach(runtime, &detached[0].name)
+        client::attach(runtime, &detached[0].name, config)
     } else {
         print_sessions(&sessions);
         Ok(())
@@ -129,14 +130,18 @@ fn select(runtime: &runtime::RuntimeDir) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn select_pid(runtime: &runtime::RuntimeDir, prefix: &str) -> Result<(), String> {
+fn select_pid(
+    runtime: &runtime::RuntimeDir,
+    prefix: &str,
+    config: &config::Config,
+) -> Result<(), String> {
     let sessions = client::discover(runtime)?;
     let matches = sessions
         .iter()
         .filter(|session| !session.is_attached() && session.pid.to_string().starts_with(prefix))
         .collect::<Vec<_>>();
     if matches.len() == 1 {
-        client::attach(runtime, &matches[0].name)
+        client::attach(runtime, &matches[0].name, config)
     } else {
         print_sessions(&sessions);
         Ok(())
@@ -159,6 +164,74 @@ fn print_sessions(sessions: &[client::SessionInfo]) {
         };
         println!("{} {} {state}", session.pid, session.name);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn diagnose(config: &config::Config) -> Result<(), String> {
+    let term = env::var_os("TERM").unwrap_or_default();
+    let colorterm = env::var_os("COLORTERM").unwrap_or_default();
+    let selected = outer::select(
+        &config.terminal_profile,
+        &term.to_string_lossy(),
+        &colorterm.to_string_lossy(),
+    );
+    let capabilities = selected.capabilities;
+    let runtime = runtime::RuntimeDir::discover()?;
+    let expected_terminfo = runtime.path().join("terminfo");
+    let (terminfo, validation) = match runtime.materialize_terminfo() {
+        Ok(path) => (path, "valid".to_owned()),
+        Err(error) => (expected_terminfo, format!("invalid: {error}")),
+    };
+    let size = client::terminal_size();
+
+    println!("outer TERM: {:?}", term.to_string_lossy());
+    println!("outer COLORTERM: {:?}", colorterm.to_string_lossy());
+    println!(
+        "outer profile: {} ({})",
+        capabilities.profile.name(),
+        selected.reason.name()
+    );
+    println!("colour level: {}", color_level_name(capabilities.color));
+    println!(
+        "mouse support: {} (configured {})",
+        yes_no(capabilities.mouse),
+        if config.mouse { "on" } else { "off" }
+    );
+    println!(
+        "alternate-screen support: {}",
+        yes_no(capabilities.alternate_screen)
+    );
+    println!("inner TERM: {}", config.inner_term);
+    println!("private TERMINFO: {}", terminfo.display());
+    println!("private TERMINFO validation: {validation}");
+    println!(
+        "terminal size: {} columns, {} rows",
+        size.columns, size.rows
+    );
+    println!(
+        "Termfold: {} {}",
+        env!("CARGO_PKG_VERSION"),
+        env::consts::ARCH
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn diagnose(_: &config::Config) -> Result<(), String> {
+    Err("termfold requires Linux".into())
+}
+
+fn color_level_name(level: outer::ColorLevel) -> &'static str {
+    match level {
+        outer::ColorLevel::Monochrome => "monochrome",
+        outer::ColorLevel::Ansi16 => "16 colours",
+        outer::ColorLevel::Indexed256 => "256 colours",
+        outer::ColorLevel::TrueColor => "true colour",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {

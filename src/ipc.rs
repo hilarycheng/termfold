@@ -5,7 +5,7 @@ use std::{
     io::{self, Read, Write},
 };
 
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_QUEUE_ITEMS: usize = 256;
 pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
@@ -15,15 +15,26 @@ const HEADER_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
-    Attach { columns: u16, rows: u16 },
+    Attach {
+        columns: u16,
+        rows: u16,
+        profile: u8,
+        color: u8,
+    },
     Detach,
     Input(Vec<u8>),
-    Resize { columns: u16, rows: u16 },
+    Resize {
+        columns: u16,
+        rows: u16,
+    },
     Attached,
     Screen(Vec<u8>),
     Error(String),
     StatusRequest,
-    Status { pid: u32, attached_clients: u32 },
+    Status {
+        pid: u32,
+        attached_clients: u32,
+    },
     Kill,
     Terminating,
 }
@@ -150,7 +161,8 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
         Message::Terminating => (11, &[]),
     };
     let fixed_len = match message {
-        Message::Attach { .. } | Message::Resize { .. } => 4,
+        Message::Attach { .. } => 6,
+        Message::Resize { .. } => 4,
         Message::Status { .. } => 8,
         _ => 0,
     };
@@ -163,7 +175,18 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
     frame.extend_from_slice(&(body_len as u32).to_be_bytes());
     frame.extend_from_slice(&[PROTOCOL_VERSION, kind]);
     match message {
-        Message::Attach { columns, rows } | Message::Resize { columns, rows } => {
+        Message::Attach {
+            columns,
+            rows,
+            profile,
+            color,
+        } => {
+            valid_size(*columns, *rows)?;
+            frame.extend_from_slice(&columns.to_be_bytes());
+            frame.extend_from_slice(&rows.to_be_bytes());
+            frame.extend_from_slice(&[*profile, *color]);
+        }
+        Message::Resize { columns, rows } => {
             valid_size(*columns, *rows)?;
             frame.extend_from_slice(&columns.to_be_bytes());
             frame.extend_from_slice(&rows.to_be_bytes());
@@ -187,8 +210,18 @@ fn decode(body: &[u8]) -> Result<Message, ProtocolError> {
     let payload = &body[HEADER_SIZE..];
     match body[1] {
         1 => {
-            let (columns, rows) = decode_size(payload)?;
-            Ok(Message::Attach { columns, rows })
+            if payload.len() != 6 {
+                return Err(ProtocolError::Malformed(
+                    "attach must contain terminal size and profile",
+                ));
+            }
+            let (columns, rows) = decode_size(&payload[..4])?;
+            Ok(Message::Attach {
+                columns,
+                rows,
+                profile: payload[4],
+                color: payload[5],
+            })
         }
         2 if payload.is_empty() => Ok(Message::Detach),
         3 => Ok(Message::Input(payload.to_vec())),
@@ -246,6 +279,8 @@ mod tests {
             Message::Attach {
                 columns: 80,
                 rows: 24,
+                profile: 5,
+                color: 2,
             },
             Message::Input(vec![0, 1, 255]),
             Message::Resize {

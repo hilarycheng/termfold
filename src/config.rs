@@ -206,10 +206,10 @@ fn parse_format(field: &str, value: &str) -> Result<String, String> {
 
 fn parse_profile(field: &str, value: &str) -> Result<String, String> {
     let value = parse_string(field, value)?;
-    match value.as_str() {
-        "auto" | "dumb" | "ansi" | "vt100" | "linux" | "xterm" | "xterm-256color"
-        | "screen" | "screen-256color" | "tmux" | "tmux-256color" => Ok(value),
-        _ => Err(field_error(field, "unknown built-in terminal profile")),
+    if value == "auto" || crate::outer::built_in(&value).is_some() {
+        Ok(value)
+    } else {
+        Err(field_error(field, "unknown built-in terminal profile"))
     }
 }
 
@@ -231,10 +231,9 @@ mod tests {
 
     #[test]
     fn parses_terminal_configuration_and_rejects_invalid_values() {
-        let config = Config::parse(
-            "terminal_profile = \"tmux-256color\"\ninner_term = \"xterm-256color\"",
-        )
-        .unwrap();
+        let config =
+            Config::parse("terminal_profile = \"tmux-256color\"\ninner_term = \"xterm-256color\"")
+                .unwrap();
         assert_eq!(config.terminal_profile, "tmux-256color");
         assert_eq!(config.inner_term, "xterm-256color");
 

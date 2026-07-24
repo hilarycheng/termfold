@@ -11,6 +11,7 @@ use std::{
 use crate::{
     config::Config,
     ipc::{self, Message},
+    outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
     render::{self, Clock},
     runtime::{self, RuntimeDir},
@@ -36,6 +37,7 @@ struct Client {
     pending_control: Option<Message>,
     attached: bool,
     size: Option<Size>,
+    capabilities: Option<Capabilities>,
 }
 
 struct PaneProcess {
@@ -93,8 +95,7 @@ impl PendingInput {
 }
 
 struct PendingBroadcast {
-    bytes: Vec<u8>,
-    remaining: Vec<u64>,
+    frames: Vec<(u64, Vec<u8>)>,
 }
 
 pub fn run(
@@ -110,7 +111,7 @@ pub fn run(
         .map_err(|error| format!("cannot configure session listener: {error}"))?;
 
     let terminfo_root = runtime.materialize_terminfo()?;
-    let context = LaunchContext::capture(terminfo_root)
+    let context = LaunchContext::capture(terminfo_root, config.inner_term.clone())
         .map_err(|error| format!("cannot capture shell environment: {error}"))?;
     let mut session = Session::new(name);
     let first_pane = session
@@ -201,50 +202,82 @@ pub fn run(
                 .iter()
                 .map(|pane| (pane.id, &pane.terminal))
                 .collect::<Vec<_>>();
-            let bytes = if full_dirty {
+            let targets = clients
+                .iter()
+                .filter_map(|client| {
+                    client
+                        .capabilities
+                        .map(|capabilities| (client.id, capabilities))
+                })
+                .collect::<Vec<_>>();
+            let frames = if full_dirty {
                 full_dirty = false;
                 content_dirty = false;
                 rendered_clock = Some(key);
-                let bytes = render::full(
-                    &session,
-                    &pane_screens,
-                    authoritative_size,
-                    Clock {
-                        date_format: &config.date_format,
-                        time_format: &config.time_format,
-                    },
-                );
+                let frames = targets
+                    .iter()
+                    .map(|(id, capabilities)| {
+                        (
+                            *id,
+                            render::full(
+                                &session,
+                                &pane_screens,
+                                authoritative_size,
+                                Clock {
+                                    date_format: &config.date_format,
+                                    time_format: &config.time_format,
+                                },
+                                *capabilities,
+                            ),
+                        )
+                    })
+                    .collect();
                 snapshot = render::snapshot(&pane_screens);
-                Some(bytes)
+                Some(frames)
             } else if content_dirty {
                 content_dirty = false;
-                Some(render::changes(
-                    &session,
-                    &pane_screens,
-                    authoritative_size,
-                    &mut snapshot,
-                ))
+                let frames = targets
+                    .iter()
+                    .map(|(id, capabilities)| {
+                        (
+                            *id,
+                            render::changes(
+                                &session,
+                                &pane_screens,
+                                authoritative_size,
+                                &snapshot,
+                                *capabilities,
+                            ),
+                        )
+                    })
+                    .collect();
+                snapshot = render::snapshot(&pane_screens);
+                Some(frames)
             } else if rendered_clock != Some(key) {
                 rendered_clock = Some(key);
-                Some(render::status(
-                    &session,
-                    authoritative_size,
-                    &config.date_format,
-                    &config.time_format,
-                    true,
-                ))
+                Some(
+                    targets
+                        .iter()
+                        .map(|(id, capabilities)| {
+                            (
+                                *id,
+                                render::status(
+                                    &session,
+                                    authoritative_size,
+                                    &config.date_format,
+                                    &config.time_format,
+                                    true,
+                                    *capabilities,
+                                ),
+                            )
+                        })
+                        .collect(),
+                )
             } else {
                 None
             };
-            if let Some(bytes) = bytes {
-                pending_broadcast = Some(PendingBroadcast {
-                    bytes,
-                    remaining: clients
-                        .iter()
-                        .filter(|client| client.attached)
-                        .map(|client| client.id)
-                        .collect(),
-                });
+            if let Some(frames) = frames {
+                pending_broadcast = Some(PendingBroadcast { frames });
                 flush_broadcast(&mut pending_broadcast, &clients);
             }
         }
@@ -316,6 +349,7 @@ fn accept_clients(
             pending_control: None,
             attached: false,
             size: None,
+            capabilities: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
     }
@@ -370,7 +404,31 @@ fn handle_message(
     full_dirty: &mut bool,
 ) -> bool {
     match message {
-        Message::Attach { columns, rows } => {
+        Message::Attach {
+            columns,
+            rows,
+            profile,
+            color,
+        } => {
+            let Some(capabilities) = outer::from_wire(profile, color) else {
+                queue_control(
+                    clients,
+                    client_id,
+                    Message::Error("invalid outer-terminal profile".into()),
+                );
+                return false;
+            };
+            if !capabilities.cursor_addressing {
+                queue_control(
+                    clients,
+                    client_id,
+                    Message::Error(format!(
+                        "outer terminal '{}' lacks cursor addressing",
+                        capabilities.profile.name()
+                    )),
+                );
+                return false;
+            }
             let size = Size { columns, rows };
             if resize_all(session, panes, size, *authoritative_size).is_err() {
                 queue_control(
@@ -384,6 +442,7 @@ fn handle_message(
             if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
                 client.attached = true;
                 client.size = Some(size);
+                client.capabilities = Some(capabilities);
             }
             queue_control(clients, client_id, Message::Attached);
             *full_dirty = true;
@@ -538,22 +597,19 @@ fn flush_broadcast(pending: &mut Option<PendingBroadcast>, clients: &[Client]) {
     let Some(broadcast) = pending else {
         return;
     };
-    broadcast.remaining.retain(|client_id| {
+    broadcast.frames.retain(|(client_id, bytes)| {
         let Some(client) = clients
             .iter()
             .find(|client| client.id == *client_id && client.attached)
         else {
             return false;
         };
-        match client
-            .outbound
-            .try_send(Message::Screen(broadcast.bytes.clone()))
-        {
+        match client.outbound.try_send(Message::Screen(bytes.clone())) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => false,
             Err(TrySendError::Full(_)) => true,
         }
     });
-    if broadcast.remaining.is_empty() {
+    if broadcast.frames.is_empty() {
         *pending = None;
     }
 }
