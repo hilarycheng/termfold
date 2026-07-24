@@ -12,7 +12,9 @@ use std::{
 };
 
 use crate::{
+    config::Config,
     ipc::{self, Message},
+    outer::{self, Capabilities},
     runtime::RuntimeDir,
     session::{MAX_SESSIONS_PER_USER, Size},
 };
@@ -20,8 +22,6 @@ use crate::{
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
 const ENTER_TERMINAL: &[u8] = b"\x1b[?1049h";
-const RESTORE_TERMINAL: &[u8] =
-    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l";
 const SIGNALS: [libc::c_int; 5] = [
     libc::SIGWINCH,
     libc::SIGHUP,
@@ -36,21 +36,26 @@ struct TerminalRestorer {
     input: libc::c_int,
     output: libc::c_int,
     original: libc::termios,
+    restore: Vec<u8>,
     restored: AtomicBool,
 }
 
 impl TerminalGuard {
-    fn enter() -> Result<Option<Self>, String> {
+    fn enter(capabilities: Capabilities) -> Result<Option<Self>, String> {
         // SAFETY: isatty only inspects the supplied live file descriptors.
         if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
             || unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1
         {
             return Ok(None);
         }
-        Self::enter_on(libc::STDIN_FILENO, libc::STDOUT_FILENO).map(Some)
+        Self::enter_on(libc::STDIN_FILENO, libc::STDOUT_FILENO, capabilities).map(Some)
     }
 
-    fn enter_on(input: libc::c_int, output: libc::c_int) -> Result<Self, String> {
+    fn enter_on(
+        input: libc::c_int,
+        output: libc::c_int,
+        capabilities: Capabilities,
+    ) -> Result<Self, String> {
         // SAFETY: termios is initialized by tcgetattr before it is read.
         let mut original = unsafe { std::mem::zeroed() };
         // SAFETY: input is a live terminal descriptor and original is writable.
@@ -75,9 +80,17 @@ impl TerminalGuard {
             input,
             output,
             original,
+            restore: restore_sequence(capabilities),
             restored: AtomicBool::new(false),
         });
-        if let Err(error) = write_fd(output, ENTER_TERMINAL) {
+        if let Err(error) = write_fd(
+            output,
+            if capabilities.alternate_screen {
+                ENTER_TERMINAL
+            } else {
+                &[]
+            },
+        ) {
             restorer.restore();
             return Err(format!("cannot enter alternate screen: {error}"));
         }
@@ -96,10 +109,25 @@ impl TerminalRestorer {
         if self.restored.swap(true, Ordering::AcqRel) {
             return;
         }
-        let _ = write_fd(self.output, RESTORE_TERMINAL);
+        let _ = write_fd(self.output, &self.restore);
         // SAFETY: input remains owned by the process and original came from tcgetattr.
         unsafe { libc::tcsetattr(self.input, libc::TCSAFLUSH, &self.original) };
     }
+}
+
+fn restore_sequence(capabilities: Capabilities) -> Vec<u8> {
+    let mut output = Vec::new();
+    if capabilities.mouse {
+        output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+    }
+    output.extend_from_slice(b"\x1b[?2004l\x1b[0m");
+    if capabilities.cursor_visibility {
+        output.extend_from_slice(b"\x1b[?25h");
+    }
+    if capabilities.alternate_screen {
+        output.extend_from_slice(b"\x1b[?1049l");
+    }
+    output
 }
 
 struct BlockedSignals {
@@ -252,7 +280,12 @@ pub fn discover(runtime: &RuntimeDir) -> Result<Vec<SessionInfo>, String> {
     Ok(sessions)
 }
 
-pub fn create_and_attach(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
+pub fn create_and_attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), String> {
+    if config.inner_term == "xterm-256color" {
+        eprintln!(
+            "termfold: warning: inner_term=xterm-256color advertises capabilities beyond Termfold's native contract"
+        );
+    }
     let creation_lock = runtime.lock_creation()?;
     let sessions = discover(runtime)?;
     if sessions.iter().any(|session| session.name == name) {
@@ -290,14 +323,26 @@ pub fn create_and_attach(runtime: &RuntimeDir, name: &str) -> Result<(), String>
         }
     }
     drop(creation_lock);
-    let result = attach(runtime, name);
+    let result = attach(runtime, name, config);
     if child.try_wait().ok().flatten().is_some() {
         let _ = child.wait();
     }
     result
 }
 
-pub fn attach(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
+pub fn attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), String> {
+    let selection = outer::select(
+        &config.terminal_profile,
+        &std::env::var("TERM").unwrap_or_default(),
+        &std::env::var("COLORTERM").unwrap_or_default(),
+    );
+    let capabilities = selection.capabilities;
+    if !capabilities.cursor_addressing {
+        return Err(format!(
+            "outer terminal '{}' lacks cursor addressing; set TERM to a full-screen terminal",
+            capabilities.profile.name()
+        ));
+    }
     let mut stream = runtime.connect(name)?;
     let size = terminal_size();
     ipc::write_message(
@@ -305,6 +350,8 @@ pub fn attach(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
         &Message::Attach {
             columns: size.columns,
             rows: size.rows,
+            profile: capabilities.profile as u8,
+            color: capabilities.color as u8,
         },
     )
     .map_err(|error| error.to_string())?;
@@ -316,7 +363,7 @@ pub fn attach(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
     }
 
     let blocked_signals = BlockedSignals::block()?;
-    let terminal = TerminalGuard::enter()?;
+    let terminal = TerminalGuard::enter(capabilities)?;
     if let Some(terminal) = &terminal {
         let restorer = Arc::clone(&terminal.0);
         let previous = panic::take_hook();
@@ -450,7 +497,7 @@ fn spawn_server(name: &str, size: Size) -> Result<Child, String> {
         .map_err(|error| format!("cannot start session server: {error}"))
 }
 
-fn terminal_size() -> Size {
+pub(crate) fn terminal_size() -> Size {
     let mut window = libc::winsize {
         ws_row: 0,
         ws_col: 0,
@@ -487,16 +534,19 @@ mod tests {
         let (mut master, slave) = open_pty();
         let original = termios(slave.as_raw_fd());
 
-        let guard = TerminalGuard::enter_on(slave.as_raw_fd(), slave.as_raw_fd()).unwrap();
+        let capabilities = outer::select("auto", "xterm-256color", "").capabilities;
+        let expected_restore = restore_sequence(capabilities);
+        let guard =
+            TerminalGuard::enter_on(slave.as_raw_fd(), slave.as_raw_fd(), capabilities).unwrap();
         let mut entered = vec![0; ENTER_TERMINAL.len()];
         master.read_exact(&mut entered).unwrap();
         assert_eq!(entered, ENTER_TERMINAL);
         assert_eq!(termios(slave.as_raw_fd()).c_lflag & libc::ICANON, 0);
 
         drop(guard);
-        let mut restored_output = vec![0; RESTORE_TERMINAL.len()];
+        let mut restored_output = vec![0; expected_restore.len()];
         master.read_exact(&mut restored_output).unwrap();
-        assert_eq!(restored_output, RESTORE_TERMINAL);
+        assert_eq!(restored_output, expected_restore);
         let restored = termios(slave.as_raw_fd());
         assert_eq!(restored.c_iflag, original.c_iflag);
         assert_eq!(restored.c_oflag, original.c_oflag);

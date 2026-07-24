@@ -23,15 +23,17 @@ pub struct LaunchContext {
     working_directory: PathBuf,
     environment: Vec<(OsString, OsString)>,
     terminfo_root: PathBuf,
+    inner_term: String,
 }
 
 impl LaunchContext {
-    pub fn capture(terminfo_root: PathBuf) -> io::Result<Self> {
+    pub fn capture(terminfo_root: PathBuf, inner_term: String) -> io::Result<Self> {
         Ok(Self {
             shell: approved_shell(),
             working_directory: env::current_dir()?,
             environment: env::vars_os().collect(),
             terminfo_root,
+            inner_term,
         })
     }
 
@@ -63,7 +65,7 @@ impl PtyChild {
             .current_dir(&context.working_directory)
             .env_clear()
             .envs(context.environment.iter().cloned())
-            .env("TERM", "termfold-256color")
+            .env("TERM", &context.inner_term)
             .env("COLORTERM", "truecolor")
             .env("TERMINFO", &context.terminfo_root)
             .stdin(Stdio::from(stdin))
@@ -309,6 +311,7 @@ mod tests {
                 ("TERMFOLD_TEST".into(), "inherited".into()),
             ],
             terminfo_root: "/tmp/terminfo".into(),
+            inner_term: "termfold-256color".into(),
         }
     }
 

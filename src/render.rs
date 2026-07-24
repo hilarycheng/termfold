@@ -3,6 +3,7 @@ use std::{ffi::CString, fmt::Write as _, io::Write as _, time::SystemTime};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
+    outer::{Capabilities, ColorLevel},
     session::{PaneId, Rect, Session, Size},
     terminal::{Attributes, Cell, Color, Terminal},
 };
@@ -27,8 +28,13 @@ pub fn full(
     panes: &[(PaneId, &Terminal)],
     size: Size,
     clock: Clock<'_>,
+    capabilities: Capabilities,
 ) -> Vec<u8> {
-    let mut output = b"\x1b[?25l\x1b[H\x1b[2J".to_vec();
+    let mut output = if capabilities.cursor_visibility {
+        b"\x1b[?25l\x1b[H\x1b[2J".to_vec()
+    } else {
+        b"\x1b[H\x1b[2J".to_vec()
+    };
     let content_rows = size.rows.saturating_sub(1);
     let rects = session.pane_rects(Size {
         columns: size.columns.max(1),
@@ -45,7 +51,12 @@ pub fn full(
             {
                 let cell =
                     &terminal.screen().rows()[usize::from(y - rect.y)][usize::from(x - rect.x)];
-                set_attributes(&mut output, &mut attributes, cell.attributes());
+                set_attributes(
+                    &mut output,
+                    &mut attributes,
+                    cell.attributes(),
+                    capabilities,
+                );
                 if !cell.is_continuation() {
                     push_char(&mut output, cell.character());
                     output.extend_from_slice(cell.combining().as_bytes());
@@ -53,7 +64,12 @@ pub fn full(
                 continue;
             }
 
-            set_attributes(&mut output, &mut attributes, Attributes::default());
+            set_attributes(
+                &mut output,
+                &mut attributes,
+                Attributes::default(),
+                capabilities,
+            );
             output.push(border(&rects, active, x, y));
         }
     }
@@ -64,8 +80,9 @@ pub fn full(
         clock.date_format,
         clock.time_format,
         false,
+        capabilities,
     ));
-    place_cursor(&mut output, active, &rects, panes);
+    place_cursor(&mut output, active, &rects, panes, capabilities);
     output
 }
 
@@ -80,13 +97,18 @@ pub fn changes(
     session: &Session,
     panes: &[(PaneId, &Terminal)],
     size: Size,
-    previous: &mut Snapshot,
+    previous: &Snapshot,
+    capabilities: Capabilities,
 ) -> Vec<u8> {
     let rects = session.pane_rects(Size {
         columns: size.columns.max(1),
         rows: size.rows.saturating_sub(1).max(1),
     });
-    let mut output = b"\x1b[?25l".to_vec();
+    let mut output = if capabilities.cursor_visibility {
+        b"\x1b[?25l".to_vec()
+    } else {
+        Vec::new()
+    };
     let mut attributes = None;
 
     for (pane, terminal) in panes {
@@ -108,16 +130,26 @@ pub fn changes(
                     rect.y.saturating_add(y as u16),
                     rect.x.saturating_add(x as u16),
                 );
-                set_attributes(&mut output, &mut attributes, cell.attributes());
+                set_attributes(
+                    &mut output,
+                    &mut attributes,
+                    cell.attributes(),
+                    capabilities,
+                );
                 push_char(&mut output, cell.character());
                 output.extend_from_slice(cell.combining().as_bytes());
             }
         }
     }
 
-    *previous = snapshot(panes);
     output.extend_from_slice(b"\x1b[0m");
-    place_cursor(&mut output, session.active_pane(), &rects, panes);
+    place_cursor(
+        &mut output,
+        session.active_pane(),
+        &rects,
+        panes,
+        capabilities,
+    );
     output
 }
 
@@ -127,6 +159,7 @@ pub fn status(
     date_format: &str,
     time_format: &str,
     preserve_cursor: bool,
+    capabilities: Capabilities,
 ) -> Vec<u8> {
     let width = usize::from(size.columns);
     let (date, time) = format_clock(date_format, time_format);
@@ -143,14 +176,20 @@ pub fn status(
         output.extend_from_slice(b"\x1b7");
     }
     move_cursor(&mut output, size.rows.saturating_sub(1), 0);
-    output.extend_from_slice(b"\x1b[0;7m");
+    let mut attributes = None;
     let mut used = 0;
     for (text, active) in segments {
-        output.extend_from_slice(if active {
-            b"\x1b[0;1;4;7m"
-        } else {
-            b"\x1b[0;7m"
-        });
+        set_attributes(
+            &mut output,
+            &mut attributes,
+            Attributes {
+                bold: active,
+                underline: active,
+                inverse: true,
+                ..Attributes::default()
+            },
+            capabilities,
+        );
         output.extend_from_slice(text.as_bytes());
         used += text_width(&text);
     }
@@ -296,7 +335,13 @@ fn border(rects: &[(PaneId, Rect)], active: Option<PaneId>, x: u16, y: u16) -> u
     }
 }
 
-fn set_attributes(output: &mut Vec<u8>, current: &mut Option<Attributes>, wanted: Attributes) {
+fn set_attributes(
+    output: &mut Vec<u8>,
+    current: &mut Option<Attributes>,
+    wanted: Attributes,
+    capabilities: Capabilities,
+) {
+    let wanted = adapt_attributes(wanted, capabilities);
     if *current == Some(wanted) {
         return;
     }
@@ -321,6 +366,66 @@ fn set_attributes(output: &mut Vec<u8>, current: &mut Option<Attributes>, wanted
     push_color(&mut sequence, wanted.underline_color, 58, 0, 0);
     sequence.push('m');
     output.extend_from_slice(sequence.as_bytes());
+}
+
+fn adapt_attributes(mut wanted: Attributes, capabilities: Capabilities) -> Attributes {
+    if capabilities.color == ColorLevel::Monochrome {
+        wanted.bold |= wanted.foreground != Color::Default;
+        wanted.inverse |= wanted.background != Color::Default;
+    }
+    wanted.foreground = adapt_color(wanted.foreground, capabilities.color);
+    wanted.background = adapt_color(wanted.background, capabilities.color);
+    wanted.underline_color = if capabilities.color >= ColorLevel::Indexed256 {
+        adapt_color(wanted.underline_color, capabilities.color)
+    } else {
+        Color::Default
+    };
+    wanted.faint &= capabilities.faint;
+    wanted.italic &= capabilities.italic;
+    wanted.blink &= capabilities.blink;
+    wanted.strike &= capabilities.strike;
+    wanted
+}
+
+fn adapt_color(color: Color, level: ColorLevel) -> Color {
+    match (color, level) {
+        (Color::Default, _) | (_, ColorLevel::Monochrome) => Color::Default,
+        (Color::Indexed(index @ 0..=15), ColorLevel::Ansi16) => Color::Indexed(index),
+        (Color::Indexed(index), ColorLevel::Ansi16) => {
+            let (red, green, blue) = indexed_rgb(index);
+            Color::Indexed(rgb_ansi(red, green, blue))
+        }
+        (Color::Rgb(red, green, blue), ColorLevel::Ansi16) => {
+            Color::Indexed(rgb_ansi(red, green, blue))
+        }
+        (Color::Rgb(red, green, blue), ColorLevel::Indexed256) => {
+            Color::Indexed(16 + 36 * cube(red) + 6 * cube(green) + cube(blue))
+        }
+        (color, ColorLevel::Indexed256 | ColorLevel::TrueColor) => color,
+    }
+}
+
+fn cube(value: u8) -> u8 {
+    ((u16::from(value) * 5 + 127) / 255) as u8
+}
+
+fn rgb_ansi(red: u8, green: u8, blue: u8) -> u8 {
+    let bright = u8::from(red.max(green).max(blue) >= 192) * 8;
+    bright + u8::from(red >= 128) + 2 * u8::from(green >= 128) + 4 * u8::from(blue >= 128)
+}
+
+fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+    if index >= 232 {
+        let value = 8 + (index - 232) * 10;
+        return (value, value, value);
+    }
+    let index = index.saturating_sub(16);
+    let component = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+    (
+        component(index / 36),
+        component(index % 36 / 6),
+        component(index % 6),
+    )
 }
 
 fn push_color(output: &mut String, color: Color, extended: u8, normal: u8, bright: u8) {
@@ -350,6 +455,7 @@ fn place_cursor(
     active: Option<PaneId>,
     rects: &[(PaneId, Rect)],
     panes: &[(PaneId, &Terminal)],
+    capabilities: Capabilities,
 ) {
     let Some(active) = active else {
         return;
@@ -366,11 +472,13 @@ fn place_cursor(
         rect.y.saturating_add(cursor.row as u16),
         rect.x.saturating_add(cursor.column as u16),
     );
-    output.extend_from_slice(if terminal.modes().cursor_visible {
-        b"\x1b[?25h"
-    } else {
-        b"\x1b[?25l"
-    });
+    if capabilities.cursor_visibility {
+        output.extend_from_slice(if terminal.modes().cursor_visible {
+            b"\x1b[?25h"
+        } else {
+            b"\x1b[?25l"
+        });
+    }
 }
 
 fn push_char(output: &mut Vec<u8>, character: char) {
@@ -404,6 +512,10 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn capabilities() -> Capabilities {
+        crate::outer::select("auto", "xterm-256color", "truecolor").capabilities
+    }
 
     #[test]
     fn status_keeps_active_then_time_then_session_when_narrow() {
@@ -472,6 +584,7 @@ mod tests {
                 date_format: "%Y-%m-%d",
                 time_format: "%H:%M",
             },
+            capabilities(),
         );
         let output = String::from_utf8_lossy(&output);
         assert!(output.contains("hello"));
@@ -488,7 +601,7 @@ mod tests {
             rows: 2,
         })
         .unwrap();
-        let mut previous = snapshot(&[(pane, &terminal)]);
+        let previous = snapshot(&[(pane, &terminal)]);
         terminal.advance(b"\x1b[2;3HX");
 
         let output = changes(
@@ -498,7 +611,8 @@ mod tests {
                 columns: 10,
                 rows: 3,
             },
-            &mut previous,
+            &previous,
+            capabilities(),
         );
 
         assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[2J"));
@@ -515,7 +629,7 @@ mod tests {
             rows: 4,
         })
         .unwrap();
-        let mut previous = snapshot(&[(pane, &terminal)]);
+        let previous = snapshot(&[(pane, &terminal)]);
         terminal.advance(b"$ command\r\nresult\r\n$ ");
 
         let output = changes(
@@ -525,9 +639,32 @@ mod tests {
                 columns: 20,
                 rows: 5,
             },
-            &mut previous,
+            &previous,
+            capabilities(),
         );
 
         assert!(output.ends_with(b"\x1b[3;3H\x1b[?25h"));
+    }
+
+    #[test]
+    fn colors_and_attributes_downgrade_without_extended_sequences() {
+        let mut output = Vec::new();
+        let mut current = None;
+        let capabilities =
+            crate::outer::select("linux", "xterm-256color", "truecolor").capabilities;
+        set_attributes(
+            &mut output,
+            &mut current,
+            Attributes {
+                foreground: Color::Rgb(255, 0, 0),
+                italic: true,
+                ..Attributes::default()
+            },
+            capabilities,
+        );
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(";91m"), "{output:?}");
+        assert!(!output.contains(";3;"), "{output:?}");
+        assert!(!output.contains(";2;"), "{output:?}");
     }
 }

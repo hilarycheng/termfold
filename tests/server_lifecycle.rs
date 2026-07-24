@@ -176,7 +176,7 @@ fn wait_for_attached_count(path: &Path, expected: u32) {
 
 fn status_count(path: &Path) -> Option<u32> {
     let mut stream = UnixStream::connect(path).ok()?;
-    stream.write_all(&[0, 0, 0, 2, 1, 8]).ok()?;
+    stream.write_all(&[0, 0, 0, 2, 2, 8]).ok()?;
     let mut prefix = [0; 4];
     stream.read_exact(&mut prefix).ok()?;
     if u32::from_be_bytes(prefix) != 10 {
@@ -184,7 +184,7 @@ fn status_count(path: &Path) -> Option<u32> {
     }
     let mut body = [0; 10];
     stream.read_exact(&mut body).ok()?;
-    (body[..2] == [1, 9]).then(|| u32::from_be_bytes(body[6..10].try_into().unwrap()))
+    (body[..2] == [2, 9]).then(|| u32::from_be_bytes(body[6..10].try_into().unwrap()))
 }
 
 fn wait_for_exit(child: &mut Child) {

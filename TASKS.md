@@ -116,7 +116,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T03, T08, T09.
   - Done when: normal and narrow layouts preserve the specified visibility order.
 
-- [ ] **T10A — Implement outer-terminal compatibility**
+- [*] **T10A — Implement outer-terminal compatibility**
   - Add the required data-only terminal profiles, deterministic profile selection,
     per-client capability handling, safe colour and attribute downgrade, and
     rejection of terminals that cannot support the full-screen interface.
