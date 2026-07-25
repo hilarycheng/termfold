@@ -10,20 +10,23 @@ use std::{
 
 use crate::{
     config::Config,
-    input::{Action, Input},
+    input::{Action, Input, MouseEvent},
     ipc::{self, Message},
     outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
     render::{self, Clock},
     runtime::{self, RuntimeDir},
-    session::{CloseResult, PaneId, Session, Size},
-    terminal::{MAX_SCREEN_CELLS, Terminal},
+    session::{CloseResult, Direction, PaneId, Rect, Session, Size},
+    terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
 // both the four-frame worst-case payload cap and the normative 4 MiB byte cap.
 const CONNECTION_QUEUE_ITEMS: usize = 2;
 const LOOP_DELAY: Duration = Duration::from_millis(10);
+const ENTER_MOUSE: &[u8] = b"\x1b[?1003h\x1b[?1006h";
+// ponytail: one event moves 256 cells; raise only if real terminals jump farther.
+const MAX_MOUSE_DRAG_CELLS: u16 = 256;
 
 enum ClientEvent {
     Message(Message),
@@ -42,6 +45,13 @@ struct Client {
     input: Input,
     status: Option<String>,
     scroll_offset: Option<usize>,
+    mouse_capture: Option<MouseCapture>,
+}
+
+#[derive(Clone, Copy)]
+enum MouseCapture {
+    Click,
+    Border(u16, u16),
 }
 
 struct PaneProcess {
@@ -108,6 +118,9 @@ struct InputContext<'a> {
     size: &'a mut Size,
     launch: &'a LaunchContext,
     scrollback_limit: usize,
+    mouse: bool,
+    date_format: &'a str,
+    time_format: &'a str,
     full_dirty: &'a mut bool,
 }
 
@@ -158,6 +171,7 @@ pub fn run(
             &mut clients,
             &mut next_client_id,
             config.prefix,
+            config.mouse,
         );
         flush_client_controls(&mut clients);
 
@@ -180,6 +194,9 @@ pub fn run(
                             size: &mut authoritative_size,
                             launch: &context,
                             scrollback_limit: usize::from(config.scrollback_lines),
+                            mouse: config.mouse,
+                            date_format: &config.date_format,
+                            time_format: &config.time_format,
                             full_dirty: &mut full_dirty,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
@@ -187,6 +204,30 @@ pub fn run(
                             break;
                         }
                     }
+                }
+            }
+            let pending = clients
+                .iter_mut()
+                .filter_map(|client| {
+                    let actions = client.input.flush_pending_mouse();
+                    (!actions.is_empty()).then_some((client.id, actions))
+                })
+                .collect::<Vec<_>>();
+            for (client_id, actions) in pending {
+                let mut input = InputContext {
+                    session: &mut session,
+                    panes: &mut panes,
+                    size: &mut authoritative_size,
+                    launch: &context,
+                    scrollback_limit: usize::from(config.scrollback_lines),
+                    mouse: config.mouse,
+                    date_format: &config.date_format,
+                    time_format: &config.time_format,
+                    full_dirty: &mut full_dirty,
+                };
+                if handle_actions(&mut clients, client_id, actions, &mut input) {
+                    terminate = true;
+                    break;
                 }
             }
         }
@@ -373,6 +414,7 @@ fn accept_clients(
     clients: &mut Vec<Client>,
     next_client_id: &mut u64,
     prefix: u8,
+    mouse: bool,
 ) {
     loop {
         let stream = match listener.accept() {
@@ -403,9 +445,10 @@ fn accept_clients(
             attached: false,
             size: None,
             capabilities: None,
-            input: Input::new(prefix),
+            input: Input::new(prefix, mouse),
             status: None,
             scroll_offset: None,
+            mouse_capture: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
     }
@@ -498,6 +541,9 @@ fn handle_message(
                 client.capabilities = Some(capabilities);
             }
             queue_control(clients, client_id, Message::Attached);
+            if input.mouse && capabilities.mouse {
+                queue_control(clients, client_id, Message::Screen(ENTER_MOUSE.to_vec()));
+            }
             *input.full_dirty = true;
         }
         Message::Resize { columns, rows } => {
@@ -534,15 +580,7 @@ fn handle_message(
                 *input.size = size;
             }
             let actions = client.input.advance(&bytes);
-            for action in actions {
-                let detach = matches!(action, Action::Detach);
-                if handle_action(clients, client_id, action, input) {
-                    return true;
-                }
-                if detach {
-                    break;
-                }
-            }
+            return handle_actions(clients, client_id, actions, input);
         }
         Message::Detach => remove_client(clients, client_id),
         Message::StatusRequest => {
@@ -562,6 +600,24 @@ fn handle_message(
         | Message::Error(_)
         | Message::Status { .. }
         | Message::Terminating => remove_client(clients, client_id),
+    }
+    false
+}
+
+fn handle_actions(
+    clients: &mut Vec<Client>,
+    client_id: u64,
+    actions: Vec<Action>,
+    input: &mut InputContext<'_>,
+) -> bool {
+    for action in actions {
+        let detach = matches!(action, Action::Detach);
+        if handle_action(clients, client_id, action, input) {
+            return true;
+        }
+        if detach {
+            break;
+        }
     }
     false
 }
@@ -727,6 +783,10 @@ fn handle_action(
             );
             return false;
         }
+        Action::Mouse(event) => {
+            handle_mouse(clients, client_id, event, input);
+            return false;
+        }
         Action::Status(message) => {
             set_status(clients, client_id, Some(message), input.full_dirty);
             return false;
@@ -750,6 +810,260 @@ fn handle_action(
         Err(error) => set_status(clients, client_id, Some(error), input.full_dirty),
     }
     false
+}
+
+fn handle_mouse(
+    clients: &mut [Client],
+    client_id: u64,
+    event: MouseEvent,
+    input: &mut InputContext<'_>,
+) {
+    let size = *input.size;
+    if event.x >= size.columns || event.y >= size.rows {
+        return;
+    }
+    let motion = event.code & 32 != 0;
+    let wheel = event.code & 64 != 0;
+    let left_press = !event.release && !motion && !wheel && event.code & 3 == 0;
+
+    if event.y == size.rows.saturating_sub(1) {
+        if left_press {
+            let message = clients
+                .iter()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.status.as_deref());
+            if let Some(tab) = render::status_tab_at(
+                input.session,
+                size,
+                input.date_format,
+                input.time_format,
+                message,
+                event.x,
+            ) && input.session.select_tab(tab)
+            {
+                if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                    client.scroll_offset = None;
+                }
+                if resize_all(input.session, input.panes, size, size).is_ok() {
+                    *input.full_dirty = true;
+                } else {
+                    set_status(
+                        clients,
+                        client_id,
+                        Some("cannot resize session PTYs".into()),
+                        input.full_dirty,
+                    );
+                }
+            }
+        }
+        clear_mouse_capture(clients, client_id);
+        return;
+    }
+
+    let content_size = pane_area(size);
+    let rects = input.session.pane_rects(content_size);
+    let target = rects
+        .iter()
+        .find(|(_, rect)| rect_contains(*rect, event.x, event.y))
+        .copied();
+    let capture = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .and_then(|client| client.mouse_capture);
+    let in_scroll_view = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .is_some_and(|client| client.scroll_offset.is_some());
+
+    if let Some(capture) = capture
+        && (motion || event.release)
+    {
+        let moved_to = match capture {
+            MouseCapture::Border(x, y) if motion => {
+                resize_border(input.session, content_size, (x, y), event.x, event.y)
+            }
+            MouseCapture::Click | MouseCapture::Border(_, _) => None,
+        };
+        if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+            client.mouse_capture = if event.release {
+                None
+            } else {
+                Some(moved_to.map_or(capture, |(x, y)| MouseCapture::Border(x, y)))
+            };
+        }
+        if moved_to.is_some() {
+            if resize_all(input.session, input.panes, size, size).is_ok() {
+                *input.full_dirty = true;
+            } else {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("cannot resize session PTYs".into()),
+                    input.full_dirty,
+                );
+            }
+        }
+        return;
+    }
+
+    if let Some((pane_id, rect)) = target
+        && !in_scroll_view
+        && Some(pane_id) == input.session.active_pane()
+        && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == pane_id)
+        && forwards_mouse(pane.terminal.modes().mouse, event)
+        && let Some(bytes) = encode_mouse(event, rect, pane.terminal.modes().sgr_mouse)
+    {
+        pane.pending_input.push(bytes);
+        return;
+    }
+
+    if wheel {
+        let maximum = input
+            .session
+            .active_pane()
+            .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+            .map_or(0, |pane| pane.terminal.max_scroll_offset());
+        if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+            let current = client.scroll_offset.unwrap_or(0);
+            let next = if event.code & 1 == 0 {
+                current.saturating_add(3).min(maximum)
+            } else {
+                current.saturating_sub(3)
+            };
+            client.scroll_offset = (next != 0).then_some(next);
+            *input.full_dirty = true;
+        }
+        return;
+    }
+
+    if event.release {
+        clear_mouse_capture(clients, client_id);
+    } else if left_press {
+        if let Some((pane, _)) = target {
+            input.session.select_pane(pane);
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = None;
+                client.mouse_capture = Some(MouseCapture::Click);
+            }
+            *input.full_dirty = true;
+        } else if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+            client.mouse_capture = Some(MouseCapture::Border(event.x, event.y));
+        }
+    }
+}
+
+fn clear_mouse_capture(clients: &mut [Client], client_id: u64) {
+    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+        client.mouse_capture = None;
+    }
+}
+
+fn forwards_mouse(mode: MouseMode, event: MouseEvent) -> bool {
+    let motion = event.code & 32 != 0;
+    match mode {
+        MouseMode::Off => false,
+        MouseMode::Press => !motion,
+        MouseMode::Drag => !motion || event.code & 3 != 3,
+        MouseMode::Motion => true,
+    }
+}
+
+fn encode_mouse(event: MouseEvent, rect: Rect, sgr: bool) -> Option<Vec<u8>> {
+    let x = event.x.checked_sub(rect.x)?.saturating_add(1);
+    let y = event.y.checked_sub(rect.y)?.saturating_add(1);
+    if sgr {
+        return Some(
+            format!(
+                "\x1b[<{};{x};{y}{}",
+                event.code,
+                if event.release { 'm' } else { 'M' }
+            )
+            .into_bytes(),
+        );
+    }
+    let code = if event.release { 3 } else { event.code };
+    if code > 223 || x > 223 || y > 223 {
+        return None;
+    }
+    Some(vec![
+        27,
+        b'[',
+        b'M',
+        (code as u8).saturating_add(32),
+        (x as u8).saturating_add(32),
+        (y as u8).saturating_add(32),
+    ])
+}
+
+fn resize_border(
+    session: &mut Session,
+    size: Size,
+    start: (u16, u16),
+    x: u16,
+    y: u16,
+) -> Option<(u16, u16)> {
+    let horizontal = x.abs_diff(start.0) >= y.abs_diff(start.1);
+    let steps = if horizontal {
+        x.abs_diff(start.0)
+    } else {
+        y.abs_diff(start.1)
+    }
+    .min(MAX_MOUSE_DRAG_CELLS);
+    let mut border = start;
+    let mut moved = false;
+    for _ in 0..steps {
+        let rects = session.pane_rects(size);
+        let choice = if horizontal && x > border.0 {
+            neighbor(&rects, border.0.checked_sub(1), Some(border.1))
+                .map(|pane| (pane, Direction::Right))
+        } else if horizontal {
+            neighbor(&rects, border.0.checked_add(1), Some(border.1))
+                .map(|pane| (pane, Direction::Left))
+        } else if y > border.1 {
+            neighbor(&rects, Some(border.0), border.1.checked_sub(1))
+                .map(|pane| (pane, Direction::Down))
+        } else {
+            neighbor(&rects, Some(border.0), border.1.checked_add(1))
+                .map(|pane| (pane, Direction::Up))
+        };
+        let Some((pane, direction)) = choice else {
+            break;
+        };
+        session.select_pane(pane);
+        if session.resize(direction, size).is_err() {
+            break;
+        }
+        moved = true;
+        if horizontal {
+            border.0 = if x > border.0 {
+                border.0.saturating_add(1)
+            } else {
+                border.0.saturating_sub(1)
+            };
+        } else {
+            border.1 = if y > border.1 {
+                border.1.saturating_add(1)
+            } else {
+                border.1.saturating_sub(1)
+            };
+        }
+    }
+    moved.then_some(border)
+}
+
+fn neighbor(rects: &[(PaneId, Rect)], x: Option<u16>, y: Option<u16>) -> Option<PaneId> {
+    let (x, y) = (x?, y?);
+    rects
+        .iter()
+        .find(|(_, rect)| rect_contains(*rect, x, y))
+        .map(|(pane, _)| *pane)
+}
+
+fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x
+        && x < rect.x.saturating_add(rect.width)
+        && y >= rect.y
+        && y < rect.y.saturating_add(rect.height)
 }
 
 fn add_pane(
@@ -929,5 +1243,49 @@ mod tests {
 
         assert_eq!(output, b"\x1b[1;1R\x1b[?1;2c");
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mouse_forwarding_translates_to_pane_coordinates() {
+        let event = MouseEvent {
+            code: 0,
+            x: 12,
+            y: 7,
+            release: false,
+        };
+        assert_eq!(
+            encode_mouse(
+                event,
+                Rect {
+                    x: 10,
+                    y: 5,
+                    width: 20,
+                    height: 10,
+                },
+                true,
+            ),
+            Some(b"\x1b[<0;3;3M".to_vec())
+        );
+        assert!(forwards_mouse(MouseMode::Press, event));
+    }
+
+    #[test]
+    fn mouse_drag_resizes_the_selected_border() {
+        let mut session = Session::new("s".into());
+        let size = Size {
+            columns: 9,
+            rows: 3,
+        };
+        session
+            .split_active(crate::session::Split::LeftRight, size)
+            .unwrap();
+
+        assert_eq!(
+            resize_border(&mut session, size, (4, 1), 6, 1),
+            Some((6, 1))
+        );
+        let rects = session.pane_rects(size);
+        assert_eq!(rects[0].1.width, 6);
+        assert_eq!(rects[1].1.width, 2);
     }
 }

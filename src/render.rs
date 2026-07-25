@@ -195,13 +195,14 @@ pub fn status(
     move_cursor(&mut output, size.rows.saturating_sub(1), 0);
     let mut attributes = None;
     let mut used = 0;
-    for (text, active) in segments {
+    for (text, tab) in segments {
+        let marked = tab == Some(active);
         set_attributes(
             &mut output,
             &mut attributes,
             Attributes {
-                bold: active,
-                underline: active,
+                bold: marked,
+                underline: marked,
                 inverse: true,
                 ..Attributes::default()
             },
@@ -223,15 +224,15 @@ fn message_segments(
     active: usize,
     message: &str,
     width: usize,
-) -> (Vec<(String, bool)>, usize) {
-    let active = format!("[{}:shell]", active + 1);
+) -> (Vec<(String, Option<usize>)>, usize) {
+    let active_text = format!("[{}:shell]", active + 1);
     let session = format!("[{session}]");
     let mut result = Vec::new();
     let mut used = 0;
     for (text, marked) in [
-        (active, true),
-        (format!("  {session}"), false),
-        (format!("  {message}"), false),
+        (active_text, Some(active)),
+        (format!("  {session}"), None),
+        (format!("  {message}"), None),
     ] {
         let text = truncate(&text, width.saturating_sub(used));
         used += text_width(&text);
@@ -250,7 +251,7 @@ fn status_segments(
     date: &str,
     time: &str,
     width: usize,
-) -> (Vec<(String, bool)>, usize) {
+) -> (Vec<(String, Option<usize>)>, usize) {
     let session = format!("[{session}]");
     let clock = format!("{date} {time}");
     let mut first = 0;
@@ -260,9 +261,9 @@ fn status_segments(
         let tabs = tab_segments(tab_count, active, first, last);
         let used = text_width(&session) + 2 + segments_width(&tabs) + 5 + text_width(&clock);
         if used <= width {
-            let mut result = vec![(session.clone(), false), ("  ".into(), false)];
+            let mut result = vec![(session.clone(), None), ("  ".into(), None)];
             result.extend(tabs);
-            result.push((format!("  |  {clock}"), false));
+            result.push((format!("  |  {clock}"), None));
             return (result, used);
         }
         let left_distance = active.saturating_sub(first);
@@ -279,9 +280,9 @@ fn status_segments(
     let mut result = Vec::new();
     let mut used = 0;
     for (text, marked) in [
-        (format!("[{}:shell]", active + 1), true),
-        (format!("  {time}"), false),
-        (format!("  {session}"), false),
+        (format!("[{}:shell]", active + 1), Some(active)),
+        (format!("  {time}"), None),
+        (format!("  {session}"), None),
     ] {
         let remaining = width.saturating_sub(used);
         if remaining == 0 {
@@ -294,14 +295,19 @@ fn status_segments(
     (result, used)
 }
 
-fn tab_segments(count: usize, active: usize, first: usize, last: usize) -> Vec<(String, bool)> {
+fn tab_segments(
+    count: usize,
+    active: usize,
+    first: usize,
+    last: usize,
+) -> Vec<(String, Option<usize>)> {
     let mut result = Vec::new();
     if first > 0 {
-        result.push(("< ".into(), false));
+        result.push(("< ".into(), None));
     }
     for index in first..=last {
         if index > first {
-            result.push(("  ".into(), false));
+            result.push(("  ".into(), None));
         }
         result.push((
             if index == active {
@@ -309,13 +315,47 @@ fn tab_segments(count: usize, active: usize, first: usize, last: usize) -> Vec<(
             } else {
                 format!("{}:shell", index + 1)
             },
-            index == active,
+            Some(index),
         ));
     }
     if last + 1 < count {
-        result.push((" >".into(), false));
+        result.push((" >".into(), None));
     }
     result
+}
+
+pub fn status_tab_at(
+    session: &Session,
+    size: Size,
+    date_format: &str,
+    time_format: &str,
+    message: Option<&str>,
+    x: u16,
+) -> Option<usize> {
+    let active = session.active_tab()?;
+    let (date, time) = format_clock(date_format, time_format);
+    let (segments, _) = message.map_or_else(
+        || {
+            status_segments(
+                session.name(),
+                session.tab_count(),
+                active,
+                &date,
+                &time,
+                usize::from(size.columns),
+            )
+        },
+        |message| message_segments(session.name(), active, message, usize::from(size.columns)),
+    );
+    let mut start = 0;
+    for (text, tab) in segments {
+        let end = start + text_width(&text);
+        if (start..end).contains(&usize::from(x)) {
+            return tab;
+        }
+        start = end;
+    }
+    None
 }
 
 fn format_clock(date_format: &str, time_format: &str) -> (String, String) {
@@ -532,7 +572,7 @@ fn text_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-fn segments_width(segments: &[(String, bool)]) -> usize {
+fn segments_width(segments: &[(String, Option<usize>)]) -> usize {
     segments.iter().map(|(text, _)| text_width(text)).sum()
 }
 
@@ -582,6 +622,24 @@ mod tests {
         assert!(text.contains(" >"), "{text}");
         assert!(!text.contains("1:shell"));
         assert!(!text.contains("5:shell"));
+    }
+
+    #[test]
+    fn status_tab_hit_testing_matches_rendered_tabs() {
+        let mut session = Session::new("s".into());
+        session.create_tab().unwrap();
+        let size = Size {
+            columns: 80,
+            rows: 24,
+        };
+        assert_eq!(
+            status_tab_at(&session, size, "%Y-%m-%d", "%H:%M", None, 5),
+            Some(0)
+        );
+        assert_eq!(
+            status_tab_at(&session, size, "%Y-%m-%d", "%H:%M", None, 14),
+            Some(1)
+        );
     }
 
     #[test]

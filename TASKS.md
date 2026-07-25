@@ -144,7 +144,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: history remains bounded and navigable without corrupting pane output,
     and explicit export writes only the requested plain-text scrollback.
 
-- [ ] **T13 — Implement optional mouse input**
+- [*] **T13 — Implement optional mouse input**
   - Keep mouse disabled by default; add SGR click, drag, wheel, tab selection, pane
     selection, border resize, application forwarding, and cleanup.
   - Requirements: Mouse and Scrollback.
