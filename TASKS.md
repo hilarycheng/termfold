@@ -166,10 +166,16 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: project documentation credits zmx, tmux, xterm, and ncurses terminfo
     documentation as specified.
 
-- [ ] **T15 — Perform release validation**
+- [*] **T15 — Perform release validation**
   - Run the approved formatting, lint, test, security, musl build, static-linkage,
     checksum, compatibility, and resource-measurement checks.
   - Requirements: Implementation and Acceptance; release checklist in `AGENTS.md`.
   - Depends on: T00 through T14; T10A; T14A.
   - Done when: every approved budget and release-checklist item passes or has a
     documented blocker.
+  - Validated on Ubuntu x86_64, Linux 7.0: 673 KiB static PIE, 0.00 s startup,
+    2.7 MiB idle RSS, 0.05% idle CPU, SHA-256
+    `6175cad43e0259e1bede3982f17c425e3be36a4620f9f7c8e1b7abdb8653636f`.
+  - Blocked by unavailable environments: live Linux 4.18, WSL, SSH, WezTerm,
+    Windows Terminal, and Windows Command Prompt runs. Automated PTY, profile,
+    restoration, detach, and reattach checks passed.

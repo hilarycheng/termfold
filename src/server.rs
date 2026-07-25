@@ -23,7 +23,7 @@ use crate::{
 // Two buffered frames plus one being written and one pending frame remain within
 // both the four-frame worst-case payload cap and the normative 4 MiB byte cap.
 const CONNECTION_QUEUE_ITEMS: usize = 2;
-const LOOP_DELAY: Duration = Duration::from_millis(10);
+const LOOP_DELAY: Duration = Duration::from_millis(50);
 const ENTER_MOUSE: &[u8] = b"\x1b[?1003h\x1b[?1006h";
 // ponytail: one event moves 256 cells; raise only if real terminals jump farther.
 const MAX_MOUSE_DRAG_CELLS: u16 = 256;
