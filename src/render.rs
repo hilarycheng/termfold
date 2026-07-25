@@ -28,6 +28,7 @@ pub fn full(
     panes: &[(PaneId, &Terminal)],
     size: Size,
     clock: Clock<'_>,
+    message: Option<&str>,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let mut output = if capabilities.cursor_visibility {
@@ -79,6 +80,7 @@ pub fn full(
         size,
         clock.date_format,
         clock.time_format,
+        message,
         false,
         capabilities,
     ));
@@ -158,18 +160,25 @@ pub fn status(
     size: Size,
     date_format: &str,
     time_format: &str,
+    message: Option<&str>,
     preserve_cursor: bool,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let width = usize::from(size.columns);
     let (date, time) = format_clock(date_format, time_format);
-    let (segments, _) = status_segments(
-        session.name(),
-        session.tab_count(),
-        session.active_tab().unwrap_or(0),
-        &date,
-        &time,
-        width,
+    let active = session.active_tab().unwrap_or(0);
+    let (segments, _) = message.map_or_else(
+        || {
+            status_segments(
+                session.name(),
+                session.tab_count(),
+                active,
+                &date,
+                &time,
+                width,
+            )
+        },
+        |message| message_segments(session.name(), active, message, width),
     );
     let mut output = Vec::new();
     if preserve_cursor {
@@ -199,6 +208,31 @@ pub fn status(
         output.extend_from_slice(b"\x1b8");
     }
     output
+}
+
+fn message_segments(
+    session: &str,
+    active: usize,
+    message: &str,
+    width: usize,
+) -> (Vec<(String, bool)>, usize) {
+    let active = format!("[{}:shell]", active + 1);
+    let session = format!("[{session}]");
+    let mut result = Vec::new();
+    let mut used = 0;
+    for (text, marked) in [
+        (active, true),
+        (format!("  {session}"), false),
+        (format!("  {message}"), false),
+    ] {
+        let text = truncate(&text, width.saturating_sub(used));
+        used += text_width(&text);
+        result.push((text, marked));
+        if used == width {
+            break;
+        }
+    }
+    (result, used)
 }
 
 fn status_segments(
@@ -584,6 +618,7 @@ mod tests {
                 date_format: "%Y-%m-%d",
                 time_format: "%H:%M",
             },
+            None,
             capabilities(),
         );
         let output = String::from_utf8_lossy(&output);

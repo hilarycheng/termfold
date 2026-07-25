@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 mod client;
 mod config;
+#[cfg(target_os = "linux")]
+mod input;
 pub mod ipc;
 mod outer;
 #[cfg(target_os = "linux")]

@@ -152,6 +152,27 @@ fn termination_signal_restores_the_client_terminal() {
     drop(master);
 }
 
+#[test]
+fn prefix_commands_create_tabs_report_errors_and_detach() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = UnixStream::connect(runtime.socket("one")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .write_all(&[0, 0, 0, 8, 2, 1, 0, 80, 0, 24, 5, 3])
+        .unwrap();
+    while read_frame(&mut stream).unwrap().0 != 5 {}
+
+    send_input(&mut stream, b"\x02c");
+    wait_for_screen(&mut stream, b"[2:shell]");
+    send_input(&mut stream, b"\x02?");
+    wait_for_screen(&mut stream, b"unsupported prefix command");
+    send_input(&mut stream, b"\x02d");
+    assert!(read_frame(&mut stream).is_none());
+}
+
 fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
     runtime
         .command()
@@ -161,6 +182,38 @@ fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
         .stderr(Stdio::null())
         .spawn()
         .unwrap()
+}
+
+fn send_input(stream: &mut UnixStream, bytes: &[u8]) {
+    let length = u32::try_from(bytes.len() + 2).unwrap();
+    stream.write_all(&length.to_be_bytes()).unwrap();
+    stream.write_all(&[2, 3]).unwrap();
+    stream.write_all(bytes).unwrap();
+}
+
+fn wait_for_screen(stream: &mut UnixStream, expected: &[u8]) {
+    loop {
+        let (kind, payload) = read_frame(stream).expect("session disconnected");
+        if kind == 6
+            && payload
+                .windows(expected.len())
+                .any(|window| window == expected)
+        {
+            return;
+        }
+    }
+}
+
+fn read_frame(stream: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
+    let mut prefix = [0; 4];
+    match stream.read_exact(&mut prefix) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+        Err(error) => panic!("cannot read session frame: {error}"),
+    }
+    let mut body = vec![0; u32::from_be_bytes(prefix) as usize];
+    stream.read_exact(&mut body).unwrap();
+    Some((body[1], body[2..].to_vec()))
 }
 
 fn wait_for_attached_count(path: &Path, expected: u32) {

@@ -10,6 +10,7 @@ use std::{
 
 use crate::{
     config::Config,
+    input::{Action, Input},
     ipc::{self, Message},
     outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
@@ -38,6 +39,8 @@ struct Client {
     attached: bool,
     size: Option<Size>,
     capabilities: Option<Capabilities>,
+    input: Input,
+    status: Option<String>,
 }
 
 struct PaneProcess {
@@ -98,6 +101,14 @@ struct PendingBroadcast {
     frames: Vec<(u64, Vec<u8>)>,
 }
 
+struct InputContext<'a> {
+    session: &'a mut Session,
+    panes: &'a mut Vec<PaneProcess>,
+    size: &'a mut Size,
+    launch: &'a LaunchContext,
+    full_dirty: &'a mut bool,
+}
+
 pub fn run(
     runtime: RuntimeDir,
     name: String,
@@ -144,6 +155,7 @@ pub fn run(
             runtime.uid(),
             &mut clients,
             &mut next_client_id,
+            config.prefix,
         );
         flush_client_controls(&mut clients);
 
@@ -160,15 +172,14 @@ pub fn run(
                 match event {
                     ClientEvent::Closed => remove_client(&mut clients, client_id),
                     ClientEvent::Message(message) => {
-                        if handle_message(
-                            &mut clients,
-                            client_id,
-                            message,
-                            &mut panes,
-                            &mut authoritative_size,
-                            &session,
-                            &mut full_dirty,
-                        ) {
+                        let mut input = InputContext {
+                            session: &mut session,
+                            panes: &mut panes,
+                            size: &mut authoritative_size,
+                            launch: &context,
+                            full_dirty: &mut full_dirty,
+                        };
+                        if handle_message(&mut clients, client_id, message, &mut input) {
                             terminate = true;
                             break;
                         }
@@ -207,7 +218,7 @@ pub fn run(
                 .filter_map(|client| {
                     client
                         .capabilities
-                        .map(|capabilities| (client.id, capabilities))
+                        .map(|capabilities| (client.id, capabilities, client.status.as_deref()))
                 })
                 .collect::<Vec<_>>();
             let frames = if full_dirty {
@@ -216,7 +227,7 @@ pub fn run(
                 rendered_clock = Some(key);
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities)| {
+                    .map(|(id, capabilities, message)| {
                         (
                             *id,
                             render::full(
@@ -227,6 +238,7 @@ pub fn run(
                                     date_format: &config.date_format,
                                     time_format: &config.time_format,
                                 },
+                                *message,
                                 *capabilities,
                             ),
                         )
@@ -238,7 +250,7 @@ pub fn run(
                 content_dirty = false;
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities)| {
+                    .map(|(id, capabilities, _)| {
                         (
                             *id,
                             render::changes(
@@ -258,7 +270,7 @@ pub fn run(
                 Some(
                     targets
                         .iter()
-                        .map(|(id, capabilities)| {
+                        .map(|(id, capabilities, message)| {
                             (
                                 *id,
                                 render::status(
@@ -266,6 +278,7 @@ pub fn run(
                                     authoritative_size,
                                     &config.date_format,
                                     &config.time_format,
+                                    *message,
                                     true,
                                     *capabilities,
                                 ),
@@ -320,6 +333,7 @@ fn accept_clients(
     uid: u32,
     clients: &mut Vec<Client>,
     next_client_id: &mut u64,
+    prefix: u8,
 ) {
     loop {
         let stream = match listener.accept() {
@@ -350,6 +364,8 @@ fn accept_clients(
             attached: false,
             size: None,
             capabilities: None,
+            input: Input::new(prefix),
+            status: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
     }
@@ -398,10 +414,7 @@ fn handle_message(
     clients: &mut Vec<Client>,
     client_id: u64,
     message: Message,
-    panes: &mut [PaneProcess],
-    authoritative_size: &mut Size,
-    session: &Session,
-    full_dirty: &mut bool,
+    input: &mut InputContext<'_>,
 ) -> bool {
     match message {
         Message::Attach {
@@ -430,7 +443,7 @@ fn handle_message(
                 return false;
             }
             let size = Size { columns, rows };
-            if resize_all(session, panes, size, *authoritative_size).is_err() {
+            if resize_all(input.session, input.panes, size, *input.size).is_err() {
                 queue_control(
                     clients,
                     client_id,
@@ -438,14 +451,14 @@ fn handle_message(
                 );
                 return false;
             }
-            *authoritative_size = size;
+            *input.size = size;
             if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
                 client.attached = true;
                 client.size = Some(size);
                 client.capabilities = Some(capabilities);
             }
             queue_control(clients, client_id, Message::Attached);
-            *full_dirty = true;
+            *input.full_dirty = true;
         }
         Message::Resize { columns, rows } => {
             let Some(client) = clients.iter_mut().find(|client| client.id == client_id) else {
@@ -457,15 +470,15 @@ fn handle_message(
             }
             let size = Size { columns, rows };
             client.size = Some(size);
-            if resize_all(session, panes, size, *authoritative_size).is_err() {
+            if resize_all(input.session, input.panes, size, *input.size).is_err() {
                 remove_client(clients, client_id);
             } else {
-                *authoritative_size = size;
-                *full_dirty = true;
+                *input.size = size;
+                *input.full_dirty = true;
             }
         }
         Message::Input(bytes) => {
-            let Some(client) = clients.iter().find(|client| client.id == client_id) else {
+            let Some(client) = clients.iter_mut().find(|client| client.id == client_id) else {
                 return false;
             };
             if !client.attached {
@@ -473,17 +486,22 @@ fn handle_message(
                 return false;
             }
             if let Some(size) = client.size {
-                if resize_all(session, panes, size, *authoritative_size).is_err() {
+                if resize_all(input.session, input.panes, size, *input.size).is_err() {
                     remove_client(clients, client_id);
                     return false;
                 }
-                *full_dirty |= size != *authoritative_size;
-                *authoritative_size = size;
+                *input.full_dirty |= size != *input.size;
+                *input.size = size;
             }
-            if let Some(active) = session.active_pane()
-                && let Some(pane) = panes.iter_mut().find(|pane| pane.id == active)
-            {
-                pane.pending_input.push(bytes);
+            let actions = client.input.advance(&bytes);
+            for action in actions {
+                let detach = matches!(action, Action::Detach);
+                if handle_action(clients, client_id, action, input) {
+                    return true;
+                }
+                if detach {
+                    break;
+                }
             }
         }
         Message::Detach => remove_client(clients, client_id),
@@ -506,6 +524,177 @@ fn handle_message(
         | Message::Terminating => remove_client(clients, client_id),
     }
     false
+}
+
+fn handle_action(
+    clients: &mut Vec<Client>,
+    client_id: u64,
+    action: Action,
+    input: &mut InputContext<'_>,
+) -> bool {
+    let size = *input.size;
+    let content_size = pane_area(size);
+    let result: Result<(), String> =
+        match action {
+            Action::Forward(bytes) => {
+                set_status(clients, client_id, None, input.full_dirty);
+                if let Some(active) = input.session.active_pane()
+                    && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
+                {
+                    pane.pending_input.push(bytes);
+                }
+                return false;
+            }
+            Action::CreateTab => input
+                .session
+                .create_tab()
+                .map_err(|error| error.to_string())
+                .and_then(|pane| {
+                    add_pane(input.launch, input.session, input.panes, pane, content_size)
+                        .inspect_err(|_| {
+                            let _ = input.session.close_pane(pane, content_size);
+                        })
+                }),
+            Action::NextTab => input.session.next_tab().map_err(|error| error.to_string()),
+            Action::PreviousTab => input
+                .session
+                .previous_tab()
+                .map_err(|error| error.to_string()),
+            Action::SelectTab(index) => {
+                if input.session.select_tab(index) {
+                    Ok(())
+                } else {
+                    set_status(
+                        clients,
+                        client_id,
+                        Some("tab does not exist".into()),
+                        input.full_dirty,
+                    );
+                    return false;
+                }
+            }
+            Action::Split(split) => input
+                .session
+                .split_active(split, content_size)
+                .map_err(|error| error.to_string())
+                .and_then(|pane| {
+                    add_pane(input.launch, input.session, input.panes, pane, content_size)
+                        .inspect_err(|_| {
+                            let _ = input.session.close_pane(pane, content_size);
+                        })
+                }),
+            Action::Focus(direction) => input
+                .session
+                .focus(direction, content_size)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            Action::Resize(direction) => input
+                .session
+                .resize(direction, content_size)
+                .map_err(|error| error.to_string()),
+            Action::ClosePane => {
+                let Some(pane_id) = input.session.active_pane() else {
+                    return true;
+                };
+                let close = input.session.close_active_pane(content_size);
+                if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
+                    let mut pane = input.panes.swap_remove(index);
+                    let _ = pty::terminate_all(&mut [&mut pane.child]);
+                }
+                match close {
+                    Ok(CloseResult::SessionEmpty) => return true,
+                    Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => Ok(()),
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            Action::Detach => {
+                remove_client(clients, client_id);
+                return false;
+            }
+            Action::ScrollView => {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("scroll view is not available".into()),
+                    input.full_dirty,
+                );
+                return false;
+            }
+            Action::SaveScrollback(_) => {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("scrollback export is not available".into()),
+                    input.full_dirty,
+                );
+                return false;
+            }
+            Action::Status(message) => {
+                set_status(clients, client_id, Some(message), input.full_dirty);
+                return false;
+            }
+        };
+
+    match result {
+        Ok(()) => {
+            *input.full_dirty = true;
+            if resize_all(input.session, input.panes, size, size).is_err() {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("cannot resize session PTYs".into()),
+                    input.full_dirty,
+                );
+            } else {
+                set_status(clients, client_id, None, input.full_dirty);
+            }
+        }
+        Err(error) => set_status(clients, client_id, Some(error), input.full_dirty),
+    }
+    false
+}
+
+fn add_pane(
+    context: &LaunchContext,
+    session: &Session,
+    panes: &mut Vec<PaneProcess>,
+    pane: PaneId,
+    size: Size,
+) -> Result<(), String> {
+    let pane_size = session
+        .pane_rects(size)
+        .into_iter()
+        .find(|(id, _)| *id == pane)
+        .map(|(_, rect)| Size {
+            columns: rect.width,
+            rows: rect.height,
+        })
+        .unwrap_or(size);
+    let child = PtyChild::spawn(context, pane_size)
+        .map_err(|error| format!("cannot start shell: {error}"))?;
+    let terminal = Terminal::new(pane_size)
+        .map_err(|error| format!("cannot create terminal screen: {error}"))?;
+    panes.push(PaneProcess {
+        id: pane,
+        child,
+        terminal,
+        pending_input: PendingInput::new(),
+    });
+    Ok(())
+}
+
+fn set_status(
+    clients: &mut [Client],
+    client_id: u64,
+    status: Option<String>,
+    full_dirty: &mut bool,
+) {
+    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
+        && client.status != status
+    {
+        client.status = status;
+        *full_dirty = true;
+    }
 }
 
 fn resize_all(

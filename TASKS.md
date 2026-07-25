@@ -126,7 +126,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: each supported client renders and restores according to its selected
     profile, and `diagnose` reports the required decisions without exposing secrets.
 
-- [ ] **T11 — Implement keyboard input**
+- [*] **T11 — Implement keyboard input**
   - Forward bytes unchanged outside prefix mode and implement every required prefix
     command, unsupported-command message, close confirmation, and the filename
     prompt and cancellation path for `Ctrl-b S` scrollback export.
