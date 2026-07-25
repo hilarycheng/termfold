@@ -151,7 +151,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T03, T09, T10, T12.
   - Done when: mouse behaviour is complete without reducing keyboard functionality.
 
-- [ ] **T14 — Complete lifecycle and compatibility integration**
+- [*] **T14 — Complete lifecycle and compatibility integration**
   - Verify attach/detach persistence, pane-exit cascading, resize propagation,
     bounded queues, SSH behaviour, WSL behaviour, and narrow-terminal handling.
   - Requirements: all first-release behavioural sections.

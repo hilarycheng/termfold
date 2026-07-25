@@ -387,7 +387,15 @@ pub fn run(
             panes.retain(|pane| pane.id != pane_id);
             match session.close_pane(pane_id, pane_area(authoritative_size)) {
                 Ok(CloseResult::SessionEmpty) => terminate = true,
-                Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => full_dirty = true,
+                Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => {
+                    if resize_all(&session, &mut panes, authoritative_size, authoritative_size)
+                        .is_err()
+                    {
+                        terminate = true;
+                    } else {
+                        full_dirty = true;
+                    }
+                }
                 Err(_) => terminate = true,
             }
         }

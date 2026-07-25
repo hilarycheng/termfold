@@ -156,14 +156,7 @@ fn termination_signal_restores_the_client_terminal() {
 fn prefix_commands_create_tabs_report_errors_and_detach() {
     let runtime = TestRuntime::new();
     assert!(runtime.run(&["new", "one"]).status.success());
-    let mut stream = UnixStream::connect(runtime.socket("one")).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    stream
-        .write_all(&[0, 0, 0, 8, 2, 1, 0, 80, 0, 24, 5, 3])
-        .unwrap();
-    while read_frame(&mut stream).unwrap().0 != 5 {}
+    let mut stream = attach_stream(&runtime.socket("one"), 80, 24);
 
     send_input(&mut stream, b"\x02c");
     wait_for_screen(&mut stream, b"[2:shell]");
@@ -171,6 +164,70 @@ fn prefix_commands_create_tabs_report_errors_and_detach() {
     wait_for_screen(&mut stream, b"unsupported prefix command");
     send_input(&mut stream, b"\x02d");
     assert!(read_frame(&mut stream).is_none());
+}
+
+#[test]
+fn detached_session_preserves_screen_and_reattach_resizes_the_pty() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = attach_stream(&runtime.socket("one"), 41, 9);
+
+    send_input(
+        &mut stream,
+        b"printf '\\124\\061\\064\\055\\120\\105\\122\\123\\111\\123\\124\\100'\n",
+    );
+    wait_for_screen(&mut stream, b"@");
+    send_resize(&mut stream, 41, 9);
+    wait_for_screen(&mut stream, b"T14-PERSIST");
+    send_detach(&mut stream);
+    assert!(read_frame(&mut stream).is_none());
+    wait_for_attached_count(&runtime.socket("one"), 0);
+
+    let mut stream = attach_stream(&runtime.socket("one"), 17, 5);
+    wait_for_screen_all(&mut stream, &[b"T14-PERSIST", b"[1:shell]"]);
+    send_input(&mut stream, b"stty size; printf '\\100'\n");
+    wait_for_screen(&mut stream, b"@");
+    send_resize(&mut stream, 17, 5);
+    wait_for_screen(&mut stream, b"4 17");
+}
+
+#[test]
+fn input_restores_that_clients_size_to_every_pty() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut large = attach_stream(&runtime.socket("one"), 41, 9);
+    let mut small = attach_stream(&runtime.socket("one"), 27, 7);
+
+    send_input(&mut small, b"stty size; printf '\\123'\n");
+    wait_for_screen(&mut small, b"S");
+    send_resize(&mut small, 27, 7);
+    wait_for_screen(&mut small, b"6 27");
+    send_input(&mut large, b"stty size; printf '\\114'\n");
+    wait_for_screen(&mut large, b"L");
+    send_resize(&mut large, 41, 9);
+    wait_for_screen(&mut large, b"8 41");
+}
+
+#[test]
+fn child_exit_closes_its_pane_and_keeps_the_survivor_running() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = attach_stream(&runtime.socket("one"), 80, 24);
+    wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");
+
+    send_input(&mut stream, b"\x02%");
+    wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");
+    send_input(&mut stream, b"exit\n");
+    wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");
+    send_input(
+        &mut stream,
+        b"printf '\\124\\061\\064\\055\\123\\125\\122\\126\\111\\126\\117\\122\\100'\n",
+    );
+    wait_for_screen(&mut stream, b"@");
+    send_resize(&mut stream, 80, 24);
+    wait_for_screen(&mut stream, b"T14-SURVIVOR");
+    send_input(&mut stream, b"exit\n");
+    wait_for_missing(&runtime.socket("one"));
 }
 
 fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
@@ -184,6 +241,20 @@ fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
         .unwrap()
 }
 
+fn attach_stream(path: &Path, columns: u16, rows: u16) -> UnixStream {
+    let mut stream = UnixStream::connect(path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut frame = vec![0, 0, 0, 8, 2, 1];
+    frame.extend_from_slice(&columns.to_be_bytes());
+    frame.extend_from_slice(&rows.to_be_bytes());
+    frame.extend_from_slice(&[5, 3]);
+    stream.write_all(&frame).unwrap();
+    while read_frame(&mut stream).unwrap().0 != 5 {}
+    stream
+}
+
 fn send_input(stream: &mut UnixStream, bytes: &[u8]) {
     let length = u32::try_from(bytes.len() + 2).unwrap();
     stream.write_all(&length.to_be_bytes()).unwrap();
@@ -191,13 +262,30 @@ fn send_input(stream: &mut UnixStream, bytes: &[u8]) {
     stream.write_all(bytes).unwrap();
 }
 
+fn send_detach(stream: &mut UnixStream) {
+    stream.write_all(&[0, 0, 0, 2, 2, 2]).unwrap();
+}
+
+fn send_resize(stream: &mut UnixStream, columns: u16, rows: u16) {
+    let mut frame = vec![0, 0, 0, 6, 2, 4];
+    frame.extend_from_slice(&columns.to_be_bytes());
+    frame.extend_from_slice(&rows.to_be_bytes());
+    stream.write_all(&frame).unwrap();
+}
+
 fn wait_for_screen(stream: &mut UnixStream, expected: &[u8]) {
+    wait_for_screen_all(stream, &[expected]);
+}
+
+fn wait_for_screen_all(stream: &mut UnixStream, expected: &[&[u8]]) {
     loop {
         let (kind, payload) = read_frame(stream).expect("session disconnected");
         if kind == 6
-            && payload
-                .windows(expected.len())
-                .any(|window| window == expected)
+            && expected.iter().all(|expected| {
+                payload
+                    .windows(expected.len())
+                    .any(|window| window == *expected)
+            })
         {
             return;
         }
