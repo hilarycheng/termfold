@@ -115,6 +115,7 @@ Do not hold `Ctrl-b` while pressing the command key.
 | `Ctrl-b x` | Ask to close the active pane; press `y` to confirm |
 | `Ctrl-b d` | Detach this client and leave the session running |
 | `Ctrl-b [` | Enter the active pane's read-only scroll view |
+| `Ctrl-b C` | Clear all retained scrollback for the active pane |
 | `Ctrl-b S` | Prompt for a file and save the active pane's scrollback |
 
 For resize shortcuts, press and release `Ctrl-b`, then hold `Ctrl` while pressing
@@ -198,6 +199,15 @@ mouse = false
 scrollback_lines = 2000
 date_format = "%Y-%m-%d"
 time_format = "%H:%M"
+status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
+status_label = ""
+status_refresh_seconds = 2
+status_foreground = "black"
+status_background = "cyan"
+label_foreground = "bright-white"
+label_background = "red"
+active_tab_foreground = "black"
+active_tab_background = "bright-yellow"
 terminal_profile = "auto"
 inner_term = "termfold-256color"
 ```
@@ -211,11 +221,39 @@ inner_term = "termfold-256color"
 | `scrollback_lines` | `0` through `10000` |
 | `date_format` | Up to 64 characters using supported time directives |
 | `time_format` | Up to 64 characters using supported time directives |
+| `status_format` | Up to 512 UTF-8 characters using supported placeholders |
+| `status_label` | Up to 64 printable characters |
+| `status_refresh_seconds` | `1` through `3600` |
+| `cpu_temperature_path` | Optional absolute sensor path below `/sys` |
+| `status_foreground`, `status_background` | Base status colours: `default`, ANSI name, or `#RRGGBB` |
+| `label_foreground`, `label_background` | Label colours: `default`, ANSI name, or `#RRGGBB` |
+| `active_tab_foreground`, `active_tab_background` | Active-tab colours: `default`, ANSI name, or `#RRGGBB` |
 | `terminal_profile` | `"auto"` or a built-in terminal profile |
 | `inner_term` | `"termfold-256color"` or compatibility value `"xterm-256color"` |
 
 Supported date and time directives are `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`,
 `%p`, and `%%`. For example, use `"%I:%M %p"` for a 12-hour clock.
+
+The status placeholders are `{session}`, `{tabs}`, `{fill}`, `{label}`,
+`{cpu_usage}`, `{memory_usage}`, `{cpu_temp}`, `{date}`, and `{time}`. `{fill}`
+uses every remaining column, right-aligning the content after it. The session,
+tabs, date, time, and exactly one fill placeholder are required.
+
+For example:
+
+```toml
+status_format = "[{session}]  {tabs}  │  {label}{fill}CPU {cpu_usage}%  MEM {memory_usage}%  TEMP {cpu_temp}  {date} {time}"
+status_label = "PROD | db-02"
+status_refresh_seconds = 2
+cpu_temperature_path = "/sys/class/thermal/thermal_zone0/temp"
+label_foreground = "#ffffff"
+label_background = "#b00020"
+```
+
+CPU and memory values come directly from Linux `/proc`. CPU temperature uses the
+configured sysfs file because sensor paths differ between machines and may be
+unavailable in WSL. Special characters are literal UTF-8 and require a font that
+contains the selected glyph.
 
 Built-in terminal profiles are `dumb`, `ansi`, `vt100`, `linux`, `xterm`,
 `xterm-256color`, `screen`, `screen-256color`, `tmux`, and `tmux-256color`.

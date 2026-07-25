@@ -14,7 +14,7 @@ use crate::{
     ipc::{self, Message},
     outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
-    render::{self, Clock},
+    render::{self, Metrics, StatusLine},
     runtime::{self, RuntimeDir},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
@@ -119,8 +119,7 @@ struct InputContext<'a> {
     launch: &'a LaunchContext,
     scrollback_limit: usize,
     mouse: bool,
-    date_format: &'a str,
-    time_format: &'a str,
+    status_line: StatusLine<'a>,
     full_dirty: &'a mut bool,
 }
 
@@ -158,7 +157,13 @@ pub fn run(
     let mut authoritative_size = initial_size;
     let mut pending_broadcast: Option<PendingBroadcast> = None;
     let clock_has_seconds = config.date_format.contains("%S") || config.time_format.contains("%S");
-    let mut rendered_clock = None;
+    let uses_metrics = ["{cpu_usage}", "{memory_usage}", "{cpu_temp}"]
+        .iter()
+        .any(|placeholder| config.status_format.contains(placeholder));
+    let mut metrics = Metrics::default();
+    metrics.refresh(config.cpu_temperature_path.as_deref());
+    let mut sampled_metrics = None;
+    let mut rendered_status = None;
     let mut snapshot = render::Snapshot::new();
     let mut full_dirty = false;
     let mut content_dirty = false;
@@ -195,8 +200,7 @@ pub fn run(
                             launch: &context,
                             scrollback_limit: usize::from(config.scrollback_lines),
                             mouse: config.mouse,
-                            date_format: &config.date_format,
-                            time_format: &config.time_format,
+                            status_line: status_line(&config, &metrics),
                             full_dirty: &mut full_dirty,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
@@ -221,8 +225,7 @@ pub fn run(
                     launch: &context,
                     scrollback_limit: usize::from(config.scrollback_lines),
                     mouse: config.mouse,
-                    date_format: &config.date_format,
-                    time_format: &config.time_format,
+                    status_line: status_line(&config, &metrics),
                     full_dirty: &mut full_dirty,
                 };
                 if handle_actions(&mut clients, client_id, actions, &mut input) {
@@ -267,7 +270,15 @@ pub fn run(
         }
 
         if pending_broadcast.is_none() && clients.iter().any(|client| client.attached) {
-            let key = render::clock_key(SystemTime::now(), clock_has_seconds);
+            let now = SystemTime::now();
+            let metric_key = uses_metrics
+                .then(|| render::clock_key(now, true) / u64::from(config.status_refresh_seconds));
+            if metric_key.is_some() && metric_key != sampled_metrics {
+                metrics.refresh(config.cpu_temperature_path.as_deref());
+                sampled_metrics = metric_key;
+            }
+            let key = (render::clock_key(now, clock_has_seconds), metric_key);
+            let status_line = status_line(&config, &metrics);
             let pane_screens = panes
                 .iter()
                 .map(|pane| (pane.id, &pane.terminal))
@@ -288,7 +299,7 @@ pub fn run(
             let frames = if full_dirty {
                 full_dirty = false;
                 content_dirty = false;
-                rendered_clock = Some(key);
+                rendered_status = Some(key);
                 let frames = targets
                     .iter()
                     .map(|(id, capabilities, message, scroll_offset)| {
@@ -298,10 +309,7 @@ pub fn run(
                                 &session,
                                 &pane_screens,
                                 authoritative_size,
-                                Clock {
-                                    date_format: &config.date_format,
-                                    time_format: &config.time_format,
-                                },
+                                status_line,
                                 *message,
                                 *scroll_offset,
                                 *capabilities,
@@ -323,10 +331,7 @@ pub fn run(
                                     &session,
                                     &pane_screens,
                                     authoritative_size,
-                                    Clock {
-                                        date_format: &config.date_format,
-                                        time_format: &config.time_format,
-                                    },
+                                    status_line,
                                     *message,
                                     *scroll_offset,
                                     *capabilities,
@@ -345,8 +350,8 @@ pub fn run(
                     .collect();
                 snapshot = render::snapshot(&pane_screens);
                 Some(frames)
-            } else if rendered_clock != Some(key) {
-                rendered_clock = Some(key);
+            } else if rendered_status != Some(key) {
+                rendered_status = Some(key);
                 Some(
                     targets
                         .iter()
@@ -356,8 +361,7 @@ pub fn run(
                                 render::status(
                                     &session,
                                     authoritative_size,
-                                    &config.date_format,
-                                    &config.time_format,
+                                    status_line,
                                     *message,
                                     true,
                                     *capabilities,
@@ -770,6 +774,27 @@ fn handle_action(
             set_status(clients, client_id, None, input.full_dirty);
             return false;
         }
+        Action::ClearScrollback => {
+            let result = input
+                .session
+                .active_pane()
+                .and_then(|active| input.panes.iter_mut().find(|pane| pane.id == active))
+                .ok_or_else(|| "active pane does not exist".to_string())
+                .map(|pane| pane.terminal.clear_scrollback());
+            for client in clients.iter_mut() {
+                client.scroll_offset = None;
+            }
+            set_status(
+                clients,
+                client_id,
+                Some(match result {
+                    Ok(()) => "scrollback cleared".into(),
+                    Err(error) => error,
+                }),
+                input.full_dirty,
+            );
+            return false;
+        }
         Action::SaveScrollback(filename) => {
             let result = input
                 .session
@@ -840,14 +865,9 @@ fn handle_mouse(
                 .iter()
                 .find(|client| client.id == client_id)
                 .and_then(|client| client.status.as_deref());
-            if let Some(tab) = render::status_tab_at(
-                input.session,
-                size,
-                input.date_format,
-                input.time_format,
-                message,
-                event.x,
-            ) && input.session.select_tab(tab)
+            if let Some(tab) =
+                render::status_tab_at(input.session, size, input.status_line, message, event.x)
+                && input.session.select_tab(tab)
             {
                 if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
                     client.scroll_offset = None;
@@ -1228,6 +1248,22 @@ fn remove_client(clients: &mut Vec<Client>, client_id: u64) {
     if let Some(index) = clients.iter().position(|client| client.id == client_id) {
         let client = clients.swap_remove(index);
         let _ = client.control.shutdown(Shutdown::Both);
+    }
+}
+
+fn status_line<'a>(config: &'a Config, metrics: &'a Metrics) -> StatusLine<'a> {
+    StatusLine {
+        date_format: &config.date_format,
+        time_format: &config.time_format,
+        format: &config.status_format,
+        label: &config.status_label,
+        metrics,
+        foreground: config.status_foreground,
+        background: config.status_background,
+        label_foreground: config.label_foreground,
+        label_background: config.label_background,
+        active_foreground: config.active_tab_foreground,
+        active_background: config.active_tab_background,
     }
 }
 

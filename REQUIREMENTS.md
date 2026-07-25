@@ -86,6 +86,8 @@ The first release MUST provide:
 - PTY resize propagation;
 - a one-row bottom status bar;
 - configurable prefix, date, and time formats;
+- configurable status layout, label, and colours with optional built-in Linux
+  CPU, memory, and temperature indicators;
 - bounded per-pane scrollback, a read-only scroll view, and explicit plain-text
   scrollback export;
 - a self-contained inner terminal description;
@@ -203,6 +205,7 @@ unchanged to the active application. After a prefix:
 | `x` | Close active pane after confirmation |
 | `d` | Detach |
 | `[` | Enter read-only scroll view |
+| `C` | Clear the active pane's entire retained scrollback |
 | `S` | Save the active pane's retained scrollback as plain text after prompting for a filename |
 
 An unsupported prefix command MUST show a short status message and MUST NOT be
@@ -381,6 +384,10 @@ scrollback as UTF-8 plain text. Cancelling the prompt MUST NOT create or modify 
 file. Export MUST be user-triggered rather than continuous logging and MUST omit
 terminal control sequences and styling.
 
+`Ctrl-b C` MUST remove the active pane's entire retained scrollback without
+changing its visible screen. Every attached client's scroll view MUST return to
+the live pane after the history is cleared.
+
 ## Status Bar
 
 The default layout is:
@@ -404,6 +411,23 @@ The default layout is:
 - Only the status row MUST be redrawn for a clock-only update.
 - Minute-resolution formats update once per minute; formats containing seconds
   update once per second.
+- `status_format` MUST support literal UTF-8 text and the placeholders
+  `{session}`, `{tabs}`, `{fill}`, `{label}`, `{cpu_usage}`, `{memory_usage}`,
+  `{cpu_temp}`, `{date}`, and `{time}`. `{fill}` MUST consume the remaining
+  columns so following content is right aligned.
+- A configured format MUST contain `{session}`, `{tabs}`, `{date}`, `{time}`, and
+  exactly one `{fill}`. Control characters and unknown placeholders MUST fail
+  startup.
+- Status labels and the base, label, and active-tab foreground/background
+  colours MUST be configurable. Active tabs MUST retain brackets and terminal
+  attributes even when custom colours are used.
+- Status colours MUST accept `default`, the 16 ANSI colour names, and `#RRGGBB`;
+  they MUST use the existing safe colour downgrade path.
+- `{cpu_usage}` MUST be sampled from `/proc/stat`, `{memory_usage}` from
+  `MemTotal` and `MemAvailable` in `/proc/meminfo`, and `{cpu_temp}` from the
+  explicitly configured sysfs file. Missing values MUST render as `-`.
+- System metrics MUST refresh only when their placeholders are configured.
+  Metric-only updates MUST redraw only the status row.
 
 ## Configuration
 
@@ -416,6 +440,15 @@ mouse = false
 scrollback_lines = 2000
 date_format = "%Y-%m-%d"
 time_format = "%H:%M"
+status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
+status_label = ""
+status_refresh_seconds = 2
+status_foreground = "black"
+status_background = "cyan"
+label_foreground = "bright-white"
+label_background = "red"
+active_tab_foreground = "black"
+active_tab_background = "bright-yellow"
 terminal_profile = "auto"
 inner_term = "termfold-256color"
 ```
@@ -429,6 +462,12 @@ file automatically.
 - `scrollback_lines` MUST be between 0 and 10,000 inclusive.
 - `date_format` and `time_format` MUST each contain at most 64 characters and
   support only `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`, `%p`, and `%%` directives.
+- `status_format` MUST contain at most 512 characters and follow the Status Bar
+  placeholder rules.
+- `status_label` MUST contain at most 64 characters and no control characters.
+- `status_refresh_seconds` MUST be between 1 and 3,600 inclusive.
+- `cpu_temperature_path`, when set, MUST be an absolute path below `/sys` without
+  parent-directory components.
 - `terminal_profile` MUST be `auto` or the exact name of a built-in profile.
 - `inner_term` MUST be `termfold-256color` or the explicitly supported
   compatibility value `xterm-256color`.

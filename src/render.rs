@@ -1,4 +1,4 @@
-use std::{ffi::CString, fmt::Write as _, io::Write as _, time::SystemTime};
+use std::{ffi::CString, fmt::Write as _, fs, io::Write as _, path::Path, time::SystemTime};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -10,9 +10,76 @@ use crate::{
 
 pub type Snapshot = Vec<(PaneId, Vec<Vec<Cell>>)>;
 
-pub struct Clock<'a> {
+#[derive(Clone, Copy)]
+pub struct StatusLine<'a> {
     pub date_format: &'a str,
     pub time_format: &'a str,
+    pub format: &'a str,
+    pub label: &'a str,
+    pub metrics: &'a Metrics,
+    pub foreground: Color,
+    pub background: Color,
+    pub label_foreground: Color,
+    pub label_background: Color,
+    pub active_foreground: Color,
+    pub active_background: Color,
+}
+
+#[derive(Default)]
+pub struct Metrics {
+    cpu_sample: Option<(u64, u64)>,
+    cpu_usage: Option<u8>,
+    memory_usage: Option<u8>,
+    cpu_temperature: Option<i64>,
+}
+
+impl Metrics {
+    pub fn refresh(&mut self, temperature_path: Option<&Path>) {
+        if let Some(sample) = read_cpu_sample() {
+            self.record_cpu_sample(sample);
+        }
+        self.memory_usage = read_memory_usage();
+        self.cpu_temperature = temperature_path
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(|value| {
+                if value.abs() >= 1_000 {
+                    value / 1_000
+                } else {
+                    value
+                }
+            });
+    }
+
+    fn cpu_usage(&self) -> String {
+        self.cpu_usage
+            .map_or_else(|| "-".into(), |value| value.to_string())
+    }
+
+    fn memory_usage(&self) -> String {
+        self.memory_usage
+            .map_or_else(|| "-".into(), |value| value.to_string())
+    }
+
+    fn cpu_temperature(&self) -> String {
+        self.cpu_temperature
+            .map_or_else(|| "-".into(), |value| format!("{value}C"))
+    }
+
+    fn record_cpu_sample(&mut self, (total, idle): (u64, u64)) {
+        if let Some((previous_total, previous_idle)) = self.cpu_sample {
+            let elapsed = total.saturating_sub(previous_total);
+            let idle = idle.saturating_sub(previous_idle);
+            if let Some(usage) = elapsed
+                .saturating_sub(idle)
+                .saturating_mul(100)
+                .checked_div(elapsed)
+            {
+                self.cpu_usage = Some(usage.min(100) as u8);
+            }
+        }
+        self.cpu_sample = Some((total, idle));
+    }
 }
 
 pub fn clock_key(now: SystemTime, seconds: bool) -> u64 {
@@ -27,7 +94,7 @@ pub fn full(
     session: &Session,
     panes: &[(PaneId, &Terminal)],
     size: Size,
-    clock: Clock<'_>,
+    status_line: StatusLine<'_>,
     message: Option<&str>,
     scroll_offset: Option<usize>,
     capabilities: Capabilities,
@@ -92,8 +159,7 @@ pub fn full(
     output.extend_from_slice(&status(
         session,
         size,
-        clock.date_format,
-        clock.time_format,
+        status_line,
         message,
         false,
         capabilities,
@@ -178,14 +244,13 @@ pub fn changes(
 pub fn status(
     session: &Session,
     size: Size,
-    date_format: &str,
-    time_format: &str,
+    status_line: StatusLine<'_>,
     message: Option<&str>,
     preserve_cursor: bool,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let width = usize::from(size.columns);
-    let (date, time) = format_clock(date_format, time_format);
+    let (date, time) = format_clock(status_line.date_format, status_line.time_format);
     let active = session.active_tab().unwrap_or(0);
     let (segments, _) = message.map_or_else(
         || {
@@ -195,6 +260,7 @@ pub fn status(
                 active,
                 &date,
                 &time,
+                status_line,
                 width,
             )
         },
@@ -207,22 +273,40 @@ pub fn status(
     move_cursor(&mut output, size.rows.saturating_sub(1), 0);
     let mut attributes = None;
     let mut used = 0;
-    for (text, tab) in segments {
-        let marked = tab == Some(active);
+    for segment in segments {
+        let marked = segment.tab == Some(active);
+        let (foreground, background) = match segment.style {
+            SegmentStyle::Base | SegmentStyle::Fill => {
+                (status_line.foreground, status_line.background)
+            }
+            SegmentStyle::Label => (status_line.label_foreground, status_line.label_background),
+            SegmentStyle::Active => (status_line.active_foreground, status_line.active_background),
+        };
         set_attributes(
             &mut output,
             &mut attributes,
             Attributes {
+                foreground,
+                background,
                 bold: marked,
                 underline: marked,
-                inverse: true,
                 ..Attributes::default()
             },
             capabilities,
         );
-        output.extend_from_slice(text.as_bytes());
-        used += text_width(&text);
+        output.extend_from_slice(segment.text.as_bytes());
+        used += text_width(&segment.text);
     }
+    set_attributes(
+        &mut output,
+        &mut attributes,
+        Attributes {
+            foreground: status_line.foreground,
+            background: status_line.background,
+            ..Attributes::default()
+        },
+        capabilities,
+    );
     output.extend(std::iter::repeat_n(b' ', width.saturating_sub(used)));
     output.extend_from_slice(b"\x1b[0m");
     if preserve_cursor {
@@ -231,24 +315,42 @@ pub fn status(
     output
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SegmentStyle {
+    Base,
+    Fill,
+    Label,
+    Active,
+}
+
+struct Segment {
+    text: String,
+    tab: Option<usize>,
+    style: SegmentStyle,
+}
+
+fn segment(text: String, tab: Option<usize>, style: SegmentStyle) -> Segment {
+    Segment { text, tab, style }
+}
+
 fn message_segments(
     session: &str,
     active: usize,
     message: &str,
     width: usize,
-) -> (Vec<(String, Option<usize>)>, usize) {
+) -> (Vec<Segment>, usize) {
     let active_text = format!("[{}:shell]", active + 1);
     let session = format!("[{session}]");
     let mut result = Vec::new();
     let mut used = 0;
-    for (text, marked) in [
-        (active_text, Some(active)),
-        (format!("  {session}"), None),
-        (format!("  {message}"), None),
+    for (text, marked, style) in [
+        (active_text, Some(active), SegmentStyle::Active),
+        (format!("  {session}"), None, SegmentStyle::Base),
+        (format!("  {message}"), None, SegmentStyle::Base),
     ] {
         let text = truncate(&text, width.saturating_sub(used));
         used += text_width(&text);
-        result.push((text, marked));
+        result.push(segment(text, marked, style));
         if used == width {
             break;
         }
@@ -262,21 +364,33 @@ fn status_segments(
     active: usize,
     date: &str,
     time: &str,
+    status_line: StatusLine<'_>,
     width: usize,
-) -> (Vec<(String, Option<usize>)>, usize) {
-    let session = format!("[{session}]");
-    let clock = format!("{date} {time}");
+) -> (Vec<Segment>, usize) {
     let mut first = 0;
     let mut last = tab_count.saturating_sub(1);
 
     loop {
         let tabs = tab_segments(tab_count, active, first, last);
-        let used = text_width(&session) + 2 + segments_width(&tabs) + 5 + text_width(&clock);
+        let mut result = expand_status(
+            status_line.format,
+            session,
+            tabs,
+            status_line.label,
+            date,
+            time,
+            status_line.metrics,
+        );
+        let used = segments_width(&result);
         if used <= width {
-            let mut result = vec![(session.clone(), None), ("  ".into(), None)];
-            result.extend(tabs);
-            result.push((format!("  |  {clock}"), None));
-            return (result, used);
+            let padding = width - used;
+            if let Some(fill) = result
+                .iter_mut()
+                .find(|segment| segment.style == SegmentStyle::Fill)
+            {
+                fill.text = " ".repeat(padding);
+            }
+            return (result, width);
         }
         let left_distance = active.saturating_sub(first);
         let right_distance = last.saturating_sub(active);
@@ -291,10 +405,14 @@ fn status_segments(
 
     let mut result = Vec::new();
     let mut used = 0;
-    for (text, marked) in [
-        (format!("[{}:shell]", active + 1), Some(active)),
-        (format!("  {time}"), None),
-        (format!("  {session}"), None),
+    for (text, marked, style) in [
+        (
+            format!("[{}:shell]", active + 1),
+            Some(active),
+            SegmentStyle::Active,
+        ),
+        (format!("  {time}"), None, SegmentStyle::Base),
+        (format!("  [{session}]"), None, SegmentStyle::Base),
     ] {
         let remaining = width.saturating_sub(used);
         if remaining == 0 {
@@ -302,36 +420,81 @@ fn status_segments(
         }
         let text = truncate(&text, remaining);
         used += text_width(&text);
-        result.push((text, marked));
+        result.push(segment(text, marked, style));
     }
     (result, used)
 }
 
-fn tab_segments(
-    count: usize,
-    active: usize,
-    first: usize,
-    last: usize,
-) -> Vec<(String, Option<usize>)> {
+fn expand_status(
+    format: &str,
+    session: &str,
+    tabs: Vec<Segment>,
+    label: &str,
+    date: &str,
+    time: &str,
+    metrics: &Metrics,
+) -> Vec<Segment> {
+    let mut result = Vec::new();
+    let mut rest = format;
+    while let Some(start) = rest.find('{') {
+        if start > 0 {
+            result.push(segment(rest[..start].into(), None, SegmentStyle::Base));
+        }
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        match &after[..end] {
+            "session" => result.push(segment(session.into(), None, SegmentStyle::Base)),
+            "tabs" => result.extend(tabs.iter().map(|tab| Segment {
+                text: tab.text.clone(),
+                tab: tab.tab,
+                style: tab.style,
+            })),
+            "fill" => result.push(segment(String::new(), None, SegmentStyle::Fill)),
+            "label" => result.push(segment(label.into(), None, SegmentStyle::Label)),
+            "date" => result.push(segment(date.into(), None, SegmentStyle::Base)),
+            "time" => result.push(segment(time.into(), None, SegmentStyle::Base)),
+            "cpu_usage" => result.push(segment(metrics.cpu_usage(), None, SegmentStyle::Base)),
+            "memory_usage" => {
+                result.push(segment(metrics.memory_usage(), None, SegmentStyle::Base))
+            }
+            "cpu_temp" => result.push(segment(metrics.cpu_temperature(), None, SegmentStyle::Base)),
+            _ => {}
+        }
+        rest = &after[end + 1..];
+    }
+    if !rest.is_empty() {
+        result.push(segment(rest.into(), None, SegmentStyle::Base));
+    }
+    result
+}
+
+fn tab_segments(count: usize, active: usize, first: usize, last: usize) -> Vec<Segment> {
     let mut result = Vec::new();
     if first > 0 {
-        result.push(("< ".into(), None));
+        result.push(segment("< ".into(), None, SegmentStyle::Base));
     }
     for index in first..=last {
         if index > first {
-            result.push(("  ".into(), None));
+            result.push(segment("  ".into(), None, SegmentStyle::Base));
         }
-        result.push((
+        result.push(segment(
             if index == active {
                 format!("[{}:shell]", index + 1)
             } else {
                 format!("{}:shell", index + 1)
             },
             Some(index),
+            if index == active {
+                SegmentStyle::Active
+            } else {
+                SegmentStyle::Base
+            },
         ));
     }
     if last + 1 < count {
-        result.push((" >".into(), None));
+        result.push(segment(" >".into(), None, SegmentStyle::Base));
     }
     result
 }
@@ -339,13 +502,12 @@ fn tab_segments(
 pub fn status_tab_at(
     session: &Session,
     size: Size,
-    date_format: &str,
-    time_format: &str,
+    status_line: StatusLine<'_>,
     message: Option<&str>,
     x: u16,
 ) -> Option<usize> {
     let active = session.active_tab()?;
-    let (date, time) = format_clock(date_format, time_format);
+    let (date, time) = format_clock(status_line.date_format, status_line.time_format);
     let (segments, _) = message.map_or_else(
         || {
             status_segments(
@@ -354,20 +516,68 @@ pub fn status_tab_at(
                 active,
                 &date,
                 &time,
+                status_line,
                 usize::from(size.columns),
             )
         },
         |message| message_segments(session.name(), active, message, usize::from(size.columns)),
     );
     let mut start = 0;
-    for (text, tab) in segments {
-        let end = start + text_width(&text);
+    for segment in segments {
+        let end = start + text_width(&segment.text);
         if (start..end).contains(&usize::from(x)) {
-            return tab;
+            return segment.tab;
         }
         start = end;
     }
     None
+}
+
+fn read_cpu_sample() -> Option<(u64, u64)> {
+    let source = fs::read_to_string("/proc/stat").ok()?;
+    parse_cpu_sample(&source)
+}
+
+fn parse_cpu_sample(source: &str) -> Option<(u64, u64)> {
+    let mut values = source.lines().next()?.split_whitespace();
+    (values.next()? == "cpu").then_some(())?;
+    let values = values
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let total = values.iter().copied().sum();
+    let idle = values.get(3).copied().unwrap_or(0) + values.get(4).copied().unwrap_or(0);
+    Some((total, idle))
+}
+
+fn read_memory_usage() -> Option<u8> {
+    let source = fs::read_to_string("/proc/meminfo").ok()?;
+    parse_memory_usage(&source)
+}
+
+fn parse_memory_usage(source: &str) -> Option<u8> {
+    let mut total = None;
+    let mut available = None;
+    for line in source.lines() {
+        let (name, value) = line.split_once(':')?;
+        let value = value.split_whitespace().next()?.parse::<u64>().ok()?;
+        match name {
+            "MemTotal" => total = Some(value),
+            "MemAvailable" => available = Some(value),
+            _ => {}
+        }
+        if total.is_some() && available.is_some() {
+            break;
+        }
+    }
+    let total = total?;
+    (total > 0).then(|| {
+        (total
+            .saturating_sub(available.unwrap_or_default())
+            .saturating_mul(100)
+            / total)
+            .min(100) as u8
+    })
 }
 
 fn format_clock(date_format: &str, time_format: &str) -> (String, String) {
@@ -596,8 +806,11 @@ fn text_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-fn segments_width(segments: &[(String, Option<usize>)]) -> usize {
-    segments.iter().map(|(text, _)| text_width(text)).sum()
+fn segments_width(segments: &[Segment]) -> usize {
+    segments
+        .iter()
+        .map(|segment| text_width(&segment.text))
+        .sum()
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -623,12 +836,37 @@ mod tests {
         crate::outer::select("auto", "xterm-256color", "truecolor").capabilities
     }
 
+    fn status_line(metrics: &Metrics) -> StatusLine<'_> {
+        StatusLine {
+            date_format: "%Y-%m-%d",
+            time_format: "%H:%M",
+            format: "[{session}]  {tabs}{fill}|  {date} {time}",
+            label: "",
+            metrics,
+            foreground: Color::Indexed(0),
+            background: Color::Indexed(6),
+            label_foreground: Color::Indexed(15),
+            label_background: Color::Indexed(1),
+            active_foreground: Color::Indexed(0),
+            active_background: Color::Indexed(11),
+        }
+    }
+
     #[test]
     fn status_keeps_active_then_time_then_session_when_narrow() {
-        let (segments, width) = status_segments("demo", 3, 1, "2026-07-19", "18:42", 20);
+        let metrics = Metrics::default();
+        let (segments, width) = status_segments(
+            "demo",
+            3,
+            1,
+            "2026-07-19",
+            "18:42",
+            status_line(&metrics),
+            20,
+        );
         let text = segments
             .into_iter()
-            .map(|(text, _)| text)
+            .map(|segment| segment.text)
             .collect::<String>();
         assert_eq!(width, 20);
         assert_eq!(text, "[2:shell]  18:42  [d");
@@ -636,10 +874,12 @@ mod tests {
 
     #[test]
     fn status_removes_furthest_inactive_tabs_first() {
-        let (segments, _) = status_segments("s", 5, 2, "2026-07-19", "18:42", 49);
+        let metrics = Metrics::default();
+        let (segments, _) =
+            status_segments("s", 5, 2, "2026-07-19", "18:42", status_line(&metrics), 49);
         let text = segments
             .into_iter()
-            .map(|(text, _)| text)
+            .map(|segment| segment.text)
             .collect::<String>();
         assert!(text.contains("< "), "{text}");
         assert!(text.contains("[3:shell]"), "{text}");
@@ -649,7 +889,34 @@ mod tests {
     }
 
     #[test]
+    fn status_fills_to_right_align_unicode_and_samples_linux_metrics() {
+        let mut metrics = Metrics::default();
+        metrics.record_cpu_sample((100, 40));
+        metrics.record_cpu_sample((200, 70));
+        assert_eq!(metrics.cpu_usage(), "70");
+        assert_eq!(
+            parse_memory_usage("MemTotal: 1000 kB\nMemAvailable: 250 kB\n"),
+            Some(75)
+        );
+
+        let line = StatusLine {
+            format: "[{session}] {tabs} │ {label}{fill}CPU {cpu_usage}% {date} {time}",
+            label: "PROD",
+            ..status_line(&metrics)
+        };
+        let (segments, width) = status_segments("s", 1, 0, "2026-07-25", "18:42", line, 60);
+        let text = segments
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect::<String>();
+        assert_eq!(width, 60);
+        assert_eq!(text_width(&text), 60);
+        assert!(text.ends_with("CPU 70% 2026-07-25 18:42"), "{text}");
+    }
+
+    #[test]
     fn status_tab_hit_testing_matches_rendered_tabs() {
+        let metrics = Metrics::default();
         let mut session = Session::new("s".into());
         session.create_tab().unwrap();
         let size = Size {
@@ -657,11 +924,11 @@ mod tests {
             rows: 24,
         };
         assert_eq!(
-            status_tab_at(&session, size, "%Y-%m-%d", "%H:%M", None, 5),
+            status_tab_at(&session, size, status_line(&metrics), None, 5),
             Some(0)
         );
         assert_eq!(
-            status_tab_at(&session, size, "%Y-%m-%d", "%H:%M", None, 14),
+            status_tab_at(&session, size, status_line(&metrics), None, 14),
             Some(1)
         );
     }
@@ -691,6 +958,7 @@ mod tests {
 
     #[test]
     fn full_render_includes_pane_content_and_status() {
+        let metrics = Metrics::default();
         let session = Session::new("s".into());
         let pane = session.active_pane().unwrap();
         let mut terminal = Terminal::new(Size {
@@ -706,10 +974,7 @@ mod tests {
                 columns: 40,
                 rows: 3,
             },
-            Clock {
-                date_format: "%Y-%m-%d",
-                time_format: "%H:%M",
-            },
+            status_line(&metrics),
             None,
             None,
             capabilities(),

@@ -29,6 +29,7 @@ pub enum Action {
     ScrollView,
     Scroll(i32),
     ExitScrollView,
+    ClearScrollback,
     SaveScrollback(String),
     Mouse(MouseEvent),
     Status(String),
@@ -296,6 +297,7 @@ fn prefix_action(prefix: u8, sequence: &[u8]) -> Option<Action> {
             b'x' => Action::Status("close pane? (y/n)".into()),
             b'd' => Action::Detach,
             b'[' => Action::ScrollView,
+            b'C' => Action::ClearScrollback,
             b'S' => Action::Status("save scrollback file: ".into()),
             _ => Action::Status("unsupported prefix command".into()),
         });
@@ -401,6 +403,7 @@ mod tests {
             (b"\x02|", Action::Split(Split::LeftRight)),
             (b"\x02-", Action::Split(Split::TopBottom)),
             (b"\x02d", Action::Detach),
+            (b"\x02C", Action::ClearScrollback),
             (b"\x02[", Action::ScrollView),
         ] {
             assert_eq!(input.advance(bytes), vec![action]);

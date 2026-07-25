@@ -335,6 +335,14 @@ impl Terminal {
         self.state.primary.scrollback_epoch
     }
 
+    pub fn clear_scrollback(&mut self) {
+        if !self.state.primary.scrollback.is_empty() {
+            self.state.primary.scrollback.clear();
+            self.state.primary.scrollback_epoch =
+                self.state.primary.scrollback_epoch.saturating_add(1);
+        }
+    }
+
     pub fn view_row(&self, offset: usize, row: usize) -> &[Cell] {
         let screen = if offset == 0 {
             self.state.screen()
@@ -1301,5 +1309,10 @@ mod tests {
         terminal.advance(b"\r\nfive");
         assert_eq!(terminal.max_scroll_offset(), 2);
         assert_eq!(terminal.scrollback_text(), "two\nthree\n");
+
+        let screen = terminal.screen().rows().to_vec();
+        terminal.clear_scrollback();
+        assert_eq!(terminal.max_scroll_offset(), 0);
+        assert_eq!(terminal.screen().rows(), screen);
     }
 }

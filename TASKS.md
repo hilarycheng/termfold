@@ -180,3 +180,12 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Blocked by unavailable environments: live Linux 4.18, WSL, SSH, WezTerm,
     Windows Terminal, and Windows Command Prompt runs. Automated PTY, profile,
     restoration, detach, and reattach checks passed.
+
+- [*] **T16 — Add configurable status indicators and scrollback clearing**
+  - Add active-pane scrollback clearing, a validated status template with right
+    alignment, configurable labels and colours, and dependency-free Linux CPU,
+    memory, and temperature indicators.
+  - Requirements: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
+  - Depends on: T10, T11, T12.
+  - Done when: focused input, terminal, configuration, rendering, integration,
+    lint, and static release checks pass.
