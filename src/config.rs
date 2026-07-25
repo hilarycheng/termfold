@@ -11,6 +11,7 @@ pub struct Config {
     pub time_format: String,
     pub status_format: String,
     pub status_label: String,
+    pub status_theme: String,
     pub status_refresh_seconds: u16,
     pub cpu_temperature_path: Option<PathBuf>,
     pub status_foreground: Color,
@@ -33,6 +34,7 @@ impl Default for Config {
             time_format: "%H:%M".into(),
             status_format: "[{session}]  {tabs}{fill}|  {date} {time}".into(),
             status_label: String::new(),
+            status_theme: "default".into(),
             status_refresh_seconds: 2,
             cpu_temperature_path: None,
             status_foreground: Color::Indexed(0),
@@ -99,6 +101,7 @@ impl Config {
                 "label_background" => 16384,
                 "active_tab_foreground" => 32768,
                 "active_tab_background" => 65536,
+                "status_theme" => 131072,
                 _ => return Err(field_error(field, "unknown field")),
             };
             if seen & bit != 0 {
@@ -116,6 +119,7 @@ impl Config {
                 "inner_term" => config.inner_term = parse_inner_term(field, value)?,
                 "status_format" => config.status_format = parse_status_format(field, value)?,
                 "status_label" => config.status_label = parse_text(field, value, 64)?,
+                "status_theme" => config.status_theme = parse_status_theme(field, value)?,
                 "status_refresh_seconds" => {
                     config.status_refresh_seconds = parse_refresh(field, value)?
                 }
@@ -133,6 +137,35 @@ impl Config {
                     config.active_tab_background = parse_color(field, value)?
                 }
                 _ => unreachable!(),
+            }
+        }
+
+        let explicit = [
+            config.status_foreground,
+            config.status_background,
+            config.label_foreground,
+            config.label_background,
+            config.active_tab_foreground,
+            config.active_tab_background,
+        ];
+        if let Some(colors) = theme_colors(&config.status_theme) {
+            config.status_foreground = colors[0];
+            config.status_background = colors[1];
+            config.label_foreground = colors[2];
+            config.label_background = colors[3];
+            config.active_tab_foreground = colors[4];
+            config.active_tab_background = colors[5];
+            for (bit, configured, value) in [
+                (2048, &mut config.status_foreground, explicit[0]),
+                (4096, &mut config.status_background, explicit[1]),
+                (8192, &mut config.label_foreground, explicit[2]),
+                (16384, &mut config.label_background, explicit[3]),
+                (32768, &mut config.active_tab_foreground, explicit[4]),
+                (65536, &mut config.active_tab_background, explicit[5]),
+            ] {
+                if seen & bit != 0 {
+                    *configured = value;
+                }
             }
         }
 
@@ -375,6 +408,38 @@ fn parse_color(field: &str, value: &str) -> Result<Color, String> {
     ))
 }
 
+fn parse_status_theme(field: &str, value: &str) -> Result<String, String> {
+    let value = parse_string(field, value)?;
+    if value == "default" || theme_colors(&value).is_some() {
+        Ok(value)
+    } else {
+        Err(field_error(field, "unknown built-in status theme"))
+    }
+}
+
+fn theme_colors(name: &str) -> Option<[Color; 6]> {
+    let colors = match name {
+        "catppuccin-latte" => [0x4c4f69, 0xeff1f5, 0xeff1f5, 0xd20f39, 0xeff1f5, 0x1e66f5],
+        "catppuccin-mocha" => [0xcdd6f4, 0x1e1e2e, 0x1e1e2e, 0xf38ba8, 0x1e1e2e, 0x89b4fa],
+        "solarized-light" => [0x657b83, 0xfdf6e3, 0xfdf6e3, 0xdc322f, 0xfdf6e3, 0x268bd2],
+        "solarized-dark" => [0x839496, 0x002b36, 0xfdf6e3, 0xdc322f, 0xfdf6e3, 0x268bd2],
+        "gruvbox-light" => [0x3c3836, 0xfbf1c7, 0xfbf1c7, 0xcc241d, 0xfbf1c7, 0x458588],
+        "gruvbox-dark" => [0xebdbb2, 0x282828, 0xfbf1c7, 0xcc241d, 0x282828, 0xd79921],
+        "tokyo-night-day" => [0x3760bf, 0xe1e2e7, 0xe1e2e7, 0xf52a65, 0xe1e2e7, 0x2e7de9],
+        "tokyo-night" => [0xc0caf5, 0x1a1b26, 0x1a1b26, 0xf7768e, 0x1a1b26, 0x7aa2f7],
+        "dracula" => [0xf8f8f2, 0x282a36, 0x282a36, 0xff5555, 0x282a36, 0x8be9fd],
+        "nord" => [0xd8dee9, 0x2e3440, 0x2e3440, 0xbf616a, 0x2e3440, 0x88c0d0],
+        _ => return None,
+    };
+    Some(colors.map(|value| {
+        Color::Rgb(
+            ((value >> 16) & 0xff) as u8,
+            ((value >> 8) & 0xff) as u8,
+            (value & 0xff) as u8,
+        )
+    }))
+}
+
 fn parse_profile(field: &str, value: &str) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value == "auto" || crate::outer::built_in(&value).is_some() {
@@ -445,6 +510,21 @@ mod tests {
         assert_eq!(
             Config::parse("cpu_temperature_path = \"/tmp/sensor\"").unwrap_err(),
             "configuration field 'cpu_temperature_path': expected an absolute path below /sys"
+        );
+    }
+
+    #[test]
+    fn applies_status_themes_before_individual_colour_overrides() {
+        let config =
+            Config::parse("status_foreground = \"#010203\"\nstatus_theme = \"catppuccin-mocha\"")
+                .unwrap();
+        assert_eq!(config.status_foreground, Color::Rgb(1, 2, 3));
+        assert_eq!(config.status_background, Color::Rgb(30, 30, 46));
+        assert_eq!(config.active_tab_background, Color::Rgb(137, 180, 250));
+
+        assert_eq!(
+            Config::parse("status_theme = \"unknown\"").unwrap_err(),
+            "configuration field 'status_theme': unknown built-in status theme"
         );
     }
 }

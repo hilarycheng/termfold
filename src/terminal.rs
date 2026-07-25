@@ -383,6 +383,25 @@ impl Terminal {
         }
         output
     }
+
+    pub fn search_scrollback(&self, query: &str) -> Vec<usize> {
+        let scrollback = &self.state.primary.scrollback;
+        scrollback
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, row)| {
+                let text: String = row
+                    .iter()
+                    .filter(|cell| !cell.is_continuation())
+                    .flat_map(|cell| {
+                        std::iter::once(cell.character()).chain(cell.combining().chars())
+                    })
+                    .collect();
+                text.contains(query).then_some(scrollback.len() - index)
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1314,5 +1333,20 @@ mod tests {
         terminal.clear_scrollback();
         assert_eq!(terminal.max_scroll_offset(), 0);
         assert_eq!(terminal.screen().rows(), screen);
+    }
+
+    #[test]
+    fn searches_retained_scrollback_from_newest_to_oldest() {
+        let mut terminal = Terminal::with_scrollback(
+            Size {
+                columns: 8,
+                rows: 2,
+            },
+            10,
+        )
+        .unwrap();
+        terminal.advance(b"one hit\r\ntwo\r\nhit 3\r\nfour\r\nlive");
+        assert_eq!(terminal.search_scrollback("hit"), vec![1, 3]);
+        assert!(terminal.search_scrollback("HIT").is_empty());
     }
 }

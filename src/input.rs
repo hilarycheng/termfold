@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crate::session::{Direction, Split};
 
 const MAX_FILENAME_BYTES: usize = 4096;
+const MAX_SEARCH_BYTES: usize = 256;
 const MAX_MOUSE_SEQUENCE_BYTES: usize = 32;
 const MOUSE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(10);
 
@@ -26,8 +27,16 @@ pub enum Action {
     Resize(Direction),
     ClosePane,
     Detach,
+    HelpView,
+    HelpScroll(i32),
+    ExitHelpView,
     ScrollView,
     Scroll(i32),
+    ScrollTop,
+    ScrollBottom,
+    Search(String),
+    SearchNext(bool),
+    SearchCancelled,
     ExitScrollView,
     ClearScrollback,
     SaveScrollback(String),
@@ -42,7 +51,9 @@ enum Mode {
     ConfirmClose,
     Filename(Vec<u8>),
     Resize(Vec<u8>),
+    Help(Vec<u8>),
     Scroll(Vec<u8>),
+    Search(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -65,6 +76,14 @@ impl Input {
         }
     }
 
+    pub fn prefix(&self) -> u8 {
+        self.prefix
+    }
+
+    pub fn is_scroll_mode(&self) -> bool {
+        matches!(self.mode, Mode::Scroll(_) | Mode::Search(_))
+    }
+
     pub fn advance(&mut self, bytes: &[u8]) -> Vec<Action> {
         if self.pending_mouse.is_empty() && bytes == b"\x1b" {
             match self.mode {
@@ -75,6 +94,14 @@ impl Input {
                 Mode::Scroll(_) => {
                     self.mode = Mode::Normal;
                     return vec![Action::ExitScrollView];
+                }
+                Mode::Help(_) => {
+                    self.mode = Mode::Normal;
+                    return vec![Action::ExitHelpView];
+                }
+                Mode::Search(_) => {
+                    self.mode = Mode::Scroll(Vec::new());
+                    return vec![Action::SearchCancelled];
                 }
                 _ => {}
             }
@@ -141,6 +168,7 @@ impl Input {
                         [b'x'] => Mode::ConfirmClose,
                         [b'S'] => Mode::Filename(Vec::new()),
                         [b'r'] => Mode::Resize(Vec::new()),
+                        [b'?'] => Mode::Help(Vec::new()),
                         [b'['] => Mode::Scroll(Vec::new()),
                         _ => Mode::Normal,
                     };
@@ -199,6 +227,32 @@ impl Input {
                     }
                 }
             }
+            Mode::Help(sequence) => {
+                sequence.push(byte);
+                let action = match sequence.as_slice() {
+                    [b'q' | 3] => Some(Action::ExitHelpView),
+                    [b'k'] | [27, b'[', b'A'] => Some(Action::HelpScroll(-1)),
+                    [b'j'] | [27, b'[', b'B'] => Some(Action::HelpScroll(1)),
+                    [27, b'[', b'5', b'~'] => Some(Action::HelpScroll(i32::MIN)),
+                    [27, b'[', b'6', b'~'] => Some(Action::HelpScroll(i32::MAX)),
+                    [27] | [27, b'['] | [27, b'[', b'5' | b'6'] => None,
+                    _ => Some(Action::Status(
+                        "help: arrows/j/k/Page Up/Page Down, q/Esc exits".into(),
+                    )),
+                };
+                if let Some(action) = action {
+                    if matches!(action, Action::ExitHelpView) {
+                        self.mode = Mode::Normal;
+                    } else {
+                        sequence.clear();
+                    }
+                    actions.push(action);
+                }
+            }
+            Mode::Scroll(_) if byte == b'/' => {
+                self.mode = Mode::Search(Vec::new());
+                actions.push(Action::Status("/".into()));
+            }
             Mode::Scroll(sequence) => {
                 sequence.push(byte);
                 let action = match sequence.as_slice() {
@@ -207,9 +261,13 @@ impl Input {
                     [b'j'] | [27, b'[', b'B'] => Some(Action::Scroll(-1)),
                     [27, b'[', b'5', b'~'] => Some(Action::Scroll(i32::MAX)),
                     [27, b'[', b'6', b'~'] => Some(Action::Scroll(i32::MIN)),
+                    [b'g'] => Some(Action::ScrollTop),
+                    [b'G'] => Some(Action::ScrollBottom),
+                    [b'n'] => Some(Action::SearchNext(true)),
+                    [b'N'] => Some(Action::SearchNext(false)),
                     [27] | [27, b'['] | [27, b'[', b'5' | b'6'] => None,
                     _ => Some(Action::Status(
-                        "scroll view: arrows/Page Up/Page Down, q exits".into(),
+                        "scroll: arrows/j/k/Page Up/Page Down, / search, q/Esc exits".into(),
                     )),
                 };
                 if let Some(action) = action {
@@ -220,6 +278,29 @@ impl Input {
                     }
                     actions.push(action);
                 }
+            }
+            Mode::Search(_) if matches!(byte, 3 | 27) => {
+                self.mode = Mode::Scroll(Vec::new());
+                actions.push(Action::SearchCancelled);
+            }
+            Mode::Search(query) if matches!(byte, 8 | 127) => {
+                query.pop();
+                actions.push(search_status(query));
+            }
+            Mode::Search(query) if matches!(byte, b'\r' | b'\n') => {
+                actions.push(match String::from_utf8(std::mem::take(query)) {
+                    Ok(query) if !query.is_empty() => Action::Search(query),
+                    Ok(_) => Action::Status("search is empty".into()),
+                    Err(_) => Action::Status("search must be UTF-8".into()),
+                });
+                self.mode = Mode::Scroll(Vec::new());
+            }
+            Mode::Search(query) if query.len() == MAX_SEARCH_BYTES => {
+                actions.push(Action::Status("search is too long".into()));
+            }
+            Mode::Search(query) => {
+                query.push(byte);
+                actions.push(search_status(query));
             }
         }
     }
@@ -296,6 +377,7 @@ fn prefix_action(prefix: u8, sequence: &[u8]) -> Option<Action> {
             b'r' => Action::Status("resize mode: arrows resize, Esc exits".into()),
             b'x' => Action::Status("close pane? (y/n)".into()),
             b'd' => Action::Detach,
+            b'?' => Action::HelpView,
             b'[' => Action::ScrollView,
             b'C' => Action::ClearScrollback,
             b'S' => Action::Status("save scrollback file: ".into()),
@@ -342,6 +424,14 @@ fn filename_status(filename: &[u8]) -> Action {
         .filter(|character| !character.is_control())
         .collect();
     Action::Status(format!("save scrollback file: {visible}"))
+}
+
+fn search_status(query: &[u8]) -> Action {
+    let visible: String = String::from_utf8_lossy(query)
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    Action::Status(format!("/{visible}"))
 }
 
 fn push_forward(actions: &mut Vec<Action>, bytes: &mut Vec<u8>) {
@@ -409,10 +499,8 @@ mod tests {
             assert_eq!(input.advance(bytes), vec![action]);
         }
         assert_eq!(input.advance(b"q"), vec![Action::ExitScrollView]);
-        assert_eq!(
-            input.advance(b"\x02?"),
-            vec![Action::Status("unsupported prefix command".into())]
-        );
+        assert_eq!(input.advance(b"\x02?"), vec![Action::HelpView]);
+        assert_eq!(input.advance(b"q"), vec![Action::ExitHelpView]);
         assert_eq!(
             input.advance(b"\x02xN"),
             vec![
@@ -441,11 +529,36 @@ mod tests {
         let mut input = Input::new(2, false);
         assert_eq!(input.advance(b"\x02["), vec![Action::ScrollView]);
         assert_eq!(
-            input.advance(b"\x1b[A\x1b[6~"),
-            vec![Action::Scroll(1), Action::Scroll(i32::MIN)]
+            input.advance(b"\x1b[A\x1b[6~gG/error\rnN"),
+            vec![
+                Action::Scroll(1),
+                Action::Scroll(i32::MIN),
+                Action::ScrollTop,
+                Action::ScrollBottom,
+                Action::Status("/".into()),
+                Action::Status("/e".into()),
+                Action::Status("/er".into()),
+                Action::Status("/err".into()),
+                Action::Status("/erro".into()),
+                Action::Status("/error".into()),
+                Action::Search("error".into()),
+                Action::SearchNext(true),
+                Action::SearchNext(false),
+            ]
         );
-        assert_eq!(input.advance(b"q"), vec![Action::ExitScrollView]);
+        assert_eq!(input.advance(b"\x1b"), vec![Action::ExitScrollView]);
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
+    }
+
+    #[test]
+    fn help_view_pages_and_escape_exits() {
+        let mut input = Input::new(2, false);
+        assert_eq!(input.advance(b"\x02?"), vec![Action::HelpView]);
+        assert_eq!(
+            input.advance(b"j\x1b[5~"),
+            vec![Action::HelpScroll(1), Action::HelpScroll(i32::MIN)]
+        );
+        assert_eq!(input.advance(b"\x1b"), vec![Action::ExitHelpView]);
     }
 
     #[test]

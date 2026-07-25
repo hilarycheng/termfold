@@ -161,7 +161,9 @@ fn prefix_commands_create_tabs_report_errors_and_detach() {
     send_input(&mut stream, b"\x02c");
     wait_for_screen(&mut stream, b"[2:shell]");
     send_input(&mut stream, b"\x02?");
-    wait_for_screen(&mut stream, b"unsupported prefix command");
+    wait_for_screen_all(&mut stream, &[b"Termfold key reminder", b"Ctrl-b c"]);
+    send_input(&mut stream, b"\x1b");
+    wait_for_screen(&mut stream, b"[2:shell]");
     send_input(&mut stream, b"\x02d");
     assert!(read_frame(&mut stream).is_none());
 }

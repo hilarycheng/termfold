@@ -114,6 +114,7 @@ Do not hold `Ctrl-b` while pressing the command key.
 | `Ctrl-b r` | Enter resize mode |
 | `Ctrl-b x` | Ask to close the active pane; press `y` to confirm |
 | `Ctrl-b d` | Detach this client and leave the session running |
+| `Ctrl-b ?` | Show the key-reminder help view |
 | `Ctrl-b [` | Enter the active pane's read-only scroll view |
 | `Ctrl-b C` | Clear all retained scrollback for the active pane |
 | `Ctrl-b S` | Prompt for a file and save the active pane's scrollback |
@@ -125,6 +126,12 @@ an arrow key. For repeated resizing, press `Ctrl-b r`, use Arrow keys, then pres
 An unknown prefix command is not sent to the application; Termfold reports it in
 the status bar.
 
+### Key reminder
+
+After `Ctrl-b ?`, Termfold lists each key combination and its meaning using the
+configured prefix. Use `Up`, `Down`, `j`, `k`, Page Up, or Page Down to navigate;
+`q`, `Ctrl-c`, or `Esc` exits.
+
 ### Scroll view
 
 After `Ctrl-b [`:
@@ -135,10 +142,14 @@ After `Ctrl-b [`:
 | `Down` or `j` | Scroll down one line |
 | `Page Up` | Scroll up one page |
 | `Page Down` | Scroll down one page |
+| `g` / `G` | Go to the oldest / newest position |
+| `/` | Enter a case-sensitive literal search |
+| `n` / `N` | Find the next older / newer match |
 | `q`, `Ctrl-c`, or `Esc` | Return to the live pane |
 
 Scroll view is read-only. Use the outer terminal's normal text selection and
-clipboard features to copy visible text.
+clipboard features to copy visible text. Its bottom-row reminder shows more keys
+when the terminal is wide and a minimal reminder when it is narrow.
 
 ### Save scrollback
 
@@ -201,6 +212,7 @@ date_format = "%Y-%m-%d"
 time_format = "%H:%M"
 status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
 status_label = ""
+status_theme = "default"
 status_refresh_seconds = 2
 status_foreground = "black"
 status_background = "cyan"
@@ -223,6 +235,7 @@ inner_term = "termfold-256color"
 | `time_format` | Up to 64 characters using supported time directives |
 | `status_format` | Up to 512 UTF-8 characters using supported placeholders |
 | `status_label` | Up to 64 printable characters |
+| `status_theme` | `default` or one of the ten built-in themes below |
 | `status_refresh_seconds` | `1` through `3600` |
 | `cpu_temperature_path` | Optional absolute sensor path below `/sys` |
 | `status_foreground`, `status_background` | Base status colours: `default`, ANSI name, or `#RRGGBB` |
@@ -230,6 +243,12 @@ inner_term = "termfold-256color"
 | `active_tab_foreground`, `active_tab_background` | Active-tab colours: `default`, ANSI name, or `#RRGGBB` |
 | `terminal_profile` | `"auto"` or a built-in terminal profile |
 | `inner_term` | `"termfold-256color"` or compatibility value `"xterm-256color"` |
+
+Built-in status themes are `catppuccin-latte`, `catppuccin-mocha`,
+`solarized-light`, `solarized-dark`, `gruvbox-light`, `gruvbox-dark`,
+`tokyo-night-day`, `tokyo-night`, `dracula`, and `nord`. Individual status
+colour fields override the selected theme. Themes affect Termfold-owned UI, not
+applications inside panes, and require no download or plugin.
 
 Supported date and time directives are `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`,
 `%p`, and `%%`. For example, use `"%I:%M %p"` for a 12-hour clock.

@@ -204,6 +204,7 @@ unchanged to the active application. After a prefix:
 | `r` | Enter resize mode |
 | `x` | Close active pane after confirmation |
 | `d` | Detach |
+| `?` | Show the key-reminder help view |
 | `[` | Enter read-only scroll view |
 | `C` | Clear the active pane's entire retained scrollback |
 | `S` | Save the active pane's retained scrollback as plain text after prompting for a filename |
@@ -214,6 +215,11 @@ enabled.
 
 In resize mode, each Arrow key MUST resize by one cell without another prefix.
 `Esc` MUST leave resize mode.
+
+The help view MUST show each key combination with its meaning, render the
+configured prefix rather than assuming `Ctrl-b`, retain the bottom status row,
+and support line and page navigation. Its status reminder MUST adapt to the
+available width. `q`, `Ctrl-c`, and `Esc` MUST leave the help view.
 
 ## Tabs and Panes
 
@@ -374,6 +380,12 @@ tmux-style copy/paste buffers. Termfold MUST render that history as ordinary
 terminal cells so the outer terminal can provide its native text selection and
 OS clipboard behaviour.
 
+The scroll view MUST support Arrow and `j`/`k` line movement, Page Up and Page
+Down, `g`/`G` movement to the oldest/newest position, and bounded case-sensitive
+literal search with `/`, `n`, and `N`. `q`, `Ctrl-c`, and `Esc` MUST leave the
+scroll view. The status row MUST show the scroll position and an adaptive key
+reminder: detailed when width permits and minimal on narrow terminals.
+
 Termfold MUST NOT invoke OS clipboard helpers or implement its own OS clipboard
 integration. Paste input received from the outer terminal MUST be forwarded to
 the active application, using bracketed-paste markers only when that application
@@ -442,6 +454,7 @@ date_format = "%Y-%m-%d"
 time_format = "%H:%M"
 status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
 status_label = ""
+status_theme = "default"
 status_refresh_seconds = 2
 status_foreground = "black"
 status_background = "cyan"
@@ -465,12 +478,20 @@ file automatically.
 - `status_format` MUST contain at most 512 characters and follow the Status Bar
   placeholder rules.
 - `status_label` MUST contain at most 64 characters and no control characters.
+- `status_theme` MUST be `default`, `catppuccin-latte`, `catppuccin-mocha`,
+  `solarized-light`, `solarized-dark`, `gruvbox-light`, `gruvbox-dark`,
+  `tokyo-night-day`, `tokyo-night`, `dracula`, or `nord`. Individual status
+  colour fields MUST override the selected theme regardless of field order.
 - `status_refresh_seconds` MUST be between 1 and 3,600 inclusive.
 - `cpu_temperature_path`, when set, MUST be an absolute path below `/sys` without
   parent-directory components.
 - `terminal_profile` MUST be `auto` or the exact name of a built-in profile.
 - `inner_term` MUST be `termfold-256color` or the explicitly supported
   compatibility value `xterm-256color`.
+
+Built-in themes MUST be embedded and MUST NOT require runtime downloads. They
+apply only to Termfold-owned UI and MUST use the normal outer-terminal colour
+downgrade path; Termfold MUST NOT claim to recolour pane applications.
 
 ## IPC and Filesystem Security
 

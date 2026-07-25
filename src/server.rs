@@ -45,6 +45,8 @@ struct Client {
     input: Input,
     status: Option<String>,
     scroll_offset: Option<usize>,
+    help_offset: Option<usize>,
+    search_query: Option<String>,
     mouse_capture: Option<MouseCapture>,
 }
 
@@ -255,6 +257,7 @@ pub fn run(
                                     *offset = offset
                                         .saturating_add(added)
                                         .min(pane.terminal.max_scroll_offset());
+                                    set_scroll_status(client, pane.terminal.max_scroll_offset());
                                 }
                             }
                         }
@@ -292,6 +295,7 @@ pub fn run(
                             capabilities,
                             client.status.as_deref(),
                             client.scroll_offset,
+                            client.help_offset,
                         )
                     })
                 })
@@ -302,7 +306,7 @@ pub fn run(
                 rendered_status = Some(key);
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities, message, scroll_offset)| {
+                    .map(|(id, capabilities, message, scroll_offset, help_offset)| {
                         (
                             *id,
                             render::full(
@@ -311,7 +315,7 @@ pub fn run(
                                 authoritative_size,
                                 status_line,
                                 *message,
-                                *scroll_offset,
+                                render_view(*scroll_offset, *help_offset, config.prefix),
                                 *capabilities,
                             ),
                         )
@@ -323,17 +327,17 @@ pub fn run(
                 content_dirty = false;
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities, message, scroll_offset)| {
+                    .map(|(id, capabilities, message, scroll_offset, help_offset)| {
                         (
                             *id,
-                            if scroll_offset.is_some() {
+                            if scroll_offset.is_some() || help_offset.is_some() {
                                 render::full(
                                     &session,
                                     &pane_screens,
                                     authoritative_size,
                                     status_line,
                                     *message,
-                                    *scroll_offset,
+                                    render_view(*scroll_offset, *help_offset, config.prefix),
                                     *capabilities,
                                 )
                             } else {
@@ -355,7 +359,7 @@ pub fn run(
                 Some(
                     targets
                         .iter()
-                        .map(|(id, capabilities, message, _)| {
+                        .map(|(id, capabilities, message, _, _)| {
                             (
                                 *id,
                                 render::status(
@@ -460,6 +464,8 @@ fn accept_clients(
             input: Input::new(prefix, mouse),
             status: None,
             scroll_offset: None,
+            help_offset: None,
+            search_query: None,
             mouse_capture: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
@@ -732,37 +738,122 @@ fn handle_action(
             remove_client(clients, client_id);
             return false;
         }
+        Action::HelpView => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = None;
+                client.help_offset = Some(0);
+                set_help_status(
+                    client,
+                    0,
+                    render::help_max_offset(size.rows, client.input.prefix()),
+                );
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::HelpScroll(amount) => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                let maximum = render::help_max_offset(size.rows, client.input.prefix());
+                if let Some(offset) = client.help_offset {
+                    let lines = if matches!(amount, i32::MAX | i32::MIN) {
+                        usize::from(size.rows.saturating_sub(1))
+                    } else {
+                        amount.unsigned_abs() as usize
+                    };
+                    let offset = if amount > 0 {
+                        offset.saturating_add(lines).min(maximum)
+                    } else {
+                        offset.saturating_sub(lines)
+                    };
+                    client.help_offset = Some(offset);
+                    set_help_status(client, offset, maximum);
+                }
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ExitHelpView => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.help_offset = None;
+                client.status = None;
+            }
+            *input.full_dirty = true;
+            return false;
+        }
         Action::ScrollView => {
             if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.help_offset = None;
                 client.scroll_offset = Some(0);
+                set_scroll_status(client, active_scrollback_maximum(input));
             }
-            set_status(
-                clients,
-                client_id,
-                Some("scroll view: arrows/Page Up/Page Down, q exits".into()),
-                input.full_dirty,
-            );
+            *input.full_dirty = true;
             return false;
         }
         Action::Scroll(amount) => {
-            let maximum = input
-                .session
-                .active_pane()
-                .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
-                .map_or(0, |pane| pane.terminal.max_scroll_offset());
+            let maximum = active_scrollback_maximum(input);
             if let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
-                && let Some(offset) = &mut client.scroll_offset
+                && let Some(offset) = client.scroll_offset
             {
                 let lines = match amount {
                     i32::MAX => usize::from(content_size.rows),
                     i32::MIN => usize::from(content_size.rows),
                     _ => amount.unsigned_abs() as usize,
                 };
-                *offset = if amount > 0 {
+                client.scroll_offset = Some(if amount > 0 {
                     offset.saturating_add(lines).min(maximum)
                 } else {
                     offset.saturating_sub(lines)
-                };
+                });
+                set_scroll_status(client, maximum);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ScrollTop => {
+            let maximum = active_scrollback_maximum(input);
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = Some(maximum);
+                set_scroll_status(client, maximum);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ScrollBottom => {
+            let maximum = active_scrollback_maximum(input);
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = Some(0);
+                set_scroll_status(client, maximum);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::Search(query) => {
+            search_scrollback(clients, client_id, input, query, true);
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::SearchNext(older) => {
+            let query = clients
+                .iter()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.search_query.clone());
+            if let Some(query) = query {
+                search_scrollback(clients, client_id, input, query, older);
+            } else {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("no previous search".into()),
+                    input.full_dirty,
+                );
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::SearchCancelled => {
+            let maximum = active_scrollback_maximum(input);
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                set_scroll_status(client, maximum);
             }
             *input.full_dirty = true;
             return false;
@@ -770,6 +861,7 @@ fn handle_action(
         Action::ExitScrollView => {
             if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
                 client.scroll_offset = None;
+                client.search_query = None;
             }
             set_status(clients, client_id, None, input.full_dirty);
             return false;
@@ -845,12 +937,131 @@ fn handle_action(
     false
 }
 
+fn active_scrollback_maximum(input: &InputContext<'_>) -> usize {
+    input
+        .session
+        .active_pane()
+        .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+        .map_or(0, |pane| pane.terminal.max_scroll_offset())
+}
+
+fn render_view(
+    scroll_offset: Option<usize>,
+    help_offset: Option<usize>,
+    prefix: u8,
+) -> render::View {
+    if let Some(offset) = help_offset {
+        render::View::Help { offset, prefix }
+    } else {
+        scroll_offset.map_or(render::View::Live, render::View::Scroll)
+    }
+}
+
+fn search_scrollback(
+    clients: &mut [Client],
+    client_id: u64,
+    input: &InputContext<'_>,
+    query: String,
+    older: bool,
+) {
+    let (maximum, matches) = input
+        .session
+        .active_pane()
+        .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+        .map_or((0, Vec::new()), |pane| {
+            (
+                pane.terminal.max_scroll_offset(),
+                // ponytail: this scan is bounded by the configured 10,000-line history.
+                pane.terminal.search_scrollback(&query),
+            )
+        });
+    let Some(client) = clients.iter_mut().find(|client| client.id == client_id) else {
+        return;
+    };
+    let current = client.scroll_offset.unwrap_or(0);
+    let next = if older {
+        matches
+            .iter()
+            .copied()
+            .find(|offset| *offset > current)
+            .or_else(|| matches.first().copied())
+    } else {
+        matches
+            .iter()
+            .rev()
+            .copied()
+            .find(|offset| *offset < current)
+            .or_else(|| matches.last().copied())
+    };
+    client.search_query = Some(query.clone());
+    if let Some(offset) = next {
+        client.scroll_offset = Some(offset);
+        set_scroll_status(client, maximum);
+    } else {
+        client.status = Some(format!("no match: /{query}"));
+    }
+}
+
+fn set_scroll_status(client: &mut Client, maximum: usize) {
+    let offset = client.scroll_offset.unwrap_or(0);
+    let percent = offset
+        .saturating_mul(100)
+        .checked_div(maximum)
+        .map_or(100, |position| 100_usize.saturating_sub(position));
+    let width = client.size.map_or(0, |size| usize::from(size.columns));
+    client.status = Some(scroll_status_message(
+        width,
+        percent,
+        client.search_query.as_deref(),
+    ));
+}
+
+fn scroll_status_message(width: usize, percent: usize, query: Option<&str>) -> String {
+    let mut message = if width >= 110 {
+        format!(
+            "SCROLL {percent}% | Up/k up Down/j down PgUp/PgDn page g/G ends / search n/N match q/Esc exit"
+        )
+    } else if width >= 70 {
+        format!("SCROLL {percent}% | Up/Down j/k PgUp/PgDn / n/N q/Esc")
+    } else {
+        format!("SCROLL {percent}% | j/k Pg / Esc")
+    };
+    if let Some(query) = query
+        && width >= 70
+    {
+        message.push_str("  /");
+        message.push_str(query);
+    }
+    message
+}
+
+fn set_help_status(client: &mut Client, offset: usize, maximum: usize) {
+    let page_rows = client
+        .size
+        .map_or(1, |size| usize::from(size.rows.saturating_sub(1)).max(1));
+    let page = offset / page_rows + 1;
+    let pages = maximum.div_ceil(page_rows) + 1;
+    let width = client.size.map_or(0, |size| usize::from(size.columns));
+    client.status = Some(if width >= 75 {
+        format!("HELP {page}/{pages} | Up/Down or j/k line PgUp/PgDn page q/Esc exit")
+    } else {
+        format!("HELP {page}/{pages} | j/k Pg q/Esc")
+    });
+}
+
 fn handle_mouse(
     clients: &mut [Client],
     client_id: u64,
     event: MouseEvent,
     input: &mut InputContext<'_>,
 ) {
+    if clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .is_some_and(|client| client.help_offset.is_some())
+    {
+        return;
+    }
     let size = *input.size;
     if event.x >= size.columns || event.y >= size.rows {
         return;
@@ -958,7 +1169,10 @@ fn handle_mouse(
             } else {
                 current.saturating_sub(3)
             };
-            client.scroll_offset = (next != 0).then_some(next);
+            client.scroll_offset = (next != 0 || client.input.is_scroll_mode()).then_some(next);
+            if client.input.is_scroll_mode() {
+                set_scroll_status(client, maximum);
+            }
             *input.full_dirty = true;
         }
         return;
@@ -1331,5 +1545,17 @@ mod tests {
         let rects = session.pane_rects(size);
         assert_eq!(rects[0].1.width, 6);
         assert_eq!(rects[1].1.width, 2);
+    }
+
+    #[test]
+    fn scroll_status_reminder_adapts_to_width() {
+        assert_eq!(
+            scroll_status_message(40, 37, None),
+            "SCROLL 37% | j/k Pg / Esc"
+        );
+        let detailed = scroll_status_message(120, 37, Some("error"));
+        assert!(detailed.contains("g/G ends"));
+        assert!(detailed.contains("n/N match"));
+        assert!(detailed.ends_with("/error"));
     }
 }

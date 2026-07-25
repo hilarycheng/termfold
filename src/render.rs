@@ -11,6 +11,13 @@ use crate::{
 pub type Snapshot = Vec<(PaneId, Vec<Vec<Cell>>)>;
 
 #[derive(Clone, Copy)]
+pub enum View {
+    Live,
+    Scroll(usize),
+    Help { offset: usize, prefix: u8 },
+}
+
+#[derive(Clone, Copy)]
 pub struct StatusLine<'a> {
     pub date_format: &'a str,
     pub time_format: &'a str,
@@ -96,7 +103,7 @@ pub fn full(
     size: Size,
     status_line: StatusLine<'_>,
     message: Option<&str>,
-    scroll_offset: Option<usize>,
+    view: View,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let mut output = if capabilities.cursor_visibility {
@@ -112,13 +119,47 @@ pub fn full(
     let active = session.active_pane();
     let mut attributes = None;
 
+    if let View::Help { offset, prefix } = view {
+        let lines = help_lines(prefix);
+        for y in 0..content_rows {
+            move_cursor(&mut output, y, 0);
+            set_attributes(
+                &mut output,
+                &mut attributes,
+                Attributes::default(),
+                capabilities,
+            );
+            let line = lines
+                .get(offset + usize::from(y))
+                .map_or("", String::as_str);
+            let line = truncate(line, usize::from(size.columns));
+            output.extend_from_slice(line.as_bytes());
+            output.extend(std::iter::repeat_n(
+                b' ',
+                usize::from(size.columns).saturating_sub(text_width(&line)),
+            ));
+        }
+        output.extend_from_slice(&status(
+            session,
+            size,
+            status_line,
+            message,
+            false,
+            capabilities,
+        ));
+        return output;
+    }
+
     for y in 0..content_rows {
         move_cursor(&mut output, y, 0);
         for x in 0..size.columns {
             if let Some((pane, rect)) = rects.iter().find(|(_, rect)| contains(*rect, x, y))
                 && let Some((_, terminal)) = panes.iter().find(|(id, _)| id == pane)
             {
-                let offset = scroll_offset.filter(|_| Some(*pane) == active).unwrap_or(0);
+                let offset = match view {
+                    View::Scroll(offset) if Some(*pane) == active => offset,
+                    _ => 0,
+                };
                 let cell =
                     &terminal.view_row(offset, usize::from(y - rect.y))[usize::from(x - rect.x)];
                 set_attributes(
@@ -166,12 +207,43 @@ pub fn full(
     ));
     place_cursor(
         &mut output,
-        active.filter(|_| scroll_offset.is_none()),
+        active.filter(|_| matches!(view, View::Live)),
         &rects,
         panes,
         capabilities,
     );
     output
+}
+
+pub fn help_max_offset(rows: u16, prefix: u8) -> usize {
+    help_lines(prefix)
+        .len()
+        .saturating_sub(usize::from(rows.saturating_sub(1)))
+}
+
+fn help_lines(prefix: u8) -> Vec<String> {
+    let prefix = format!("Ctrl-{}", char::from(prefix + b'a' - 1));
+    [
+        "Termfold key reminder".to_string(),
+        String::new(),
+        format!("{prefix} {prefix}       = Send the prefix to the active application"),
+        format!("{prefix} c            = Create tab"),
+        format!("{prefix} n / p        = Next / previous tab"),
+        format!("{prefix} 1..9 / 0     = Select tab 1..10"),
+        format!("{prefix} | / -        = Split left/right / top/bottom"),
+        format!("{prefix} Arrow        = Focus adjacent pane"),
+        format!("{prefix} Ctrl-Arrow   = Resize pane by one cell"),
+        format!("{prefix} r            = Enter resize mode"),
+        format!("{prefix} x            = Close active pane"),
+        format!("{prefix} d            = Detach"),
+        format!("{prefix} [            = Enter scroll mode"),
+        format!("{prefix} C            = Clear retained scrollback"),
+        format!("{prefix} S            = Save retained scrollback"),
+        format!("{prefix} ?            = Show this key reminder"),
+        String::new(),
+        "Help: Up/Down or k/j = line, Page Up/Page Down = page, q/Esc = exit".to_string(),
+    ]
+    .into()
 }
 
 pub fn snapshot(panes: &[(PaneId, &Terminal)]) -> Snapshot {
@@ -976,13 +1048,39 @@ mod tests {
             },
             status_line(&metrics),
             None,
-            None,
+            View::Live,
             capabilities(),
         );
         let output = String::from_utf8_lossy(&output);
         assert!(output.contains("hello"));
         assert!(output.contains("[s]"));
         assert!(output.contains("[1:shell]"));
+    }
+
+    #[test]
+    fn help_uses_the_configured_prefix_and_pages() {
+        let metrics = Metrics::default();
+        let session = Session::new("s".into());
+        let output = full(
+            &session,
+            &[],
+            Size {
+                columns: 80,
+                rows: 8,
+            },
+            status_line(&metrics),
+            Some("HELP 1/3  Up/Down j/k PgUp/PgDn q/Esc"),
+            View::Help {
+                offset: 0,
+                prefix: 1,
+            },
+            capabilities(),
+        );
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("Ctrl-a c"));
+        assert!(output.contains("= Create tab"));
+        assert!(output.contains("HELP 1/3"));
+        assert!(help_max_offset(8, 1) > 0);
     }
 
     #[test]

@@ -189,3 +189,12 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T10, T11, T12.
   - Done when: focused input, terminal, configuration, rendering, integration,
     lint, and static release checks pass.
+
+- [*] **T17 — Add status themes, key help, and searchable scroll mode**
+  - Add ten embedded light/dark status themes, a paginated key-reminder help
+    view, adaptive scroll-mode reminders, ends navigation, and bounded literal
+    scrollback search.
+  - Requirements: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
+  - Depends on: T10, T11, T12, T16.
+  - Done when: focused input, terminal, configuration, rendering, integration,
+    lint, and static release checks pass.
