@@ -215,7 +215,7 @@ fn child_exit_closes_its_pane_and_keeps_the_survivor_running() {
     let mut stream = attach_stream(&runtime.socket("one"), 80, 24);
     wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");
 
-    send_input(&mut stream, b"\x02%");
+    send_input(&mut stream, b"\x02|");
     wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");
     send_input(&mut stream, b"exit\n");
     wait_for_screen(&mut stream, b"\x1b[H\x1b[2J");

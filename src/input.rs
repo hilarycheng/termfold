@@ -40,6 +40,7 @@ enum Mode {
     Prefix(Vec<u8>),
     ConfirmClose,
     Filename(Vec<u8>),
+    Resize(Vec<u8>),
     Scroll(Vec<u8>),
 }
 
@@ -64,10 +65,18 @@ impl Input {
     }
 
     pub fn advance(&mut self, bytes: &[u8]) -> Vec<Action> {
-        if self.pending_mouse.is_empty() && matches!(self.mode, Mode::Scroll(_)) && bytes == b"\x1b"
-        {
-            self.mode = Mode::Normal;
-            return vec![Action::ExitScrollView];
+        if self.pending_mouse.is_empty() && bytes == b"\x1b" {
+            match self.mode {
+                Mode::Resize(_) => {
+                    self.mode = Mode::Normal;
+                    return vec![Action::Status("resize mode ended".into())];
+                }
+                Mode::Scroll(_) => {
+                    self.mode = Mode::Normal;
+                    return vec![Action::ExitScrollView];
+                }
+                _ => {}
+            }
         }
         let mut actions = Vec::new();
         let mut forwarded = Vec::new();
@@ -130,6 +139,7 @@ impl Input {
                     self.mode = match sequence.as_slice() {
                         [b'x'] => Mode::ConfirmClose,
                         [b'S'] => Mode::Filename(Vec::new()),
+                        [b'r'] => Mode::Resize(Vec::new()),
                         [b'['] => Mode::Scroll(Vec::new()),
                         _ => Mode::Normal,
                     };
@@ -166,6 +176,27 @@ impl Input {
             Mode::Filename(filename) => {
                 filename.push(byte);
                 actions.push(filename_status(filename));
+            }
+            Mode::Resize(sequence) => {
+                sequence.push(byte);
+                let action = match sequence.as_slice() {
+                    [27, b'[', final_byte @ (b'A'..=b'D')] => {
+                        Some(Action::Resize(direction(*final_byte)))
+                    }
+                    [27] | [27, b'['] => None,
+                    _ => Some(Action::Status(
+                        "resize mode: arrows resize, Esc exits".into(),
+                    )),
+                };
+                if let Some(action) = action {
+                    sequence.clear();
+                    actions.push(action);
+                    if matches!(actions.last(), Some(Action::Resize(_))) {
+                        actions.push(Action::Status(
+                            "resize mode: arrows resize, Esc exits".into(),
+                        ));
+                    }
+                }
             }
             Mode::Scroll(sequence) => {
                 sequence.push(byte);
@@ -259,8 +290,9 @@ fn prefix_action(prefix: u8, sequence: &[u8]) -> Option<Action> {
             b'p' => Action::PreviousTab,
             b'1'..=b'9' => Action::SelectTab(usize::from(sequence[0] - b'1')),
             b'0' => Action::SelectTab(9),
-            b'%' => Action::Split(Split::LeftRight),
-            b'"' => Action::Split(Split::TopBottom),
+            b'|' => Action::Split(Split::LeftRight),
+            b'-' => Action::Split(Split::TopBottom),
+            b'r' => Action::Status("resize mode: arrows resize, Esc exits".into()),
             b'x' => Action::Status("close pane? (y/n)".into()),
             b'd' => Action::Detach,
             b'[' => Action::ScrollView,
@@ -366,8 +398,8 @@ mod tests {
             (b"\x02p", Action::PreviousTab),
             (b"\x021", Action::SelectTab(0)),
             (b"\x020", Action::SelectTab(9)),
-            (b"\x02%", Action::Split(Split::LeftRight)),
-            (b"\x02\"", Action::Split(Split::TopBottom)),
+            (b"\x02|", Action::Split(Split::LeftRight)),
+            (b"\x02-", Action::Split(Split::TopBottom)),
             (b"\x02d", Action::Detach),
             (b"\x02[", Action::ScrollView),
         ] {
@@ -410,6 +442,31 @@ mod tests {
             vec![Action::Scroll(1), Action::Scroll(i32::MIN)]
         );
         assert_eq!(input.advance(b"q"), vec![Action::ExitScrollView]);
+        assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
+    }
+
+    #[test]
+    fn resize_mode_repeats_until_escape() {
+        let mut input = Input::new(2, false);
+        assert_eq!(
+            input.advance(b"\x02r"),
+            vec![Action::Status(
+                "resize mode: arrows resize, Esc exits".into()
+            )]
+        );
+        assert_eq!(
+            input.advance(b"\x1b[C\x1b[A"),
+            vec![
+                Action::Resize(Direction::Right),
+                Action::Status("resize mode: arrows resize, Esc exits".into()),
+                Action::Resize(Direction::Up),
+                Action::Status("resize mode: arrows resize, Esc exits".into()),
+            ]
+        );
+        assert_eq!(
+            input.advance(b"\x1b"),
+            vec![Action::Status("resize mode ended".into())]
+        );
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
     }
 

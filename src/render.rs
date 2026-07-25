@@ -3,7 +3,7 @@ use std::{ffi::CString, fmt::Write as _, io::Write as _, time::SystemTime};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    outer::{Capabilities, ColorLevel},
+    outer::{Capabilities, ColorLevel, Profile},
     session::{PaneId, Rect, Session, Size},
     terminal::{Attributes, Cell, Color, Terminal},
 };
@@ -73,7 +73,19 @@ pub fn full(
                 Attributes::default(),
                 capabilities,
             );
-            output.push(border(&rects, active, x, y));
+            push_char(
+                &mut output,
+                border(
+                    &rects,
+                    active,
+                    x,
+                    y,
+                    !matches!(
+                        capabilities.profile,
+                        Profile::Dumb | Profile::Ansi | Profile::Vt100
+                    ),
+                ),
+            );
         }
     }
 
@@ -393,27 +405,39 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.height)
 }
 
-fn border(rects: &[(PaneId, Rect)], active: Option<PaneId>, x: u16, y: u16) -> u8 {
+fn border(rects: &[(PaneId, Rect)], active: Option<PaneId>, x: u16, y: u16, unicode: bool) -> char {
     let neighbor = |x, y| rects.iter().find(|(_, rect)| contains(*rect, x, y));
     let left = x.checked_sub(1).and_then(|x| neighbor(x, y));
     let right = neighbor(x.saturating_add(1), y);
     let above = y.checked_sub(1).and_then(|y| neighbor(x, y));
     let below = neighbor(x, y.saturating_add(1));
-    if [left, right, above, below]
+    let active = [left, right, above, below]
         .into_iter()
         .flatten()
-        .any(|(pane, _)| Some(*pane) == active)
-    {
-        return b'#';
-    }
-    match (
+        .any(|(pane, _)| Some(*pane) == active);
+    let shape = (
         left.is_some() || right.is_some(),
         above.is_some() || below.is_some(),
-    ) {
-        (true, true) => b'+',
-        (true, false) => b'|',
-        (false, true) => b'-',
-        (false, false) => b' ',
+    );
+    if unicode {
+        match (shape, active) {
+            ((true, true), true) => '╋',
+            ((true, false), true) => '┃',
+            ((false, true), true) => '━',
+            ((true, true), false) => '┼',
+            ((true, false), false) => '│',
+            ((false, true), false) => '─',
+            ((false, false), _) => ' ',
+        }
+    } else if active {
+        '#'
+    } else {
+        match shape {
+            (true, true) => '+',
+            (true, false) => '|',
+            (false, true) => '-',
+            (false, false) => ' ',
+        }
     }
 }
 
@@ -643,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn active_pane_border_uses_distinct_ascii() {
+    fn pane_border_uses_box_drawing_with_ascii_fallback() {
         let mut session = Session::new("s".into());
         session
             .split_active(
@@ -659,8 +683,10 @@ mod tests {
             columns: 5,
             rows: 2,
         });
-        assert_eq!(border(&rects, active, 2, 0), b'#');
-        assert_eq!(border(&rects, None, 2, 0), b'|');
+        assert_eq!(border(&rects, active, 2, 0, true), '┃');
+        assert_eq!(border(&rects, None, 2, 0, true), '│');
+        assert_eq!(border(&rects, active, 2, 0, false), '#');
+        assert_eq!(border(&rects, None, 2, 0, false), '|');
     }
 
     #[test]

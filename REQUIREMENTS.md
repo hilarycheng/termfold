@@ -195,10 +195,11 @@ unchanged to the active application. After a prefix:
 | `c` | Create tab |
 | `n` / `p` | Next / previous tab |
 | `0`-`9` | Select tab |
-| `%` | Split left/right |
-| `"` | Split top/bottom |
+| `|` | Split left/right |
+| `-` | Split top/bottom |
 | Arrow | Focus adjacent pane |
 | `Ctrl`+Arrow | Resize by one cell |
+| `r` | Enter resize mode |
 | `x` | Close active pane after confirmation |
 | `d` | Detach |
 | `[` | Enter read-only scroll view |
@@ -208,6 +209,9 @@ An unsupported prefix command MUST show a short status message and MUST NOT be
 forwarded. Keyboard-only operation MUST remain complete when mouse support is
 enabled.
 
+In resize mode, each Arrow key MUST resize by one cell without another prefix.
+`Esc` MUST leave resize mode.
+
 ## Tabs and Panes
 
 - A tab MUST contain at least one pane while it exists.
@@ -216,8 +220,9 @@ enabled.
   fail without changing the layout.
 - Focus and resize MUST operate on the nearest pane in the requested direction.
 - Closing the active pane MUST focus the nearest surviving pane deterministically.
-- Pane borders MUST use an ASCII fallback. Unicode MUST remain supported in
-  application content.
+- Pane borders SHOULD use box-drawing characters when the outer-terminal profile
+  supports them and MUST use an ASCII fallback otherwise. Unicode MUST remain
+  supported in application content.
 
 ## Terminal Architecture
 

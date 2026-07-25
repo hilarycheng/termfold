@@ -110,8 +110,9 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: every supported exit path restores the outer terminal.
 
 - [*] **T10 — Implement pane and status rendering**
-  - Render pane content, ASCII borders, active-pane state, and the one-row status
-    bar with required truncation priorities and clock-only redraws.
+  - Render pane content, box-drawing borders with an ASCII fallback,
+    active-pane state, and the one-row status bar with required truncation
+    priorities and clock-only redraws.
   - Requirements: Tabs and Panes; Status Bar.
   - Depends on: T03, T08, T09.
   - Done when: normal and narrow layouts preserve the specified visibility order.
@@ -128,8 +129,8 @@ This file tracks implementation work. Product behaviour remains authoritative in
 
 - [*] **T11 — Implement keyboard input**
   - Forward bytes unchanged outside prefix mode and implement every required prefix
-    command, unsupported-command message, close confirmation, and the filename
-    prompt and cancellation path for `Ctrl-b S` scrollback export.
+    command, resize mode, unsupported-command message, close confirmation, and
+    the filename prompt and cancellation path for `Ctrl-b S` scrollback export.
   - Requirements: Default Keys.
   - Depends on: T03, T06, T09.
   - Done when: keyboard-only operation covers all first-release actions.

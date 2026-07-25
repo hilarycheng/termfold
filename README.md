@@ -107,17 +107,19 @@ Do not hold `Ctrl-b` while pressing the command key.
 | `Ctrl-b p` | Select the previous tab |
 | `Ctrl-b 1` … `Ctrl-b 9` | Select tab 1 through 9 |
 | `Ctrl-b 0` | Select tab 10 |
-| `Ctrl-b %` | Split into left and right panes |
-| `Ctrl-b "` | Split into top and bottom panes |
+| `Ctrl-b \|` | Split into left and right panes |
+| `Ctrl-b -` | Split into top and bottom panes |
 | `Ctrl-b Arrow` | Focus the nearest pane in that direction |
 | `Ctrl-b Ctrl-Arrow` | Resize the active pane by one cell |
+| `Ctrl-b r` | Enter resize mode |
 | `Ctrl-b x` | Ask to close the active pane; press `y` to confirm |
 | `Ctrl-b d` | Detach this client and leave the session running |
 | `Ctrl-b [` | Enter the active pane's read-only scroll view |
 | `Ctrl-b S` | Prompt for a file and save the active pane's scrollback |
 
 For resize shortcuts, press and release `Ctrl-b`, then hold `Ctrl` while pressing
-an arrow key.
+an arrow key. For repeated resizing, press `Ctrl-b r`, use Arrow keys, then press
+`Esc` to leave resize mode.
 
 An unknown prefix command is not sent to the application; Termfold reports it in
 the status bar.
@@ -155,7 +157,8 @@ The bottom row shows the session, tab list, active tab, date, and time:
 [work]  [1:shell]  2:logs  3:db  |  2026-07-25 18:42
 ```
 
-The active pane has a distinct ASCII border. On narrow terminals, Termfold
+Termfold uses box-drawing pane dividers with a heavier active-pane border, with
+an ASCII fallback for conservative terminals. On narrow terminals, Termfold
 removes less important status content and inactive tabs first.
 
 Closing the last pane closes its tab. Closing the last pane in the session ends
