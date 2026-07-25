@@ -41,6 +41,7 @@ struct Client {
     capabilities: Option<Capabilities>,
     input: Input,
     status: Option<String>,
+    scroll_offset: Option<usize>,
 }
 
 struct PaneProcess {
@@ -106,6 +107,7 @@ struct InputContext<'a> {
     panes: &'a mut Vec<PaneProcess>,
     size: &'a mut Size,
     launch: &'a LaunchContext,
+    scrollback_limit: usize,
     full_dirty: &'a mut bool,
 }
 
@@ -134,7 +136,7 @@ pub fn run(
     let mut panes = vec![PaneProcess {
         id: first_pane,
         child: first_child,
-        terminal: Terminal::new(content_size)
+        terminal: Terminal::with_scrollback(content_size, usize::from(config.scrollback_lines))
             .map_err(|error| format!("cannot create terminal screen: {error}"))?,
         pending_input: PendingInput::new(),
     }];
@@ -177,6 +179,7 @@ pub fn run(
                             panes: &mut panes,
                             size: &mut authoritative_size,
                             launch: &context,
+                            scrollback_limit: usize::from(config.scrollback_lines),
                             full_dirty: &mut full_dirty,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
@@ -195,7 +198,22 @@ pub fn run(
                 match pane.child.master().read(&mut buffer) {
                     Ok(0) => {}
                     Ok(length) => {
+                        let previous_epoch = pane.terminal.scrollback_epoch();
                         pane.terminal.advance(&buffer[..length]);
+                        let added = pane
+                            .terminal
+                            .scrollback_epoch()
+                            .saturating_sub(previous_epoch)
+                            as usize;
+                        if added > 0 && session.active_pane() == Some(pane.id) {
+                            for client in &mut clients {
+                                if let Some(offset) = &mut client.scroll_offset {
+                                    *offset = offset
+                                        .saturating_add(added)
+                                        .min(pane.terminal.max_scroll_offset());
+                                }
+                            }
+                        }
                         pane.pending_input.push(pane.terminal.take_responses());
                         content_dirty = true;
                         break;
@@ -216,9 +234,14 @@ pub fn run(
             let targets = clients
                 .iter()
                 .filter_map(|client| {
-                    client
-                        .capabilities
-                        .map(|capabilities| (client.id, capabilities, client.status.as_deref()))
+                    client.capabilities.map(|capabilities| {
+                        (
+                            client.id,
+                            capabilities,
+                            client.status.as_deref(),
+                            client.scroll_offset,
+                        )
+                    })
                 })
                 .collect::<Vec<_>>();
             let frames = if full_dirty {
@@ -227,7 +250,7 @@ pub fn run(
                 rendered_clock = Some(key);
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities, message)| {
+                    .map(|(id, capabilities, message, scroll_offset)| {
                         (
                             *id,
                             render::full(
@@ -239,6 +262,7 @@ pub fn run(
                                     time_format: &config.time_format,
                                 },
                                 *message,
+                                *scroll_offset,
                                 *capabilities,
                             ),
                         )
@@ -250,16 +274,31 @@ pub fn run(
                 content_dirty = false;
                 let frames = targets
                     .iter()
-                    .map(|(id, capabilities, _)| {
+                    .map(|(id, capabilities, message, scroll_offset)| {
                         (
                             *id,
-                            render::changes(
-                                &session,
-                                &pane_screens,
-                                authoritative_size,
-                                &snapshot,
-                                *capabilities,
-                            ),
+                            if scroll_offset.is_some() {
+                                render::full(
+                                    &session,
+                                    &pane_screens,
+                                    authoritative_size,
+                                    Clock {
+                                        date_format: &config.date_format,
+                                        time_format: &config.time_format,
+                                    },
+                                    *message,
+                                    *scroll_offset,
+                                    *capabilities,
+                                )
+                            } else {
+                                render::changes(
+                                    &session,
+                                    &pane_screens,
+                                    authoritative_size,
+                                    &snapshot,
+                                    *capabilities,
+                                )
+                            },
                         )
                     })
                     .collect();
@@ -270,7 +309,7 @@ pub fn run(
                 Some(
                     targets
                         .iter()
-                        .map(|(id, capabilities, message)| {
+                        .map(|(id, capabilities, message, _)| {
                             (
                                 *id,
                                 render::status(
@@ -366,6 +405,7 @@ fn accept_clients(
             capabilities: None,
             input: Input::new(prefix),
             status: None,
+            scroll_offset: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
     }
@@ -534,106 +574,164 @@ fn handle_action(
 ) -> bool {
     let size = *input.size;
     let content_size = pane_area(size);
-    let result: Result<(), String> =
-        match action {
-            Action::Forward(bytes) => {
-                set_status(clients, client_id, None, input.full_dirty);
-                if let Some(active) = input.session.active_pane()
-                    && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
-                {
-                    pane.pending_input.push(bytes);
-                }
+    let result: Result<(), String> = match action {
+        Action::Forward(bytes) => {
+            set_status(clients, client_id, None, input.full_dirty);
+            if let Some(active) = input.session.active_pane()
+                && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
+            {
+                pane.pending_input.push(bytes);
+            }
+            return false;
+        }
+        Action::CreateTab => input
+            .session
+            .create_tab()
+            .map_err(|error| error.to_string())
+            .and_then(|pane| {
+                add_pane(
+                    input.launch,
+                    input.session,
+                    input.panes,
+                    pane,
+                    content_size,
+                    input.scrollback_limit,
+                )
+                .inspect_err(|_| {
+                    let _ = input.session.close_pane(pane, content_size);
+                })
+            }),
+        Action::NextTab => input.session.next_tab().map_err(|error| error.to_string()),
+        Action::PreviousTab => input
+            .session
+            .previous_tab()
+            .map_err(|error| error.to_string()),
+        Action::SelectTab(index) => {
+            if input.session.select_tab(index) {
+                Ok(())
+            } else {
+                set_status(
+                    clients,
+                    client_id,
+                    Some("tab does not exist".into()),
+                    input.full_dirty,
+                );
                 return false;
             }
-            Action::CreateTab => input
-                .session
-                .create_tab()
-                .map_err(|error| error.to_string())
-                .and_then(|pane| {
-                    add_pane(input.launch, input.session, input.panes, pane, content_size)
-                        .inspect_err(|_| {
-                            let _ = input.session.close_pane(pane, content_size);
-                        })
-                }),
-            Action::NextTab => input.session.next_tab().map_err(|error| error.to_string()),
-            Action::PreviousTab => input
-                .session
-                .previous_tab()
-                .map_err(|error| error.to_string()),
-            Action::SelectTab(index) => {
-                if input.session.select_tab(index) {
-                    Ok(())
-                } else {
-                    set_status(
-                        clients,
-                        client_id,
-                        Some("tab does not exist".into()),
-                        input.full_dirty,
-                    );
-                    return false;
-                }
+        }
+        Action::Split(split) => input
+            .session
+            .split_active(split, content_size)
+            .map_err(|error| error.to_string())
+            .and_then(|pane| {
+                add_pane(
+                    input.launch,
+                    input.session,
+                    input.panes,
+                    pane,
+                    content_size,
+                    input.scrollback_limit,
+                )
+                .inspect_err(|_| {
+                    let _ = input.session.close_pane(pane, content_size);
+                })
+            }),
+        Action::Focus(direction) => input
+            .session
+            .focus(direction, content_size)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        Action::Resize(direction) => input
+            .session
+            .resize(direction, content_size)
+            .map_err(|error| error.to_string()),
+        Action::ClosePane => {
+            let Some(pane_id) = input.session.active_pane() else {
+                return true;
+            };
+            let close = input.session.close_active_pane(content_size);
+            if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
+                let mut pane = input.panes.swap_remove(index);
+                let _ = pty::terminate_all(&mut [&mut pane.child]);
             }
-            Action::Split(split) => input
+            match close {
+                Ok(CloseResult::SessionEmpty) => return true,
+                Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        Action::Detach => {
+            remove_client(clients, client_id);
+            return false;
+        }
+        Action::ScrollView => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = Some(0);
+            }
+            set_status(
+                clients,
+                client_id,
+                Some("scroll view: arrows/Page Up/Page Down, q exits".into()),
+                input.full_dirty,
+            );
+            return false;
+        }
+        Action::Scroll(amount) => {
+            let maximum = input
                 .session
-                .split_active(split, content_size)
-                .map_err(|error| error.to_string())
-                .and_then(|pane| {
-                    add_pane(input.launch, input.session, input.panes, pane, content_size)
-                        .inspect_err(|_| {
-                            let _ = input.session.close_pane(pane, content_size);
-                        })
-                }),
-            Action::Focus(direction) => input
-                .session
-                .focus(direction, content_size)
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            Action::Resize(direction) => input
-                .session
-                .resize(direction, content_size)
-                .map_err(|error| error.to_string()),
-            Action::ClosePane => {
-                let Some(pane_id) = input.session.active_pane() else {
-                    return true;
+                .active_pane()
+                .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+                .map_or(0, |pane| pane.terminal.max_scroll_offset());
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
+                && let Some(offset) = &mut client.scroll_offset
+            {
+                let lines = match amount {
+                    i32::MAX => usize::from(content_size.rows),
+                    i32::MIN => usize::from(content_size.rows),
+                    _ => amount.unsigned_abs() as usize,
                 };
-                let close = input.session.close_active_pane(content_size);
-                if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
-                    let mut pane = input.panes.swap_remove(index);
-                    let _ = pty::terminate_all(&mut [&mut pane.child]);
-                }
-                match close {
-                    Ok(CloseResult::SessionEmpty) => return true,
-                    Ok(CloseResult::PaneClosed | CloseResult::TabClosed) => Ok(()),
-                    Err(error) => Err(error.to_string()),
-                }
+                *offset = if amount > 0 {
+                    offset.saturating_add(lines).min(maximum)
+                } else {
+                    offset.saturating_sub(lines)
+                };
             }
-            Action::Detach => {
-                remove_client(clients, client_id);
-                return false;
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ExitScrollView => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.scroll_offset = None;
             }
-            Action::ScrollView => {
-                set_status(
-                    clients,
-                    client_id,
-                    Some("scroll view is not available".into()),
-                    input.full_dirty,
-                );
-                return false;
-            }
-            Action::SaveScrollback(_) => {
-                set_status(
-                    clients,
-                    client_id,
-                    Some("scrollback export is not available".into()),
-                    input.full_dirty,
-                );
-                return false;
-            }
-            Action::Status(message) => {
-                set_status(clients, client_id, Some(message), input.full_dirty);
-                return false;
-            }
-        };
+            set_status(clients, client_id, None, input.full_dirty);
+            return false;
+        }
+        Action::SaveScrollback(filename) => {
+            let result = input
+                .session
+                .active_pane()
+                .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+                .ok_or_else(|| "active pane does not exist".to_string())
+                .and_then(|pane| {
+                    std::fs::write(filename, pane.terminal.scrollback_text())
+                        .map_err(|error| format!("cannot save scrollback: {error}"))
+                });
+            set_status(
+                clients,
+                client_id,
+                Some(match result {
+                    Ok(()) => "scrollback saved".into(),
+                    Err(error) => error,
+                }),
+                input.full_dirty,
+            );
+            return false;
+        }
+        Action::Status(message) => {
+            set_status(clients, client_id, Some(message), input.full_dirty);
+            return false;
+        }
+    };
 
     match result {
         Ok(()) => {
@@ -660,6 +758,7 @@ fn add_pane(
     panes: &mut Vec<PaneProcess>,
     pane: PaneId,
     size: Size,
+    scrollback_limit: usize,
 ) -> Result<(), String> {
     let pane_size = session
         .pane_rects(size)
@@ -672,7 +771,7 @@ fn add_pane(
         .unwrap_or(size);
     let child = PtyChild::spawn(context, pane_size)
         .map_err(|error| format!("cannot start shell: {error}"))?;
-    let terminal = Terminal::new(pane_size)
+    let terminal = Terminal::with_scrollback(pane_size, scrollback_limit)
         .map_err(|error| format!("cannot create terminal screen: {error}"))?;
     panes.push(PaneProcess {
         id: pane,

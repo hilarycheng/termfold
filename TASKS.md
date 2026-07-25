@@ -134,7 +134,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T03, T06, T09.
   - Done when: keyboard-only operation covers all first-release actions.
 
-- [ ] **T12 — Implement bounded scrollback**
+- [*] **T12 — Implement bounded scrollback**
   - Retain complete lines up to the configured limit, discard oldest lines first,
     implement the read-only scroll view, and save the active pane's retained
     scrollback as UTF-8 plain text without terminal control sequences or styling.

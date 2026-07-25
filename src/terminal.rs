@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{collections::VecDeque, error::Error, fmt};
 
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
@@ -126,6 +126,9 @@ impl Error for TerminalError {}
 #[derive(Debug)]
 pub struct Screen {
     rows: Vec<Vec<Cell>>,
+    scrollback: VecDeque<Vec<Cell>>,
+    scrollback_limit: usize,
+    scrollback_epoch: u64,
     cursor: Cursor,
     saved_cursor: Cursor,
     scroll_top: usize,
@@ -135,12 +138,15 @@ pub struct Screen {
 }
 
 impl Screen {
-    fn new(size: Size) -> Result<Self, TerminalError> {
+    fn new(size: Size, scrollback_limit: usize) -> Result<Self, TerminalError> {
         validate_size(size)?;
         let columns = usize::from(size.columns);
         let rows = usize::from(size.rows);
         Ok(Self {
             rows: vec![vec![Cell::blank(Attributes::default()); columns]; rows],
+            scrollback: VecDeque::new(),
+            scrollback_limit,
+            scrollback_epoch: 0,
             cursor: Cursor::default(),
             saved_cursor: Cursor::default(),
             scroll_top: 0,
@@ -192,6 +198,10 @@ impl Screen {
             row.resize(columns, Cell::blank(Attributes::default()));
             normalize_row(row);
         }
+        for row in &mut self.scrollback {
+            row.resize(columns, Cell::blank(Attributes::default()));
+            normalize_row(row);
+        }
         self.rows
             .resize(height, vec![Cell::blank(Attributes::default()); columns]);
         self.cursor.row = self.cursor.row.min(height - 1);
@@ -234,7 +244,17 @@ impl Screen {
         let count = count.min(self.scroll_bottom - self.scroll_top + 1);
         // ponytail: row rotation is O(rows); use a ring only if profiling shows it matters.
         for _ in 0..count {
-            self.rows.remove(self.scroll_top);
+            let row = self.rows.remove(self.scroll_top);
+            if self.scroll_top == 0
+                && self.scroll_bottom == self.rows.len()
+                && self.scrollback_limit > 0
+            {
+                self.scrollback.push_back(row);
+                self.scrollback_epoch = self.scrollback_epoch.saturating_add(1);
+                if self.scrollback.len() > self.scrollback_limit {
+                    self.scrollback.pop_front();
+                }
+            }
             self.rows
                 .insert(self.scroll_bottom, self.blank_row(attributes));
         }
@@ -258,10 +278,14 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(size: Size) -> Result<Self, TerminalError> {
+        Self::with_scrollback(size, 0)
+    }
+
+    pub fn with_scrollback(size: Size, scrollback_limit: usize) -> Result<Self, TerminalError> {
         Ok(Self {
             parser: Parser::new_with_size(),
             guard: SequenceGuard::Ground,
-            state: State::new(size)?,
+            state: State::new(size, scrollback_limit)?,
         })
     }
 
@@ -301,6 +325,55 @@ impl Terminal {
 
     pub fn take_responses(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.state.responses)
+    }
+
+    pub fn max_scroll_offset(&self) -> usize {
+        self.state.primary.scrollback.len()
+    }
+
+    pub fn scrollback_epoch(&self) -> u64 {
+        self.state.primary.scrollback_epoch
+    }
+
+    pub fn view_row(&self, offset: usize, row: usize) -> &[Cell] {
+        let screen = if offset == 0 {
+            self.state.screen()
+        } else {
+            &self.state.primary
+        };
+        let height = screen.height();
+        let end = screen
+            .scrollback
+            .len()
+            .saturating_add(height)
+            .saturating_sub(offset.min(screen.scrollback.len()));
+        let index = end.saturating_sub(height) + row.min(height - 1);
+        if index < screen.scrollback.len() {
+            &screen.scrollback[index]
+        } else {
+            &screen.rows[index - screen.scrollback.len()]
+        }
+    }
+
+    pub fn scrollback_text(&self) -> String {
+        let mut output = String::new();
+        for row in &self.state.primary.scrollback {
+            let end = row
+                .iter()
+                .rposition(|cell| {
+                    !cell.is_continuation()
+                        && (cell.character() != ' ' || !cell.combining().is_empty())
+                })
+                .map_or(0, |index| index + 1);
+            for cell in &row[..end] {
+                if !cell.is_continuation() {
+                    output.push(cell.character());
+                    output.push_str(cell.combining());
+                }
+            }
+            output.push('\n');
+        }
+        output
     }
 }
 
@@ -430,10 +503,10 @@ struct State {
 }
 
 impl State {
-    fn new(size: Size) -> Result<Self, TerminalError> {
+    fn new(size: Size, scrollback_limit: usize) -> Result<Self, TerminalError> {
         Ok(Self {
-            primary: Screen::new(size)?,
-            alternate: Screen::new(size)?,
+            primary: Screen::new(size, scrollback_limit)?,
+            alternate: Screen::new(size, 0)?,
             alternate_active: false,
             attributes: Attributes::default(),
             saved_attributes: Attributes::default(),
@@ -562,7 +635,8 @@ impl State {
 
     fn reset(&mut self) {
         let size = self.screen().size();
-        *self = Self::new(size).expect("existing terminal size is valid");
+        let scrollback_limit = self.primary.scrollback_limit;
+        *self = Self::new(size, scrollback_limit).expect("existing terminal size is valid");
     }
 
     fn set_private_mode(&mut self, mode: u16, enabled: bool) {
@@ -959,6 +1033,9 @@ fn erase_display(screen: &mut Screen, mode: u16, attributes: Attributes) {
             for row in 0..screen.height() {
                 screen.erase(row, 0, screen.columns(), attributes);
             }
+            if mode == 3 {
+                screen.scrollback.clear();
+            }
         }
         _ => {}
     }
@@ -1195,5 +1272,34 @@ mod tests {
         terminal.advance(b"prompt\r\n> \x1b[=5u\x1b[>4;1m");
         assert_eq!(terminal.screen().cursor(), Cursor { row: 1, column: 2 });
         assert_eq!(terminal.screen().rows()[1][0].character(), '>');
+    }
+
+    #[test]
+    fn bounds_navigates_and_exports_plain_text_scrollback() {
+        let mut terminal = Terminal::with_scrollback(
+            Size {
+                columns: 5,
+                rows: 2,
+            },
+            2,
+        )
+        .unwrap();
+        terminal.advance(b"\x1b[31mone\r\ntwo\r\nthree\r\nfour");
+
+        assert_eq!(terminal.max_scroll_offset(), 2);
+        assert_eq!(terminal.scrollback_text(), "one\ntwo\n");
+        assert_eq!(
+            terminal
+                .view_row(2, 0)
+                .iter()
+                .filter(|cell| !cell.is_continuation())
+                .map(Cell::character)
+                .collect::<String>(),
+            "one  "
+        );
+
+        terminal.advance(b"\r\nfive");
+        assert_eq!(terminal.max_scroll_offset(), 2);
+        assert_eq!(terminal.scrollback_text(), "two\nthree\n");
     }
 }

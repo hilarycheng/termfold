@@ -15,6 +15,8 @@ pub enum Action {
     ClosePane,
     Detach,
     ScrollView,
+    Scroll(i32),
+    ExitScrollView,
     SaveScrollback(String),
     Status(String),
 }
@@ -25,6 +27,7 @@ enum Mode {
     Prefix(Vec<u8>),
     ConfirmClose,
     Filename(Vec<u8>),
+    Scroll(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -42,6 +45,10 @@ impl Input {
     }
 
     pub fn advance(&mut self, bytes: &[u8]) -> Vec<Action> {
+        if matches!(self.mode, Mode::Scroll(_)) && bytes == b"\x1b" {
+            self.mode = Mode::Normal;
+            return vec![Action::ExitScrollView];
+        }
         let mut actions = Vec::new();
         let mut forwarded = Vec::new();
         for &byte in bytes {
@@ -57,6 +64,7 @@ impl Input {
                         self.mode = match sequence.as_slice() {
                             [b'x'] => Mode::ConfirmClose,
                             [b'S'] => Mode::Filename(Vec::new()),
+                            [b'['] => Mode::Scroll(Vec::new()),
                             _ => Mode::Normal,
                         };
                         actions.push(action);
@@ -92,6 +100,28 @@ impl Input {
                 Mode::Filename(filename) => {
                     filename.push(byte);
                     actions.push(filename_status(filename));
+                }
+                Mode::Scroll(sequence) => {
+                    sequence.push(byte);
+                    let action = match sequence.as_slice() {
+                        [b'q' | 3] => Some(Action::ExitScrollView),
+                        [b'k'] | [27, b'[', b'A'] => Some(Action::Scroll(1)),
+                        [b'j'] | [27, b'[', b'B'] => Some(Action::Scroll(-1)),
+                        [27, b'[', b'5', b'~'] => Some(Action::Scroll(i32::MAX)),
+                        [27, b'[', b'6', b'~'] => Some(Action::Scroll(i32::MIN)),
+                        [27] | [27, b'['] | [27, b'[', b'5' | b'6'] => None,
+                        _ => Some(Action::Status(
+                            "scroll view: arrows/Page Up/Page Down, q exits".into(),
+                        )),
+                    };
+                    if let Some(action) = action {
+                        if matches!(action, Action::ExitScrollView) {
+                            self.mode = Mode::Normal;
+                        } else {
+                            sequence.clear();
+                        }
+                        actions.push(action);
+                    }
                 }
             }
         }
@@ -223,6 +253,7 @@ mod tests {
         ] {
             assert_eq!(input.advance(bytes), vec![action]);
         }
+        assert_eq!(input.advance(b"q"), vec![Action::ExitScrollView]);
         assert_eq!(
             input.advance(b"\x02?"),
             vec![Action::Status("unsupported prefix command".into())]
@@ -248,5 +279,17 @@ mod tests {
                 Action::Status("scrollback export cancelled".into()),
             ]
         );
+    }
+
+    #[test]
+    fn scroll_view_consumes_navigation_until_exit() {
+        let mut input = Input::new(2);
+        assert_eq!(input.advance(b"\x02["), vec![Action::ScrollView]);
+        assert_eq!(
+            input.advance(b"\x1b[A\x1b[6~"),
+            vec![Action::Scroll(1), Action::Scroll(i32::MIN)]
+        );
+        assert_eq!(input.advance(b"q"), vec![Action::ExitScrollView]);
+        assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
     }
 }

@@ -29,6 +29,7 @@ pub fn full(
     size: Size,
     clock: Clock<'_>,
     message: Option<&str>,
+    scroll_offset: Option<usize>,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let mut output = if capabilities.cursor_visibility {
@@ -50,8 +51,9 @@ pub fn full(
             if let Some((pane, rect)) = rects.iter().find(|(_, rect)| contains(*rect, x, y))
                 && let Some((_, terminal)) = panes.iter().find(|(id, _)| id == pane)
             {
+                let offset = scroll_offset.filter(|_| Some(*pane) == active).unwrap_or(0);
                 let cell =
-                    &terminal.screen().rows()[usize::from(y - rect.y)][usize::from(x - rect.x)];
+                    &terminal.view_row(offset, usize::from(y - rect.y))[usize::from(x - rect.x)];
                 set_attributes(
                     &mut output,
                     &mut attributes,
@@ -84,7 +86,13 @@ pub fn full(
         false,
         capabilities,
     ));
-    place_cursor(&mut output, active, &rects, panes, capabilities);
+    place_cursor(
+        &mut output,
+        active.filter(|_| scroll_offset.is_none()),
+        &rects,
+        panes,
+        capabilities,
+    );
     output
 }
 
@@ -618,6 +626,7 @@ mod tests {
                 date_format: "%Y-%m-%d",
                 time_format: "%H:%M",
             },
+            None,
             None,
             capabilities(),
         );
