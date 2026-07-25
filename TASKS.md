@@ -158,7 +158,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T07 through T13; T10A.
   - Done when: all components operate together without terminal or process leaks.
 
-- [ ] **T14A — Add required project acknowledgements**
+- [*] **T14A — Add required project acknowledgements**
   - Document the required prior art accurately without implying endorsement,
     affiliation, code reuse, or compatibility certification.
   - Requirements: Prior Art and Acknowledgements.
