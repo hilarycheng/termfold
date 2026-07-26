@@ -149,9 +149,11 @@ impl RuntimeDir {
         ensure_private_dir(&entries, self.uid)?;
         let target = entries.join("termfold-256color");
 
-        if validate_terminfo(&target, self.uid)? {
-            return Ok(root);
-        }
+        let replace = match validate_terminfo(&target, self.uid)? {
+            Some(true) => return Ok(root),
+            Some(false) => true,
+            None => false,
+        };
 
         for attempt in 0..100 {
             let temporary = entries.join(format!(
@@ -175,21 +177,33 @@ impl RuntimeDir {
             let result = file
                 .write_all(TERMINFO_ENTRY)
                 .and_then(|()| file.sync_all())
-                .and_then(|()| fs::hard_link(&temporary, &target));
+                .and_then(|()| {
+                    if replace {
+                        fs::rename(&temporary, &target)
+                    } else {
+                        fs::hard_link(&temporary, &target)
+                    }
+                });
             drop(file);
             let _ = fs::remove_file(&temporary);
 
             match result {
-                Ok(()) => return validate_materialized_terminfo(&target, self.uid).map(|()| root),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    return validate_materialized_terminfo(&target, self.uid).map(|()| root);
-                }
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(format!(
                         "cannot materialize private terminfo entry: {error}"
                     ));
                 }
             }
+            return validate_materialized_terminfo(&target, self.uid).and_then(|valid| {
+                valid.then_some(root).ok_or_else(|| {
+                    format!(
+                        "private terminfo entry {} does not match this Termfold binary",
+                        target.display()
+                    )
+                })
+            });
         }
         Err("cannot create a temporary private terminfo entry".into())
     }
@@ -293,10 +307,10 @@ fn ensure_private_dir(path: &Path, uid: u32) -> Result<(), String> {
     }
 }
 
-fn validate_terminfo(path: &Path, uid: u32) -> Result<bool, String> {
+fn validate_terminfo(path: &Path, uid: u32) -> Result<Option<bool>, String> {
     match fs::symlink_metadata(path) {
-        Ok(_) => validate_materialized_terminfo(path, uid).map(|()| true),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Ok(_) => validate_materialized_terminfo(path, uid).map(Some),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!(
             "cannot inspect private terminfo entry {}: {error}",
             path.display()
@@ -304,7 +318,7 @@ fn validate_terminfo(path: &Path, uid: u32) -> Result<bool, String> {
     }
 }
 
-fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<(), String> {
+fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<bool, String> {
     let expected = fs::symlink_metadata(path).map_err(|error| {
         format!(
             "cannot inspect private terminfo entry {}: {error}",
@@ -354,13 +368,7 @@ fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<(), String> {
             path.display()
         )
     })?;
-    if contents != TERMINFO_ENTRY {
-        return Err(format!(
-            "private terminfo entry {} does not match this Termfold binary",
-            path.display()
-        ));
-    }
-    Ok(())
+    Ok(contents == TERMINFO_ENTRY)
 }
 
 fn secure_socket(listener: UnixListener, path: PathBuf, uid: u32) -> Result<SessionSocket, String> {
@@ -526,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn terminfo_is_materialized_atomically_and_rejects_invalid_entries() {
+    fn terminfo_is_materialized_atomically_refreshes_stale_and_rejects_invalid_entries() {
         let path = test_path();
         let uid = current_uid().unwrap();
         ensure_private_dir(&path, uid).unwrap();
@@ -543,7 +551,8 @@ mod tests {
         );
 
         fs::write(&entry, b"invalid").unwrap();
-        assert!(runtime.materialize_terminfo().is_err());
+        runtime.materialize_terminfo().unwrap();
+        assert_eq!(fs::read(&entry).unwrap(), TERMINFO_ENTRY);
         fs::remove_file(&entry).unwrap();
         fs::create_dir(&entry).unwrap();
         assert!(runtime.materialize_terminfo().is_err());

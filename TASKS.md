@@ -205,3 +205,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Requirements: Inner Terminal Behaviour; Outer Terminal Capabilities and Profiles.
   - Depends on: T08, T09, T10A, T11.
   - Done when: the compiled terminfo entry and focused cursor-mode checks agree.
+
+- [*] **T19 — Refresh stale private terminfo**
+  - Atomically replace a secure private terminfo entry when the embedded entry
+    changes between Termfold builds.
+  - Requirements: Inner Terminal Behaviour; IPC and Filesystem Security.
+  - Depends on: T10A.
+  - Done when: upgrades refresh stale entries while unsafe paths remain rejected.
