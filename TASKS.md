@@ -202,6 +202,8 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T18 — Restore navigation-key compatibility**
   - Advertise and forward Arrow, Page Up, Page Down, Home, and End consistently
     through normal and application cursor-key modes.
+  - Preserve escape-prefixed navigation keys when terminal input splits the
+    escape byte from the rest of the sequence.
   - Requirements: Inner Terminal Behaviour; Outer Terminal Capabilities and Profiles.
   - Depends on: T08, T09, T10A, T11.
   - Done when: the compiled terminfo entry and focused cursor-mode checks agree.

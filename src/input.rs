@@ -85,27 +85,6 @@ impl Input {
     }
 
     pub fn advance(&mut self, bytes: &[u8]) -> Vec<Action> {
-        if self.pending_mouse.is_empty() && bytes == b"\x1b" {
-            match self.mode {
-                Mode::Resize(_) => {
-                    self.mode = Mode::Normal;
-                    return vec![Action::Status("resize mode ended".into())];
-                }
-                Mode::Scroll(_) => {
-                    self.mode = Mode::Normal;
-                    return vec![Action::ExitScrollView];
-                }
-                Mode::Help(_) => {
-                    self.mode = Mode::Normal;
-                    return vec![Action::ExitHelpView];
-                }
-                Mode::Search(_) => {
-                    self.mode = Mode::Scroll(Vec::new());
-                    return vec![Action::SearchCancelled];
-                }
-                _ => {}
-            }
-        }
         let mut actions = Vec::new();
         let mut forwarded = Vec::new();
         let mut input = std::mem::take(&mut self.pending_mouse);
@@ -129,8 +108,22 @@ impl Input {
                     MouseParse::Invalid => {}
                 }
             }
+            if input[offset] == 27
+                && offset + 1 == input.len()
+                && matches!(
+                    self.mode,
+                    Mode::Resize(_) | Mode::Scroll(_) | Mode::Help(_) | Mode::Search(_)
+                )
+            {
+                self.pending_mouse.push(27);
+                self.pending_since.get_or_insert_with(Instant::now);
+                break;
+            }
             self.advance_byte(input[offset], &mut actions, &mut forwarded);
             offset += 1;
+        }
+        if self.pending_mouse.is_empty() {
+            self.pending_since = None;
         }
         push_forward(&mut actions, &mut forwarded);
         actions
@@ -145,6 +138,27 @@ impl Input {
         }
         self.pending_since = None;
         let input = std::mem::take(&mut self.pending_mouse);
+        if input == b"\x1b" {
+            return match self.mode {
+                Mode::Resize(_) => {
+                    self.mode = Mode::Normal;
+                    vec![Action::Status("resize mode ended".into())]
+                }
+                Mode::Scroll(_) => {
+                    self.mode = Mode::Normal;
+                    vec![Action::ExitScrollView]
+                }
+                Mode::Help(_) => {
+                    self.mode = Mode::Normal;
+                    vec![Action::ExitHelpView]
+                }
+                Mode::Search(_) => {
+                    self.mode = Mode::Scroll(Vec::new());
+                    vec![Action::SearchCancelled]
+                }
+                _ => vec![Action::Forward(input)],
+            };
+        }
         let mut actions = Vec::new();
         let mut forwarded = Vec::new();
         for byte in input {
@@ -530,10 +544,14 @@ mod tests {
     fn scroll_view_consumes_navigation_until_exit() {
         let mut input = Input::new(2, false);
         assert_eq!(input.advance(b"\x02["), vec![Action::ScrollView]);
+        assert!(input.advance(b"\x1b").is_empty());
+        assert_eq!(input.advance(b"OA"), vec![Action::Scroll(1)]);
+        assert!(input.advance(b"\x1b").is_empty());
+        assert_eq!(input.advance(b"[5~"), vec![Action::Scroll(i32::MAX)]);
+        assert!(input.advance(b"\x1b").is_empty());
         assert_eq!(
-            input.advance(b"\x1b[A\x1b[6~gG/error\rnN"),
+            input.advance(b"[6~gG/error\rnN"),
             vec![
-                Action::Scroll(1),
                 Action::Scroll(i32::MIN),
                 Action::ScrollTop,
                 Action::ScrollBottom,
@@ -548,7 +566,9 @@ mod tests {
                 Action::SearchNext(false),
             ]
         );
-        assert_eq!(input.advance(b"\x1b"), vec![Action::ExitScrollView]);
+        assert!(input.advance(b"\x1b").is_empty());
+        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
+        assert_eq!(input.flush_pending_mouse(), vec![Action::ExitScrollView]);
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
     }
 
@@ -560,7 +580,9 @@ mod tests {
             input.advance(b"j\x1b[5~"),
             vec![Action::HelpScroll(1), Action::HelpScroll(i32::MIN)]
         );
-        assert_eq!(input.advance(b"\x1b"), vec![Action::ExitHelpView]);
+        assert!(input.advance(b"\x1b").is_empty());
+        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
+        assert_eq!(input.flush_pending_mouse(), vec![Action::ExitHelpView]);
     }
 
     #[test]
@@ -581,8 +603,10 @@ mod tests {
                 Action::Status("resize mode: arrows resize, Esc exits".into()),
             ]
         );
+        assert!(input.advance(b"\x1b").is_empty());
+        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
         assert_eq!(
-            input.advance(b"\x1b"),
+            input.flush_pending_mouse(),
             vec![Action::Status("resize mode ended".into())]
         );
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
