@@ -198,3 +198,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T10, T11, T12, T16.
   - Done when: focused input, terminal, configuration, rendering, integration,
     lint, and static release checks pass.
+
+- [*] **T18 — Restore navigation-key compatibility**
+  - Advertise and forward Arrow, Page Up, Page Down, Home, and End consistently
+    through normal and application cursor-key modes.
+  - Requirements: Inner Terminal Behaviour; Outer Terminal Capabilities and Profiles.
+  - Depends on: T08, T09, T10A, T11.
+  - Done when: the compiled terminfo entry and focused cursor-mode checks agree.

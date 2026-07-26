@@ -854,6 +854,13 @@ fn place_cursor(
     let Some((_, terminal)) = panes.iter().find(|(pane, _)| *pane == active) else {
         return;
     };
+    if capabilities.application_cursor_keys {
+        output.extend_from_slice(if terminal.modes().application_cursor_keys {
+            b"\x1b[?1h"
+        } else {
+            b"\x1b[?1l"
+        });
+    }
     let cursor = terminal.screen().cursor();
     move_cursor(
         output,
@@ -1055,6 +1062,34 @@ mod tests {
         assert!(output.contains("hello"));
         assert!(output.contains("[s]"));
         assert!(output.contains("[1:shell]"));
+    }
+
+    #[test]
+    fn render_mirrors_application_cursor_key_mode() {
+        let metrics = Metrics::default();
+        let session = Session::new("s".into());
+        let pane = session.active_pane().unwrap();
+        let mut terminal = Terminal::new(Size {
+            columns: 10,
+            rows: 2,
+        })
+        .unwrap();
+        terminal.advance(b"\x1b[?1h");
+
+        let output = full(
+            &session,
+            &[(pane, &terminal)],
+            Size {
+                columns: 10,
+                rows: 3,
+            },
+            status_line(&metrics),
+            None,
+            View::Live,
+            capabilities(),
+        );
+
+        assert!(output.windows(5).any(|bytes| bytes == b"\x1b[?1h"));
     }
 
     #[test]

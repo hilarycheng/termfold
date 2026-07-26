@@ -28,6 +28,7 @@ pub struct Capabilities {
     pub color: ColorLevel,
     pub cursor_addressing: bool,
     pub cursor_visibility: bool,
+    pub application_cursor_keys: bool,
     pub alternate_screen: bool,
     pub mouse: bool,
     pub faint: bool,
@@ -110,6 +111,7 @@ impl Profile {
                     | Self::Tmux
                     | Self::Tmux256
             ),
+            application_cursor_keys: !matches!(self, Self::Dumb | Self::Ansi),
             alternate_screen: multiplexed_or_xterm,
             mouse: multiplexed_or_xterm,
             faint: matches!(
@@ -263,11 +265,13 @@ mod tests {
         let selected = select("auto", "xterm-kitty", "24bit");
         assert_eq!(selected.capabilities.profile, Profile::Xterm256);
         assert_eq!(selected.capabilities.color, ColorLevel::TrueColor);
+        assert!(selected.capabilities.application_cursor_keys);
         assert_eq!(selected.reason, MatchReason::Alias);
 
         let selected = select("auto", "unknown", "truecolor");
         assert_eq!(selected.capabilities.profile, Profile::Ansi);
         assert_eq!(selected.capabilities.color, ColorLevel::Ansi16);
+        assert!(!selected.capabilities.application_cursor_keys);
         assert_eq!(selected.reason, MatchReason::Fallback);
     }
 }

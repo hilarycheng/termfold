@@ -120,6 +120,9 @@ fn restore_sequence(capabilities: Capabilities) -> Vec<u8> {
     if capabilities.mouse {
         output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
     }
+    if capabilities.application_cursor_keys {
+        output.extend_from_slice(b"\x1b[?1l");
+    }
     output.extend_from_slice(b"\x1b[?2004l\x1b[0m");
     if capabilities.cursor_visibility {
         output.extend_from_slice(b"\x1b[?25h");

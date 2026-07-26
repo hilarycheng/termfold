@@ -209,10 +209,10 @@ impl Input {
             Mode::Resize(sequence) => {
                 sequence.push(byte);
                 let action = match sequence.as_slice() {
-                    [27, b'[', final_byte @ (b'A'..=b'D')] => {
+                    [27, b'[' | b'O', final_byte @ (b'A'..=b'D')] => {
                         Some(Action::Resize(direction(*final_byte)))
                     }
-                    [27] | [27, b'['] => None,
+                    [27] | [27, b'[' | b'O'] => None,
                     _ => Some(Action::Status(
                         "resize mode: arrows resize, Esc exits".into(),
                     )),
@@ -231,11 +231,11 @@ impl Input {
                 sequence.push(byte);
                 let action = match sequence.as_slice() {
                     [b'q' | 3] => Some(Action::ExitHelpView),
-                    [b'k'] | [27, b'[', b'A'] => Some(Action::HelpScroll(-1)),
-                    [b'j'] | [27, b'[', b'B'] => Some(Action::HelpScroll(1)),
+                    [b'k'] | [27, b'[' | b'O', b'A'] => Some(Action::HelpScroll(-1)),
+                    [b'j'] | [27, b'[' | b'O', b'B'] => Some(Action::HelpScroll(1)),
                     [27, b'[', b'5', b'~'] => Some(Action::HelpScroll(i32::MIN)),
                     [27, b'[', b'6', b'~'] => Some(Action::HelpScroll(i32::MAX)),
-                    [27] | [27, b'['] | [27, b'[', b'5' | b'6'] => None,
+                    [27] | [27, b'[' | b'O'] | [27, b'[', b'5' | b'6'] => None,
                     _ => Some(Action::Status(
                         "help: arrows/j/k/Page Up/Page Down, q/Esc exits".into(),
                     )),
@@ -257,15 +257,15 @@ impl Input {
                 sequence.push(byte);
                 let action = match sequence.as_slice() {
                     [b'q' | 3] => Some(Action::ExitScrollView),
-                    [b'k'] | [27, b'[', b'A'] => Some(Action::Scroll(1)),
-                    [b'j'] | [27, b'[', b'B'] => Some(Action::Scroll(-1)),
+                    [b'k'] | [27, b'[' | b'O', b'A'] => Some(Action::Scroll(1)),
+                    [b'j'] | [27, b'[' | b'O', b'B'] => Some(Action::Scroll(-1)),
                     [27, b'[', b'5', b'~'] => Some(Action::Scroll(i32::MAX)),
                     [27, b'[', b'6', b'~'] => Some(Action::Scroll(i32::MIN)),
                     [b'g'] => Some(Action::ScrollTop),
                     [b'G'] => Some(Action::ScrollBottom),
                     [b'n'] => Some(Action::SearchNext(true)),
                     [b'N'] => Some(Action::SearchNext(false)),
-                    [27] | [27, b'['] | [27, b'[', b'5' | b'6'] => None,
+                    [27] | [27, b'[' | b'O'] | [27, b'[', b'5' | b'6'] => None,
                     _ => Some(Action::Status(
                         "scroll: arrows/j/k/Page Up/Page Down, / search, q/Esc exits".into(),
                     )),
@@ -386,11 +386,13 @@ fn prefix_action(prefix: u8, sequence: &[u8]) -> Option<Action> {
     }
     match sequence {
         [27]
-        | [27, b'[']
+        | [27, b'[' | b'O']
         | [27, b'[', b'1']
         | [27, b'[', b'1', b';']
         | [27, b'[', b'1', b';', b'5'] => None,
-        [27, b'[', final_byte @ (b'A'..=b'D')] => Some(Action::Focus(direction(*final_byte))),
+        [27, b'[' | b'O', final_byte @ (b'A'..=b'D')] => {
+            Some(Action::Focus(direction(*final_byte)))
+        }
         [27, b'[', b'1', b';', b'5', final_byte @ (b'A'..=b'D')] => {
             Some(Action::Resize(direction(*final_byte)))
         }
@@ -584,6 +586,28 @@ mod tests {
             vec![Action::Status("resize mode ended".into())]
         );
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
+    }
+
+    #[test]
+    fn application_cursor_arrows_drive_termfold_modes() {
+        let mut input = Input::new(2, false);
+        assert_eq!(
+            input.advance(b"\x02\x1bOA"),
+            vec![Action::Focus(Direction::Up)]
+        );
+        assert_eq!(
+            input.advance(b"\x02r"),
+            vec![Action::Status(
+                "resize mode: arrows resize, Esc exits".into()
+            )]
+        );
+        assert_eq!(
+            input.advance(b"\x1bOD"),
+            vec![
+                Action::Resize(Direction::Left),
+                Action::Status("resize mode: arrows resize, Esc exits".into())
+            ]
+        );
     }
 
     #[test]
