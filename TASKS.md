@@ -214,3 +214,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Requirements: Inner Terminal Behaviour; IPC and Filesystem Security.
   - Depends on: T10A.
   - Done when: upgrades refresh stale entries while unsafe paths remain rejected.
+
+- [*] **T20 — Preserve navigation in modal views**
+  - Keep fragmented escape-prefixed navigation keys intact in scroll, help,
+    search, and resize modes while standalone Escape still exits the mode.
+  - Requirements: Default Keys; Mouse and Scrollback.
+  - Depends on: T11, T12, T17, T18.
+  - Done when: focused modal-input checks cover fragmented keys and Escape.

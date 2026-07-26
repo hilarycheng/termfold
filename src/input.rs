@@ -6,6 +6,7 @@ const MAX_FILENAME_BYTES: usize = 4096;
 const MAX_SEARCH_BYTES: usize = 256;
 const MAX_MOUSE_SEQUENCE_BYTES: usize = 32;
 const MOUSE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(10);
+const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MouseEvent {
@@ -130,9 +131,18 @@ impl Input {
     }
 
     pub fn flush_pending_mouse(&mut self) -> Vec<Action> {
+        let timeout = if self.pending_mouse == b"\x1b"
+            && matches!(
+                self.mode,
+                Mode::Resize(_) | Mode::Scroll(_) | Mode::Help(_) | Mode::Search(_)
+            ) {
+            ESCAPE_SEQUENCE_TIMEOUT
+        } else {
+            MOUSE_SEQUENCE_TIMEOUT
+        };
         if self
             .pending_since
-            .is_none_or(|since| since.elapsed() < MOUSE_SEQUENCE_TIMEOUT)
+            .is_none_or(|since| since.elapsed() < timeout)
         {
             return Vec::new();
         }
@@ -545,7 +555,17 @@ mod tests {
         let mut input = Input::new(2, false);
         assert_eq!(input.advance(b"\x02["), vec![Action::ScrollView]);
         assert!(input.advance(b"\x1b").is_empty());
-        assert_eq!(input.advance(b"OA"), vec![Action::Scroll(1)]);
+        input.pending_since = Some(Instant::now() - Duration::from_millis(50));
+        assert!(input.flush_pending_mouse().is_empty());
+        assert_eq!(
+            input.advance(b"OA\x1b[Ajk"),
+            vec![
+                Action::Scroll(1),
+                Action::Scroll(1),
+                Action::Scroll(-1),
+                Action::Scroll(1),
+            ]
+        );
         assert!(input.advance(b"\x1b").is_empty());
         assert_eq!(input.advance(b"[5~"), vec![Action::Scroll(i32::MAX)]);
         assert!(input.advance(b"\x1b").is_empty());
@@ -567,7 +587,7 @@ mod tests {
             ]
         );
         assert!(input.advance(b"\x1b").is_empty());
-        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
+        input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
         assert_eq!(input.flush_pending_mouse(), vec![Action::ExitScrollView]);
         assert_eq!(input.advance(b"x"), vec![Action::Forward(b"x".to_vec())]);
     }
@@ -581,7 +601,7 @@ mod tests {
             vec![Action::HelpScroll(1), Action::HelpScroll(i32::MIN)]
         );
         assert!(input.advance(b"\x1b").is_empty());
-        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
+        input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
         assert_eq!(input.flush_pending_mouse(), vec![Action::ExitHelpView]);
     }
 
@@ -604,7 +624,7 @@ mod tests {
             ]
         );
         assert!(input.advance(b"\x1b").is_empty());
-        input.pending_since = Some(Instant::now() - MOUSE_SEQUENCE_TIMEOUT);
+        input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
         assert_eq!(
             input.flush_pending_mouse(),
             vec![Action::Status("resize mode ended".into())]
