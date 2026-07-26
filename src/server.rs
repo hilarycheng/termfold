@@ -245,19 +245,27 @@ pub fn run(
                     Ok(0) => {}
                     Ok(length) => {
                         let previous_epoch = pane.terminal.scrollback_epoch();
+                        let previous_maximum = pane.terminal.max_scroll_offset();
                         pane.terminal.advance(&buffer[..length]);
-                        let added = pane
-                            .terminal
-                            .scrollback_epoch()
-                            .saturating_sub(previous_epoch)
-                            as usize;
-                        if added > 0 && session.active_pane() == Some(pane.id) {
+                        let maximum = pane.terminal.max_scroll_offset();
+                        if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
+                            for client in &mut clients {
+                                if client.scroll_offset.take().is_some() {
+                                    client.search_query = None;
+                                    client.status = None;
+                                    full_dirty = true;
+                                }
+                            }
+                        } else if session.active_pane() == Some(pane.id) {
+                            let added = pane
+                                .terminal
+                                .scrollback_epoch()
+                                .saturating_sub(previous_epoch)
+                                as usize;
                             for client in &mut clients {
                                 if let Some(offset) = &mut client.scroll_offset {
-                                    *offset = offset
-                                        .saturating_add(added)
-                                        .min(pane.terminal.max_scroll_offset());
-                                    set_scroll_status(client, pane.terminal.max_scroll_offset());
+                                    *offset = offset.saturating_add(added).min(maximum);
+                                    set_scroll_status(client, maximum);
                                 }
                             }
                         }

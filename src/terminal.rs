@@ -663,7 +663,9 @@ impl State {
     fn reset(&mut self) {
         let size = self.screen().size();
         let scrollback_limit = self.primary.scrollback_limit;
+        let scrollback_epoch = self.primary.scrollback_epoch.saturating_add(1);
         *self = Self::new(size, scrollback_limit).expect("existing terminal size is valid");
+        self.primary.scrollback_epoch = scrollback_epoch;
     }
 
     fn set_private_mode(&mut self, mode: u16, enabled: bool) {
@@ -1060,8 +1062,9 @@ fn erase_display(screen: &mut Screen, mode: u16, attributes: Attributes) {
             for row in 0..screen.height() {
                 screen.erase(row, 0, screen.columns(), attributes);
             }
-            if mode == 3 {
+            if mode == 3 && !screen.scrollback.is_empty() {
                 screen.scrollback.clear();
+                screen.scrollback_epoch = screen.scrollback_epoch.saturating_add(1);
             }
         }
         _ => {}
@@ -1333,6 +1336,28 @@ mod tests {
         terminal.clear_scrollback();
         assert_eq!(terminal.max_scroll_offset(), 0);
         assert_eq!(terminal.screen().rows(), screen);
+    }
+
+    #[test]
+    fn reset_clears_screen_and_scrollback() {
+        let mut terminal = Terminal::with_scrollback(
+            Size {
+                columns: 5,
+                rows: 2,
+            },
+            2,
+        )
+        .unwrap();
+        terminal.advance(b"one\r\ntwo\r\nthree\x1b[?1;1002h");
+        let epoch = terminal.scrollback_epoch();
+
+        terminal.advance(b"\x1bc");
+
+        assert_eq!(line(&terminal, 0), "     ");
+        assert_eq!(line(&terminal, 1), "     ");
+        assert_eq!(terminal.max_scroll_offset(), 0);
+        assert!(terminal.scrollback_epoch() > epoch);
+        assert_eq!(terminal.modes(), Modes::default());
     }
 
     #[test]
