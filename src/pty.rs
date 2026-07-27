@@ -17,6 +17,10 @@ use crate::session::Size;
 
 pub const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 
+pub(crate) fn is_eof_error(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::EIO)
+}
+
 #[derive(Debug)]
 pub struct LaunchContext {
     shell: OsString,

@@ -221,3 +221,17 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Requirements: Default Keys; Mouse and Scrollback.
   - Depends on: T11, T12, T17, T18.
   - Done when: focused modal-input checks cover fragmented keys and Escape.
+
+- [ ] **T21 — Add native x86-64 Windows backend**
+  - Use ConPTY for panes, current-user named pipes for IPC, job objects for
+    child cleanup, and Win32 console-mode restoration and system metrics.
+  - Requirements: Distribution and Dependency Contract; IPC and Filesystem
+    Security; Implementation and Acceptance.
+  - Depends on: T04 through T14.
+  - Native Windows release build passes at 433,664 bytes.
+  - Native Windows test suite passes: 42 tests, including current-user named-pipe
+    round-trip coverage.
+  - Linux musl code path passes
+    `cargo check --locked --target x86_64-unknown-linux-musl`.
+  - Done when: the Windows build, focused lifecycle checks, and native
+    Windows Terminal, WezTerm, and Command Prompt acceptance runs pass.

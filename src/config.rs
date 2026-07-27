@@ -174,10 +174,19 @@ impl Config {
 }
 
 fn config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(|root| PathBuf::from(root).join("Termfold").join("config.toml"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
     if let Some(root) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(root).join("termfold/config.toml"));
     }
 
+    #[cfg(not(target_os = "windows"))]
     env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(|root| PathBuf::from(root).join(".config/termfold/config.toml"))

@@ -1,6 +1,7 @@
 # Termfold
 
-Termfold is a small terminal multiplexer for Linux and WSL. It provides
+Termfold is a small terminal multiplexer for Linux, WSL, and native x86-64
+Windows. It provides
 persistent local sessions, tabs, panes, scrollback, and a compact bottom status
 bar in one self-contained executable.
 
@@ -16,7 +17,8 @@ Termfold runs on Linux, including:
 - WezTerm, xterm, Kitty, and Windows Terminal through WSL or SSH
 - Recent Debian, Ubuntu, Alpine, and RHEL-compatible systems
 
-Native Windows and macOS executables are not supported.
+Native Windows 10 version 1809 or later is supported through ConPTY in Windows
+Terminal, WezTerm, and Windows Command Prompt. macOS is not supported.
 
 ## Build and install
 
@@ -39,6 +41,22 @@ Copy it to a directory on your `PATH`, for example:
 install -Dm755 target/x86_64-unknown-linux-musl/release/termfold \
   "$HOME/.local/bin/termfold"
 ```
+
+Build the native Windows executable with the MSVC toolchain:
+
+```text
+cargo build --release --locked --target x86_64-pc-windows-msvc
+```
+
+The executable is written to
+`target\x86_64-pc-windows-msvc\release\termfold.exe`.
+
+The Windows-only `windows-sys` dependency provides direct Win32 bindings for
+ConPTY, named pipes, ACLs, console control, and job objects; Rust's standard
+library does not expose those APIs. It is MIT/Apache-2.0 licensed and adds no
+Windows runtime library beyond system DLLs. The validated Windows release
+artifact is 433,664 bytes; the dependency-specific incremental size is not
+separable because no native Windows baseline existed.
 
 ## Quick start
 
@@ -161,7 +179,8 @@ text without terminal styling or control sequences.
 
 Each session contains tabs, and each tab contains one or more panes. New tabs
 and panes start the session's shell in the directory where the session was
-created.
+created. Linux uses an absolute `$SHELL` or `/bin/sh`; Windows uses an absolute
+`%COMSPEC%` or `%SystemRoot%\System32\cmd.exe`.
 
 The bottom row shows the session, tab list, active tab, date, and time:
 
@@ -199,8 +218,9 @@ Keyboard-only operation remains fully supported.
 
 Configuration is optional. Termfold reads:
 
-1. `$XDG_CONFIG_HOME/termfold/config.toml`, when `XDG_CONFIG_HOME` is set; or
-2. `$HOME/.config/termfold/config.toml`.
+- Linux: `$XDG_CONFIG_HOME/termfold/config.toml`, falling back to
+  `$HOME/.config/termfold/config.toml`.
+- Windows: `%APPDATA%\Termfold\config.toml`.
 
 The default configuration is:
 
@@ -269,10 +289,10 @@ label_foreground = "#ffffff"
 label_background = "#b00020"
 ```
 
-CPU and memory values come directly from Linux `/proc`. CPU temperature uses the
-configured sysfs file because sensor paths differ between machines and may be
-unavailable in WSL. Special characters are literal UTF-8 and require a font that
-contains the selected glyph.
+CPU and memory values come from Linux `/proc` or native Win32 system metrics.
+CPU temperature uses the configured Linux sysfs file and displays `-` on
+Windows or when unavailable. Special characters are literal UTF-8 and require a
+font that contains the selected glyph.
 
 Built-in terminal profiles are `dumb`, `ansi`, `vt100`, `linux`, `xterm`,
 `xterm-256color`, `screen`, `screen-256color`, `tmux`, and `tmux-256color`.

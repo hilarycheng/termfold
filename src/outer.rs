@@ -160,6 +160,32 @@ pub fn built_in(name: &str) -> Option<Profile> {
     })
 }
 
+pub fn detected_environment() -> (String, String) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut term = std::env::var("TERM").unwrap_or_default();
+        let mut colorterm = std::env::var("COLORTERM").unwrap_or_default();
+        if term.is_empty() {
+            term = "xterm-256color".into();
+        }
+        if colorterm.is_empty()
+            && (std::env::var_os("WT_SESSION").is_some()
+                || std::env::var("TERM_PROGRAM")
+                    .is_ok_and(|value| value.eq_ignore_ascii_case("wezterm")))
+        {
+            colorterm = "truecolor".into();
+        }
+        (term, colorterm)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        (
+            std::env::var("TERM").unwrap_or_default(),
+            std::env::var("COLORTERM").unwrap_or_default(),
+        )
+    }
+}
+
 pub fn select(override_name: &str, term: &str, colorterm: &str) -> Selection {
     let (profile, reason) = if override_name != "auto" {
         (

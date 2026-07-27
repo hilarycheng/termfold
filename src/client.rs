@@ -1,15 +1,16 @@
 use std::{
     io::{self, Read, Write},
-    os::fd::AsRawFd,
     panic,
     process::{Child, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{
     config::Config,
@@ -18,10 +19,13 @@ use crate::{
     runtime::RuntimeDir,
     session::{MAX_SESSIONS_PER_USER, Size},
 };
+#[cfg(target_os = "linux")]
+use crate::runtime::ClientStream;
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
 const ENTER_TERMINAL: &[u8] = b"\x1b[?1049h";
+#[cfg(target_os = "linux")]
 const SIGNALS: [libc::c_int; 5] = [
     libc::SIGWINCH,
     libc::SIGHUP,
@@ -30,8 +34,18 @@ const SIGNALS: [libc::c_int; 5] = [
     libc::SIGTERM,
 ];
 
+#[cfg(target_os = "windows")]
+#[path = "client_windows.rs"]
+mod platform;
+#[cfg(target_os = "windows")]
+use platform::{BlockedSignals, TerminalGuard};
+#[cfg(target_os = "windows")]
+pub(crate) use platform::terminal_size;
+
+#[cfg(target_os = "linux")]
 struct TerminalGuard(Arc<TerminalRestorer>);
 
+#[cfg(target_os = "linux")]
 struct TerminalRestorer {
     input: libc::c_int,
     output: libc::c_int,
@@ -40,6 +54,7 @@ struct TerminalRestorer {
     restored: AtomicBool,
 }
 
+#[cfg(target_os = "linux")]
 impl TerminalGuard {
     fn enter(capabilities: Capabilities) -> Result<Option<Self>, String> {
         // SAFETY: isatty only inspects the supplied live file descriptors.
@@ -98,12 +113,14 @@ impl TerminalGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.0.restore();
     }
 }
 
+#[cfg(target_os = "linux")]
 impl TerminalRestorer {
     fn restore(&self) {
         if self.restored.swap(true, Ordering::AcqRel) {
@@ -133,18 +150,21 @@ fn restore_sequence(capabilities: Capabilities) -> Vec<u8> {
     output
 }
 
+#[cfg(target_os = "linux")]
 struct BlockedSignals {
     set: libc::sigset_t,
     old: libc::sigset_t,
     active: bool,
 }
 
+#[cfg(target_os = "linux")]
 struct SignalGuard {
     old: libc::sigset_t,
     running: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
+#[cfg(target_os = "linux")]
 impl BlockedSignals {
     fn block() -> Result<Self, String> {
         // SAFETY: both signal sets are initialized by libc before use.
@@ -169,7 +189,7 @@ impl BlockedSignals {
 
     fn listen(
         mut self,
-        writer: Arc<Mutex<std::os::unix::net::UnixStream>>,
+        writer: Arc<Mutex<ClientStream>>,
         terminal: Option<Arc<TerminalRestorer>>,
     ) -> Result<SignalGuard, String> {
         let set = self.set;
@@ -221,6 +241,7 @@ impl BlockedSignals {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for BlockedSignals {
     fn drop(&mut self) {
         if self.active {
@@ -230,6 +251,7 @@ impl Drop for BlockedSignals {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for SignalGuard {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
@@ -243,6 +265,7 @@ impl Drop for SignalGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn write_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
         // SAFETY: bytes points to readable memory for its reported length.
@@ -334,11 +357,8 @@ pub fn create_and_attach(runtime: &RuntimeDir, name: &str, config: &Config) -> R
 }
 
 pub fn attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), String> {
-    let selection = outer::select(
-        &config.terminal_profile,
-        &std::env::var("TERM").unwrap_or_default(),
-        &std::env::var("COLORTERM").unwrap_or_default(),
-    );
+    let (term, colorterm) = outer::detected_environment();
+    let selection = outer::select(&config.terminal_profile, &term, &colorterm);
     let capabilities = selection.capabilities;
     if !capabilities.cursor_addressing {
         return Err(format!(
@@ -455,9 +475,6 @@ pub fn query_status(runtime: &RuntimeDir, name: &str) -> Result<SessionInfo, Str
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .map_err(|error| format!("cannot configure session connection: {error}"))?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(500)))
-        .map_err(|error| format!("cannot configure session connection: {error}"))?;
     ipc::write_message(&mut stream, &Message::StatusRequest).map_err(|error| error.to_string())?;
     match ipc::read_message(&mut stream).map_err(|error| error.to_string())? {
         Some(Message::Status {
@@ -484,22 +501,28 @@ fn spawn_server(name: &str, size: Size) -> Result<Child, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    use std::os::unix::process::CommandExt;
-    // SAFETY: setsid is async-signal-safe and does not access parent-process memory.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and does not access parent-process memory.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
     }
+    #[cfg(target_os = "windows")]
+    platform::configure_server(&mut command);
     command
         .spawn()
         .map_err(|error| format!("cannot start session server: {error}"))
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn terminal_size() -> Size {
     let mut window = libc::winsize {
         ws_row: 0,
@@ -524,7 +547,7 @@ pub(crate) fn terminal_size() -> Size {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::{

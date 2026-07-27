@@ -14,9 +14,9 @@ This document defines product behaviour. `AGENTS.md` defines the AI workflow.
 ## Product Positioning
 
 Termfold is an intentionally small, self-contained terminal multiplexer for
-Linux and WSL. It provides persistent named sessions, tabs, panes, and an
-always-visible one-row status bar without becoming a terminal workspace
-platform.
+Linux, WSL, and native x86-64 Windows. It provides persistent named sessions,
+tabs, panes, and an always-visible one-row status bar without becoming a
+terminal workspace platform.
 
 The primary product contract is:
 
@@ -52,7 +52,9 @@ The first release MUST NOT provide:
 ## Distribution and Dependency Contract
 
 The official Linux release artifact MUST be one statically linked executable for
-each supported architecture.
+each supported architecture. The official Windows artifact MUST be one
+`x86_64-pc-windows-msvc` executable with no bundled runtime DLLs; Windows system
+DLLs are platform APIs, not Termfold runtime dependencies.
 
 Termfold itself MUST NOT require:
 
@@ -79,6 +81,7 @@ sufficient.
 The first release MUST provide:
 
 - a self-contained static Linux executable;
+- a standalone native x86-64 Windows executable using ConPTY;
 - persistent same-user sessions while the server is alive;
 - local attach and detach;
 - tabs and panes;
@@ -142,17 +145,22 @@ session, tab, pane, and focus changes are shared by all attached clients.
 - Detaching MUST leave the session and child processes running.
 - A session server MUST exit when its session is terminated.
 - The most recently active attached client's current size is authoritative and
-  MUST be propagated to every affected PTY on attach, input, and `SIGWINCH`.
+  MUST be propagated to every affected PTY on attach and input, plus
+  `SIGWINCH` on Linux or console-size changes on Windows.
 - A pane child exit MUST close that pane. An empty tab MUST close; an empty session
   MUST terminate.
 - Closing a live pane or session MUST request graceful child termination before
-  forced termination and MUST reap every child. Send `SIGTERM`, wait up to 2
-  seconds, then send `SIGKILL` to remaining children.
+  forced termination and MUST reap every child. On Linux, send `SIGTERM`, wait
+  up to 2 seconds, then send `SIGKILL`. On Windows, close the ConPTY, wait up to
+  2 seconds, then terminate the pane job object.
 - The server MUST never listen on a network socket.
 
 ## Shell Launch and Inner Terminal Identity
 
-- Use `$SHELL` only when it is an absolute executable path; otherwise use `/bin/sh`.
+- On Linux, use `$SHELL` only when it is an absolute executable path; otherwise
+  use `/bin/sh`.
+- On Windows, use absolute `%COMSPEC%`; otherwise use
+  `%SystemRoot%\System32\cmd.exe`.
 - Execute the shell directly without command interpolation.
 - The first pane MUST inherit the creating client's working directory and
   environment, except for Termfold-controlled terminal variables.
@@ -253,7 +261,7 @@ screen semantics. Those behaviours belong to one testable core implementation.
 
 Because Termfold advertises `termfold-256color`, its checked-in terminfo entry and
 implementation MUST agree on the subset used by ordinary interactive Linux
-applications:
+applications and by Windows console applications translated through ConPTY:
 
 - incremental UTF-8 decoding, combining characters, and wide-cell accounting;
 - cursor movement, save/restore, scrolling regions, insertion, deletion, erase,
@@ -435,16 +443,20 @@ The default layout is:
   attributes even when custom colours are used.
 - Status colours MUST accept `default`, the 16 ANSI colour names, and `#RRGGBB`;
   they MUST use the existing safe colour downgrade path.
-- `{cpu_usage}` MUST be sampled from `/proc/stat`, `{memory_usage}` from
-  `MemTotal` and `MemAvailable` in `/proc/meminfo`, and `{cpu_temp}` from the
-  explicitly configured sysfs file. Missing values MUST render as `-`.
+- On Linux, `{cpu_usage}` MUST be sampled from `/proc/stat`, `{memory_usage}`
+  from `MemTotal` and `MemAvailable` in `/proc/meminfo`, and `{cpu_temp}` from
+  the explicitly configured sysfs file.
+- On Windows, `{cpu_usage}` and `{memory_usage}` MUST use Win32 system metrics.
+  `{cpu_temp}` MAY remain unavailable and render as `-`.
+- Missing metric values MUST render as `-`.
 - System metrics MUST refresh only when their placeholders are configured.
   Metric-only updates MUST redraw only the status row.
 
 ## Configuration
 
-Read configuration from `$XDG_CONFIG_HOME/termfold/config.toml`, falling back to
-`$HOME/.config/termfold/config.toml`. A missing file MUST use these defaults:
+On Linux, read configuration from `$XDG_CONFIG_HOME/termfold/config.toml`,
+falling back to `$HOME/.config/termfold/config.toml`. On Windows, read
+`%APPDATA%\Termfold\config.toml`. A missing file MUST use these defaults:
 
 ```toml
 prefix = "C-b"
@@ -495,6 +507,8 @@ downgrade path; Termfold MUST NOT claim to recolour pane applications.
 
 ## IPC and Filesystem Security
 
+On Linux:
+
 - Prefer `$XDG_RUNTIME_DIR/termfold` only when the runtime directory is absolute,
   owned by the current user, and not writable by other users.
 - Otherwise use `/tmp/termfold-UID`, created with mode `0700` and verified as a
@@ -509,6 +523,22 @@ downgrade path; Termfold MUST NOT claim to recolour pane applications.
   paths.
 - A stale socket MAY be removed only after type and ownership validation and a
   failed connection proving no server accepts it.
+
+On Windows:
+
+- IPC MUST use local named pipes with remote clients rejected.
+- Each pipe and named creation lock MUST use a protected DACL granting access
+  only to the current user SID.
+- Both named-pipe endpoints MUST verify that the peer process has the current
+  user SID.
+- Session pipe names MUST include the current user SID.
+- Runtime markers and private terminfo data MUST live below
+  `%LOCALAPPDATA%\Termfold\runtime`, or a user-SID-specific temporary fallback,
+  with a protected current-user DACL.
+- ConPTY child trees MUST be assigned to a kill-on-close job object.
+
+On every platform:
+
 - IPC MUST be framed, versioned, reject malformed messages, and cap each frame at
   1 MiB.
 - Each client connection MUST have independent parsing, queues, and cleanup. A
@@ -578,8 +608,10 @@ affiliation, code reuse, or compatibility certification where none exists.
 - Changes to the embedded `termfold-256color` description MUST include a matching
   implementation or test change and MUST be reviewed as a public compatibility
   contract.
-- Linux or WSL is authoritative for builds, PTYs, signals, permissions, static
-  linking, private terminfo loading, and terminal restoration.
+- Linux or WSL is authoritative for Linux builds, PTYs, signals, permissions,
+  static linking, and terminal restoration.
+- Native Windows is authoritative for ConPTY, named-pipe ACLs, console modes,
+  job-object cleanup, and the `x86_64-pc-windows-msvc` artifact.
 - A release is not acceptable until the release checklist in `AGENTS.md` passes.
 
 The first release MUST meet these owner-approved budgets:
@@ -591,3 +623,4 @@ The first release MUST meet these owner-approved budgets:
 | Idle resident memory | 16 MiB maximum |
 | Idle CPU usage | 0.1% maximum |
 | Minimum Linux kernel | 4.18 |
+| Minimum Windows version | Windows 10 version 1809 |

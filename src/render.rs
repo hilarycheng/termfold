@@ -1,4 +1,15 @@
-use std::{ffi::CString, fmt::Write as _, fs, io::Write as _, path::Path, time::SystemTime};
+use std::{fmt::Write as _, fs, io::Write as _, path::Path, time::SystemTime};
+
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{FILETIME, SYSTEMTIME},
+    System::{
+        SystemInformation::{GetLocalTime, GlobalMemoryStatusEx, MEMORYSTATUSEX},
+        Threading::GetSystemTimes,
+    },
+};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -605,11 +616,33 @@ pub fn status_tab_at(
     None
 }
 
+#[cfg(target_os = "linux")]
 fn read_cpu_sample() -> Option<(u64, u64)> {
     let source = fs::read_to_string("/proc/stat").ok()?;
     parse_cpu_sample(&source)
 }
 
+#[cfg(target_os = "windows")]
+fn read_cpu_sample() -> Option<(u64, u64)> {
+    let (mut idle, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: all three FILETIME pointers reference writable initialized storage.
+    if unsafe { GetSystemTimes(&raw mut idle, &raw mut kernel, &raw mut user) } == 0 {
+        return None;
+    }
+    let idle = filetime(idle);
+    Some((filetime(kernel).saturating_add(filetime(user)), idle))
+}
+
+#[cfg(target_os = "windows")]
+fn filetime(value: FILETIME) -> u64 {
+    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
+}
+
+#[cfg(target_os = "linux")]
 fn parse_cpu_sample(source: &str) -> Option<(u64, u64)> {
     let mut values = source.lines().next()?.split_whitespace();
     (values.next()? == "cpu").then_some(())?;
@@ -622,11 +655,24 @@ fn parse_cpu_sample(source: &str) -> Option<(u64, u64)> {
     Some((total, idle))
 }
 
+#[cfg(target_os = "linux")]
 fn read_memory_usage() -> Option<u8> {
     let source = fs::read_to_string("/proc/meminfo").ok()?;
     parse_memory_usage(&source)
 }
 
+#[cfg(target_os = "windows")]
+fn read_memory_usage() -> Option<u8> {
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: status has the required size and points to writable storage.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0)
+        .then_some(status.dwMemoryLoad.min(100) as u8)
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_memory_usage(source: &str) -> Option<u8> {
     let mut total = None;
     let mut available = None;
@@ -652,6 +698,7 @@ fn parse_memory_usage(source: &str) -> Option<u8> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn format_clock(date_format: &str, time_format: &str) -> (String, String) {
     let Ok(format) = CString::new(format!("{date_format}\x1f{time_format}")) else {
         return (String::new(), String::new());
@@ -678,6 +725,66 @@ fn format_clock(date_format: &str, time_format: &str) -> (String, String) {
     let output = String::from_utf8_lossy(&output[..length]);
     let (date, time) = output.split_once('\x1f').unwrap_or_default();
     (date.into(), time.into())
+}
+
+#[cfg(target_os = "windows")]
+fn format_clock(date_format: &str, time_format: &str) -> (String, String) {
+    let mut now = SYSTEMTIME::default();
+    // SAFETY: now points to writable SYSTEMTIME storage.
+    unsafe {
+        GetLocalTime(&raw mut now);
+    }
+    (
+        format_system_time(date_format, now),
+        format_system_time(time_format, now),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn format_system_time(format: &str, now: SYSTEMTIME) -> String {
+    let mut output = String::with_capacity(format.len() + 16);
+    let mut characters = format.chars();
+    while let Some(character) = characters.next() {
+        if character != '%' {
+            output.push(character);
+            continue;
+        }
+        match characters.next() {
+            Some('Y') => {
+                let _ = write!(output, "{:04}", now.wYear);
+            }
+            Some('m') => {
+                let _ = write!(output, "{:02}", now.wMonth);
+            }
+            Some('d') => {
+                let _ = write!(output, "{:02}", now.wDay);
+            }
+            Some('H') => {
+                let _ = write!(output, "{:02}", now.wHour);
+            }
+            Some('I') => {
+                let hour = match now.wHour % 12 {
+                    0 => 12,
+                    hour => hour,
+                };
+                let _ = write!(output, "{hour:02}");
+            }
+            Some('M') => {
+                let _ = write!(output, "{:02}", now.wMinute);
+            }
+            Some('S') => {
+                let _ = write!(output, "{:02}", now.wSecond);
+            }
+            Some('p') => output.push_str(if now.wHour < 12 { "AM" } else { "PM" }),
+            Some('%') => output.push('%'),
+            Some(other) => {
+                output.push('%');
+                output.push(other);
+            }
+            None => output.push('%'),
+        }
+    }
+    output
 }
 
 fn contains(rect: Rect, x: u16, y: u16) -> bool {

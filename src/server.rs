@@ -1,8 +1,6 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::Shutdown,
-    os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread,
     time::{Duration, SystemTime},
@@ -15,7 +13,7 @@ use crate::{
     outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
     render::{self, Metrics, StatusLine},
-    runtime::{self, RuntimeDir},
+    runtime::{ClientStream, RuntimeDir, SessionSocket},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
 };
@@ -35,7 +33,7 @@ enum ClientEvent {
 
 struct Client {
     id: u64,
-    control: UnixStream,
+    control: ClientStream,
     inbound: Receiver<ClientEvent>,
     outbound: SyncSender<Message>,
     pending_control: Option<Message>,
@@ -133,7 +131,6 @@ pub fn run(
 ) -> Result<(), String> {
     let socket = runtime.bind(&name)?;
     socket
-        .listener()
         .set_nonblocking(true)
         .map_err(|error| format!("cannot configure session listener: {error}"))?;
 
@@ -173,8 +170,7 @@ pub fn run(
 
     while !terminate {
         accept_clients(
-            socket.listener(),
-            runtime.uid(),
+            &socket,
             &mut clients,
             &mut next_client_id,
             config.prefix,
@@ -274,7 +270,7 @@ pub fn run(
                         break;
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
+                    Err(error) if pty::is_eof_error(&error) => {}
                     Err(_) => terminate = true,
                 }
             }
@@ -433,8 +429,7 @@ pub fn run(
 }
 
 fn accept_clients(
-    listener: &std::os::unix::net::UnixListener,
-    uid: u32,
+    listener: &SessionSocket,
     clients: &mut Vec<Client>,
     next_client_id: &mut u64,
     prefix: u8,
@@ -442,14 +437,10 @@ fn accept_clients(
 ) {
     loop {
         let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
+            Ok(stream) => stream,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         };
-        if runtime::peer_uid(&stream) != Ok(uid) {
-            let _ = stream.shutdown(Shutdown::Both);
-            continue;
-        }
         let Ok(reader) = stream.try_clone() else {
             continue;
         };
@@ -480,7 +471,7 @@ fn accept_clients(
     }
 }
 
-fn read_client(mut stream: UnixStream, sender: SyncSender<ClientEvent>) {
+fn read_client(mut stream: ClientStream, sender: SyncSender<ClientEvent>) {
     loop {
         match ipc::read_message(&mut stream) {
             Ok(Some(message)) => {
@@ -496,7 +487,7 @@ fn read_client(mut stream: UnixStream, sender: SyncSender<ClientEvent>) {
     }
 }
 
-fn write_client(mut stream: UnixStream, receiver: Receiver<Message>) {
+fn write_client(mut stream: ClientStream, receiver: Receiver<Message>) {
     while let Ok(message) = receiver.recv() {
         if ipc::write_message(&mut stream, &message).is_err() {
             break;
@@ -1425,7 +1416,7 @@ fn queue_control(clients: &mut [Client], client_id: u64, message: Message) {
         Ok(()) => {}
         Err(TrySendError::Full(message)) => client.pending_control = Some(message),
         Err(TrySendError::Disconnected(_)) => {
-            let _ = client.control.shutdown(Shutdown::Both);
+            let _ = client.control.shutdown();
         }
     }
 }
@@ -1439,7 +1430,7 @@ fn flush_client_controls(clients: &mut [Client]) {
             Ok(()) => {}
             Err(TrySendError::Full(message)) => client.pending_control = Some(message),
             Err(TrySendError::Disconnected(_)) => {
-                let _ = client.control.shutdown(Shutdown::Both);
+                let _ = client.control.shutdown();
             }
         }
     }
@@ -1469,7 +1460,7 @@ fn flush_broadcast(pending: &mut Option<PendingBroadcast>, clients: &[Client]) {
 fn remove_client(clients: &mut Vec<Client>, client_id: u64) {
     if let Some(index) = clients.iter().position(|client| client.id == client_id) {
         let client = clients.swap_remove(index);
-        let _ = client.control.shutdown(Shutdown::Both);
+        let _ = client.control.shutdown();
     }
 }
 

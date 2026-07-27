@@ -1,17 +1,23 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod client;
 mod config;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod input;
 pub mod ipc;
 mod outer;
 #[cfg(target_os = "linux")]
 pub mod pty;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "windows")]
+#[path = "pty_windows.rs"]
+pub mod pty;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod render;
 #[cfg(target_os = "linux")]
 pub mod runtime;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "windows")]
+#[path = "runtime_windows.rs"]
+pub mod runtime;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod server;
 pub mod session;
 pub mod terminal;
@@ -40,7 +46,7 @@ enum Command {
     Diagnose,
     Help,
     Version,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     Server {
         name: String,
         size: session::Size,
@@ -77,7 +83,7 @@ fn run() -> Result<(), String> {
         return diagnose(&config);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Command::Server { name, size } = &command {
         return server::run(
             runtime::RuntimeDir::discover()?,
@@ -94,7 +100,7 @@ fn run() -> Result<(), String> {
         &config.time_format,
     );
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         let runtime = runtime::RuntimeDir::discover()?;
         match command {
@@ -110,11 +116,11 @@ fn run() -> Result<(), String> {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    Err("termfold requires Linux".into())
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    Err("termfold requires Linux or Windows".into())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn select(runtime: &runtime::RuntimeDir, config: &config::Config) -> Result<(), String> {
     let sessions = client::discover(runtime)?;
     let detached = sessions
@@ -131,7 +137,7 @@ fn select(runtime: &runtime::RuntimeDir, config: &config::Config) -> Result<(), 
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn select_pid(
     runtime: &runtime::RuntimeDir,
     prefix: &str,
@@ -150,13 +156,13 @@ fn select_pid(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn list(runtime: &runtime::RuntimeDir) -> Result<(), String> {
     print_sessions(&client::discover(runtime)?);
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn print_sessions(sessions: &[client::SessionInfo]) {
     for session in sessions {
         let state = if session.is_attached() {
@@ -168,14 +174,13 @@ fn print_sessions(sessions: &[client::SessionInfo]) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn diagnose(config: &config::Config) -> Result<(), String> {
-    let term = env::var_os("TERM").unwrap_or_default();
-    let colorterm = env::var_os("COLORTERM").unwrap_or_default();
+    let (term, colorterm) = outer::detected_environment();
     let selected = outer::select(
         &config.terminal_profile,
-        &term.to_string_lossy(),
-        &colorterm.to_string_lossy(),
+        &term,
+        &colorterm,
     );
     let capabilities = selected.capabilities;
     let runtime = runtime::RuntimeDir::discover()?;
@@ -186,8 +191,8 @@ fn diagnose(config: &config::Config) -> Result<(), String> {
     };
     let size = client::terminal_size();
 
-    println!("outer TERM: {:?}", term.to_string_lossy());
-    println!("outer COLORTERM: {:?}", colorterm.to_string_lossy());
+    println!("outer TERM: {term:?}");
+    println!("outer COLORTERM: {colorterm:?}");
     println!(
         "outer profile: {} ({})",
         capabilities.profile.name(),
@@ -218,9 +223,9 @@ fn diagnose(config: &config::Config) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn diagnose(_: &config::Config) -> Result<(), String> {
-    Err("termfold requires Linux".into())
+    Err("termfold requires Linux or Windows".into())
 }
 
 fn color_level_name(level: outer::ColorLevel) -> &'static str {
@@ -261,7 +266,7 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
         [command, name] if command == "new" => Ok(Command::New(valid_name(name)?)),
         [command, name] if command == "attach" => Ok(Command::Attach(valid_name(name)?)),
         [command, name] if command == "kill" => Ok(Command::Kill(valid_name(name)?)),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         [command, name, columns, rows] if command == "--server" => Ok(Command::Server {
             name: valid_name(name)?,
             size: session::Size {
@@ -273,7 +278,7 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn valid_dimension(value: &str) -> Result<u16, String> {
     value
         .parse::<u16>()

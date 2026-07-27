@@ -10,6 +10,7 @@ the AI workflow. When they conflict, stop and request clarification.
 Primary goals:
 
 - Single static Linux binary
+- Standalone native x86-64 Windows binary
 - Small binary size
 - Fast startup
 - Low memory usage
@@ -73,6 +74,7 @@ Primary target:
 
 ```text
 x86_64-unknown-linux-musl
+x86_64-pc-windows-msvc
 ```
 
 Possible future targets:
@@ -81,7 +83,8 @@ Possible future targets:
 aarch64-unknown-linux-musl
 ```
 
-The release binary must run without external shared libraries.
+The Linux release binary must run without external shared libraries. The Windows
+release must not bundle runtime DLLs; Windows system DLLs are allowed.
 
 Required validation:
 
@@ -107,10 +110,11 @@ Termfold must support development in both of these environments:
 - The editor or Codex App may run on Windows.
 - Prefer MinGW/MSYS2 shell for Windows-side command-line work.
 - Source files may be opened from Windows.
-- Build, test, lint, PTY testing, and execution must run inside WSL.
-- WSL is the authoritative runtime environment.
+- Linux builds, tests, lint, PTY testing, and execution must run inside WSL.
+- Native Windows backend builds and checks must run on Windows.
+- WSL is the authoritative Linux runtime environment.
 - MinGW/MSYS2 is a convenience shell, not the release runtime.
-- Do not use Windows-native Rust targets for release validation.
+- Use `x86_64-pc-windows-msvc` for native Windows release validation.
 - Prefer storing the repository inside the WSL filesystem for better performance and Linux permission behaviour.
 - Avoid assumptions based on Windows paths, drive letters, CRLF, or Windows file permissions.
 - Shell commands in project documentation should be compatible with Bash used by MinGW/MSYS2 and WSL where practical.
@@ -119,12 +123,8 @@ Example target:
 
 ```text
 Windows Codex App
-        ↓
-MinGW/MSYS2 shell
-        ↓
-WSL Linux filesystem and shell
-        ↓
-cargo build / test / run
+        ├── WSL Linux shell → Linux validation
+        └── Windows MSVC toolchain → native Windows validation
 ```
 
 ### Pure Linux
@@ -135,16 +135,19 @@ cargo build / test / run
 
 ## Environment Rules
 
-- Linux behaviour is the source of truth.
+- Linux behaviour is the source of truth for the Linux backend.
+- Native Windows behaviour is the source of truth for the Windows backend.
 - Both environments must use the same Rust toolchain and locked dependencies.
 - Use LF line endings.
 - Keep scripts compatible with POSIX shell or Bash.
 - Prefer commands that behave consistently in MinGW/MSYS2 Bash and WSL Bash.
-- Do not require PowerShell or `cmd.exe` for core development.
+- Do not require PowerShell or `cmd.exe` for cross-platform project scripts.
 - Do not store absolute developer-specific paths.
-- Do not depend on Windows environment variables.
-- PTY, signals, sockets, permissions, and terminal restoration must be tested in Linux or WSL.
-- Release binaries must be built and validated in Linux or WSL using the musl target.
+- Windows-only code may use standard Windows environment variables.
+- PTY, signals, sockets, permissions, and terminal restoration must be tested on
+  each supported native platform.
+- Linux releases must be built and validated in Linux or WSL using musl.
+- Windows releases must be built and validated on Windows using MSVC.
 
 ## Build Requirements
 
@@ -154,6 +157,12 @@ Preferred release command:
 
 ```bash
 cargo build --release --locked --target x86_64-unknown-linux-musl
+```
+
+Native Windows release command:
+
+```bash
+cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
 
 Release profile should favour size:
@@ -258,15 +267,15 @@ Initial non-goals:
 - GPU rendering
 - Full tmux command compatibility
 - Full Byobu feature compatibility
-- Windows native support
 - macOS support
 - Built-in package manager
 
 ## Terminal Model
 
-Termfold operates through Linux PTYs.
+Termfold operates through Linux PTYs and Windows ConPTY.
 
-Linux only provides a byte stream. Terminal behaviour comes from escape-sequence protocols.
+Both backends expose terminal byte streams. Terminal behaviour comes from
+escape-sequence protocols.
 
 Preferred approach:
 
@@ -414,7 +423,7 @@ Termfold must:
 - Restore terminal modes on exit
 - Reap child processes
 - Avoid zombie processes
-- Handle terminal resize signals
+- Handle terminal resize signals on Linux and console-size changes on Windows
 - Handle client disconnects
 - Avoid busy loops
 - Avoid unnecessary background tasks
@@ -554,21 +563,10 @@ When enabled:
 
 Keyboard-only operation must remain fully supported.
 
-## Windows Command Prompt Compatibility
+## Native Windows Compatibility
 
-Pure Windows Command Prompt compatibility is best-effort only.
-
-Termfold is not initially a native Windows executable. It remains a Linux binary running under WSL or on a remote Linux host.
-
-Supported scenario:
-
-```text
-Windows Command Prompt
-        ↓
-wsl.exe
-        ↓
-Termfold inside WSL
-```
+Termfold supports native x86-64 Windows through ConPTY and user-scoped named
+pipes. Windows 10 version 1809 or later is required.
 
 Requirements:
 
@@ -578,15 +576,13 @@ Requirements:
 - Horizontal and vertical splits should work
 - The bottom status bar should remain readable
 
-Limitations are acceptable for:
+Native Windows requirements:
 
-- Mouse integration
-- True colour
-- Extended keyboard protocols
-- Clipboard integration
-- Terminal-specific escape extensions
-
-Do not add native Windows APIs or a Windows-specific backend unless explicitly approved.
+- Use ConPTY for panes.
+- Use named pipes protected by the current user SID for IPC.
+- Use job objects for child-tree cleanup.
+- Restore console modes on detach, exit, panic, or catchable console shutdown.
+- Keep clipboard integration out of scope.
 
 ## Compatibility
 
@@ -598,12 +594,13 @@ Initial compatibility target:
 - Debian
 - Alpine
 - WSL
+- Native x86-64 Windows 10 version 1809 or later
 - SSH sessions
-- WezTerm on Windows through WSL or SSH
+- WezTerm on Windows natively, through WSL, or through SSH
 - xterm
 - Kitty
-- Windows Terminal through WSL or SSH
-- Windows Command Prompt through `wsl.exe`, with best-effort compatibility
+- Windows Terminal natively, through WSL, or through SSH
+- Windows Command Prompt natively or through `wsl.exe`
 
 Do not depend on a desktop environment.
 
@@ -618,6 +615,7 @@ cargo test --locked
 cargo audit
 cargo deny check
 cargo build --release --locked --target x86_64-unknown-linux-musl
+cargo build --release --locked --target x86_64-pc-windows-msvc
 file target/x86_64-unknown-linux-musl/release/termfold
 ldd target/x86_64-unknown-linux-musl/release/termfold
 ```
@@ -625,7 +623,7 @@ ldd target/x86_64-unknown-linux-musl/release/termfold
 Also confirm:
 
 - Binary size is acceptable
-- No unexpected shared libraries
+- No unexpected shared libraries on Linux or bundled runtime DLLs on Windows
 - No network access is required
 - Terminal state restores correctly
 - Detach and reattach work over SSH

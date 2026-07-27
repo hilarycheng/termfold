@@ -1,7 +1,8 @@
 use std::{
     env, fs,
     fs::{File, OpenOptions},
-    io::{ErrorKind, Read, Write},
+    io::{self, ErrorKind, Read, Write},
+    net::Shutdown,
     os::fd::AsRawFd,
     os::linux::fs::MetadataExt,
     os::unix::{
@@ -12,6 +13,39 @@ use std::{
 };
 
 const TERMINFO_ENTRY: &[u8] = include_bytes!("../terminfo/compiled/t/termfold-256color");
+
+#[derive(Debug)]
+pub struct ClientStream(UnixStream);
+
+impl ClientStream {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        self.0.try_clone().map(Self)
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.0.set_read_timeout(timeout)
+    }
+
+    pub fn shutdown(&self) -> io::Result<()> {
+        self.0.shutdown(Shutdown::Both)
+    }
+}
+
+impl Read for ClientStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
+impl Write for ClientStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RuntimeDir {
@@ -54,7 +88,7 @@ impl RuntimeDir {
         }
     }
 
-    pub fn connect(&self, session: &str) -> Result<UnixStream, String> {
+    pub fn connect(&self, session: &str) -> Result<ClientStream, String> {
         if !valid_session_name(session) {
             return Err("session name must match [A-Za-z0-9_-]{1,64}".into());
         }
@@ -71,7 +105,7 @@ impl RuntimeDir {
         if peer_uid(&stream)? != self.uid {
             return Err(format!("session '{session}' belongs to another user"));
         }
-        Ok(stream)
+        Ok(ClientStream(stream))
     }
 
     pub fn session_names(&self) -> Result<Vec<String>, String> {
@@ -239,8 +273,20 @@ pub struct SessionSocket {
 }
 
 impl SessionSocket {
-    pub fn listener(&self) -> &UnixListener {
-        &self.listener
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.listener.set_nonblocking(nonblocking)
+    }
+
+    pub fn accept(&self) -> io::Result<ClientStream> {
+        let (stream, _) = self.listener.accept()?;
+        if peer_uid(&stream).ok() != Some(self.uid) {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "session client belongs to another user",
+            ));
+        }
+        Ok(ClientStream(stream))
     }
 }
 
