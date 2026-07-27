@@ -196,6 +196,27 @@ fn detached_session_preserves_screen_and_reattach_resizes_the_pty() {
 }
 
 #[test]
+fn noisy_pane_cannot_starve_detached_tab_output() {
+    let runtime = TestRuntime::new();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = attach_stream(&runtime.socket("one"), 41, 9);
+
+    send_input(&mut stream, b"while :; do printf x; done\n");
+    send_input(&mut stream, b"\x02c");
+    send_input(
+        &mut stream,
+        b"printf '\\124\\062\\062\\055\\121\\125\\111\\105\\124'\n",
+    );
+    send_detach(&mut stream);
+    while read_frame(&mut stream).is_some() {}
+    wait_for_attached_count(&runtime.socket("one"), 0);
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = attach_stream(&runtime.socket("one"), 41, 9);
+    wait_for_screen(&mut stream, b"T22-QUIET");
+}
+
+#[test]
 fn input_restores_that_clients_size_to_every_pty() {
     let runtime = TestRuntime::new();
     assert!(runtime.run(&["new", "one"]).status.success());

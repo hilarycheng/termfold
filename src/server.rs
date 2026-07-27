@@ -234,45 +234,42 @@ pub fn run(
         }
 
         flush_broadcast(&mut pending_broadcast, &clients);
-        if pending_broadcast.is_none() && clients.iter().any(|client| client.attached) {
-            for pane in &mut panes {
-                let mut buffer = [0; 8192];
-                match pane.child.master().read(&mut buffer) {
-                    Ok(0) => {}
-                    Ok(length) => {
-                        let previous_epoch = pane.terminal.scrollback_epoch();
-                        let previous_maximum = pane.terminal.max_scroll_offset();
-                        pane.terminal.advance(&buffer[..length]);
-                        let maximum = pane.terminal.max_scroll_offset();
-                        if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
-                            for client in &mut clients {
-                                if client.scroll_offset.take().is_some() {
-                                    client.search_query = None;
-                                    client.status = None;
-                                    full_dirty = true;
-                                }
-                            }
-                        } else if session.active_pane() == Some(pane.id) {
-                            let added = pane
-                                .terminal
-                                .scrollback_epoch()
-                                .saturating_sub(previous_epoch)
-                                as usize;
-                            for client in &mut clients {
-                                if let Some(offset) = &mut client.scroll_offset {
-                                    *offset = offset.saturating_add(added).min(maximum);
-                                    set_scroll_status(client, maximum);
-                                }
+        for pane in &mut panes {
+            let mut buffer = [0; 8192];
+            match pane.child.master().read(&mut buffer) {
+                Ok(0) => {}
+                Ok(length) => {
+                    let previous_epoch = pane.terminal.scrollback_epoch();
+                    let previous_maximum = pane.terminal.max_scroll_offset();
+                    pane.terminal.advance(&buffer[..length]);
+                    let maximum = pane.terminal.max_scroll_offset();
+                    if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
+                        for client in &mut clients {
+                            if client.scroll_offset.take().is_some() {
+                                client.search_query = None;
+                                client.status = None;
+                                full_dirty = true;
                             }
                         }
-                        pane.pending_input.push(pane.terminal.take_responses());
-                        content_dirty = true;
-                        break;
+                    } else if session.active_pane() == Some(pane.id) {
+                        let added = pane
+                            .terminal
+                            .scrollback_epoch()
+                            .saturating_sub(previous_epoch)
+                            as usize;
+                        for client in &mut clients {
+                            if let Some(offset) = &mut client.scroll_offset {
+                                *offset = offset.saturating_add(added).min(maximum);
+                                set_scroll_status(client, maximum);
+                            }
+                        }
                     }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(error) if pty::is_eof_error(&error) => {}
-                    Err(_) => terminate = true,
+                    pane.pending_input.push(pane.terminal.take_responses());
+                    content_dirty = true;
                 }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) if pty::is_eof_error(&error) => {}
+                Err(_) => terminate = true,
             }
         }
 

@@ -236,7 +236,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: the Windows build, focused lifecycle checks, and native
     Windows Terminal, WezTerm, and Command Prompt acceptance runs pass.
 
-- [ ] **T22 — Prevent PTY output starvation**
+- [*] **T22 — Prevent PTY output starvation**
   - Read a bounded chunk from every ready pane per server-loop iteration instead
     of stopping after the first pane that produces output.
   - Keep PTY ingestion independent of attachment and client-render backpressure so
