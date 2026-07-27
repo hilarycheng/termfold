@@ -235,3 +235,19 @@ This file tracks implementation work. Product behaviour remains authoritative in
     `cargo check --locked --target x86_64-unknown-linux-musl`.
   - Done when: the Windows build, focused lifecycle checks, and native
     Windows Terminal, WezTerm, and Command Prompt acceptance runs pass.
+
+- [ ] **T22 — Prevent PTY output starvation**
+  - Read a bounded chunk from every ready pane per server-loop iteration instead
+    of stopping after the first pane that produces output.
+  - Keep PTY ingestion independent of attachment and client-render backpressure so
+    inactive and detached panes continue updating bounded terminal history.
+  - Depends on: T06, T07, T08.
+  - Done when: a continuously noisy pane cannot delay another pane's screen or
+    history updates, including across tab switches and detach/reattach.
+
+- [ ] **T23 — Fix immediate Windows session-server exit**
+  - Diagnose and fix native Windows startup immediately reporting
+    `termfold: session server exited with exit code: 0`.
+  - Depends on: T21.
+  - Done when: creating a Windows session leaves its server running and attaches
+    the client successfully without the early-exit message.
