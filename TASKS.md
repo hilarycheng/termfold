@@ -248,6 +248,8 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [ ] **T23 — Fix immediate Windows session-server exit**
   - Diagnose and fix native Windows startup immediately reporting
     `termfold: session server exited with exit code: 0`.
+  - Root-cause evidence and the constrained correction are recorded in
+    [`WINDOWS_STARTUP_ANALYSIS.md`](WINDOWS_STARTUP_ANALYSIS.md).
   - Depends on: T21.
   - Done when: creating a Windows session leaves its server running and attaches
     the client successfully without the early-exit message.
