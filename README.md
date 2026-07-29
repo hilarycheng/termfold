@@ -242,6 +242,8 @@ active_tab_foreground = "black"
 active_tab_background = "bright-yellow"
 terminal_profile = "auto"
 inner_term = "termfold-256color"
+# Windows only; omitted by default:
+# windows_shell = ["C:\\msys64\\usr\\bin\\bash.exe", "--login"]
 ```
 
 ### Configuration fields
@@ -263,6 +265,7 @@ inner_term = "termfold-256color"
 | `active_tab_foreground`, `active_tab_background` | Active-tab colours: `default`, ANSI name, or `#RRGGBB` |
 | `terminal_profile` | `"auto"` or a built-in terminal profile |
 | `inner_term` | `"termfold-256color"` or compatibility value `"xterm-256color"` |
+| `windows_shell` | Windows-only absolute executable path followed by literal arguments |
 
 Built-in status themes are `catppuccin-latte`, `catppuccin-mocha`,
 `solarized-light`, `solarized-dark`, `gruvbox-light`, `gruvbox-dark`,
@@ -308,6 +311,10 @@ create a tab with `Ctrl-a c` and send a literal `Ctrl-a` with `Ctrl-a Ctrl-a`.
 
 Invalid or unknown configuration fields stop startup with an error naming the
 field. Termfold never rewrites the configuration file.
+
+On Windows, omitting `windows_shell` uses `%COMSPEC%`, falling back to
+`%SystemRoot%\System32\cmd.exe`. Shell changes affect only newly created
+sessions. Arguments are passed directly without command interpolation.
 
 ## Terminal compatibility
 

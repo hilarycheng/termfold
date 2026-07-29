@@ -2,9 +2,7 @@
 
 ## Status
 
-This document records the diagnosis and intended correction for T23. It does
-not mark the implementation complete. Code changes and Windows verification
-remain subject to separate approval.
+T23 is implemented and verified on native x86-64 Windows.
 
 ## Reported failure
 
@@ -111,18 +109,32 @@ IPC.
 No new dependency, protocol change, shell-specific branch, or additional
 configuration is required.
 
-## Verification criteria
+## Implementation
 
-Focused native Windows verification must demonstrate:
+- ConPTY child creation passes the direct `HPCON`, prevents inherited console
+  standard handles, and retains ConPTY-side pipe handles through
+  `CreateProcessW`.
+- Control named-pipe clients, servers, reads, writes, and accepts use overlapped
+  I/O with independent event-backed `OVERLAPPED` state.
+- Timed reads cancel and complete outstanding I/O before releasing its state.
+- The existing framing, limits, SID checks, DACL, and threading model are
+  unchanged.
 
-- default `cmd.exe` and configured MSYS2 shells both start inside ConPTY without
-  writing their banner or prompt to the parent console;
-- session creation receives the startup status response and attaches;
-- control requests and server output can progress concurrently;
-- partial frames remain correctly buffered and bounded;
-- disconnect and cancellation cannot access freed `OVERLAPPED` state;
-- idle operation does not poll or busy-loop;
-- ConPTY, pipe, process, thread, event, and job handles are closed
-  deterministically.
+## Verification
 
-The Windows backend is not complete until these checks pass.
+Native Windows verification completed on 2026-07-29:
+
+- `cargo test --locked --target x86_64-pc-windows-msvc`: 42 passed.
+- The named-pipe regression check blocks one cloned reader while the cloned
+  writer completes a response, then completes the reader.
+- `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets
+  --all-features -- -D warnings`: passed.
+- `cargo build --release --locked --target x86_64-pc-windows-msvc`: passed;
+  438,272 bytes.
+- A native `termfold new` acceptance run reported the session as attached;
+  `termfold kill` terminated it and the client exited with code 0.
+
+## Remaining platform acceptance
+
+Interactive Windows Terminal, WezTerm, Command Prompt, and configured MSYS2-shell
+acceptance remain part of T21.

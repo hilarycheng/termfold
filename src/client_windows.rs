@@ -10,7 +10,6 @@ use std::{
 };
 
 use std::os::windows::process::CommandExt;
-use windows_sys::core::BOOL;
 use windows_sys::Win32::{
     Foundation::{HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::WriteFile,
@@ -27,6 +26,7 @@ use windows_sys::Win32::{
         Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS},
     },
 };
+use windows_sys::core::BOOL;
 
 use crate::{
     ipc::{self, Message},
@@ -65,14 +65,7 @@ impl TerminalGuard {
     pub(super) fn enter(capabilities: Capabilities) -> Result<Option<Self>, String> {
         // SAFETY: GetStdHandle returns borrowed process handles and GetConsoleMode only
         // reads their console state.
-        let (
-            input,
-            output,
-            mut input_mode,
-            mut output_mode,
-            input_code_page,
-            output_code_page,
-        ) = unsafe {
+        let (input, output, mut input_mode, mut output_mode, input_code_page, output_code_page) = unsafe {
             let input = GetStdHandle(STD_INPUT_HANDLE);
             let output = GetStdHandle(STD_OUTPUT_HANDLE);
             if input.is_null()

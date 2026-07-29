@@ -22,6 +22,7 @@ pub struct Config {
     pub active_tab_background: Color,
     pub terminal_profile: String,
     pub inner_term: String,
+    pub windows_shell: Vec<String>,
 }
 
 impl Default for Config {
@@ -45,6 +46,7 @@ impl Default for Config {
             active_tab_background: Color::Indexed(11),
             terminal_profile: "auto".into(),
             inner_term: "termfold-256color".into(),
+            windows_shell: Vec::new(),
         }
     }
 }
@@ -102,6 +104,7 @@ impl Config {
                 "active_tab_foreground" => 32768,
                 "active_tab_background" => 65536,
                 "status_theme" => 131072,
+                "windows_shell" => 262144,
                 _ => return Err(field_error(field, "unknown field")),
             };
             if seen & bit != 0 {
@@ -117,6 +120,7 @@ impl Config {
                 "time_format" => config.time_format = parse_format(field, value)?,
                 "terminal_profile" => config.terminal_profile = parse_profile(field, value)?,
                 "inner_term" => config.inner_term = parse_inner_term(field, value)?,
+                "windows_shell" => config.windows_shell = parse_string_array(field, value)?,
                 "status_format" => config.status_format = parse_status_format(field, value)?,
                 "status_label" => config.status_label = parse_text(field, value, 64)?,
                 "status_theme" => config.status_theme = parse_status_theme(field, value)?,
@@ -176,9 +180,9 @@ impl Config {
 fn config_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        return env::var_os("APPDATA")
+        env::var_os("APPDATA")
             .filter(|value| !value.is_empty())
-            .map(|root| PathBuf::from(root).join("Termfold").join("config.toml"));
+            .map(|root| PathBuf::from(root).join("Termfold").join("config.toml"))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -239,6 +243,72 @@ fn parse_string(field: &str, value: &str) -> Result<String, String> {
     }
 
     Ok(output)
+}
+
+fn parse_string_array(field: &str, value: &str) -> Result<Vec<String>, String> {
+    let Some(value) = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return Err(field_error(
+            field,
+            "expected a non-empty array of quoted strings",
+        ));
+    };
+    let mut rest = value.trim();
+    let mut values = Vec::new();
+    while !rest.is_empty() {
+        if !rest.starts_with('"') {
+            return Err(field_error(
+                field,
+                "expected a non-empty array of quoted strings",
+            ));
+        }
+        let mut escaped = false;
+        let mut end = None;
+        for (index, character) in rest[1..].char_indices() {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                end = Some(index + 2);
+                break;
+            }
+        }
+        let Some(end) = end else {
+            return Err(field_error(
+                field,
+                "expected a non-empty array of quoted strings",
+            ));
+        };
+        values.push(parse_string(field, &rest[..end])?);
+        rest = rest[end..].trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let Some(after_comma) = rest.strip_prefix(',') else {
+            return Err(field_error(
+                field,
+                "expected a non-empty array of quoted strings",
+            ));
+        };
+        rest = after_comma.trim_start();
+        if rest.is_empty() {
+            return Err(field_error(
+                field,
+                "expected a non-empty array of quoted strings",
+            ));
+        }
+    }
+    if values.is_empty() || values.iter().any(|value| value.contains('\0')) {
+        Err(field_error(
+            field,
+            "expected a non-empty array of quoted strings",
+        ))
+    } else {
+        Ok(values)
+    }
 }
 
 fn parse_prefix(field: &str, value: &str) -> Result<u8, String> {
@@ -476,11 +546,18 @@ mod tests {
 
     #[test]
     fn parses_terminal_configuration_and_rejects_invalid_values() {
-        let config =
-            Config::parse("terminal_profile = \"tmux-256color\"\ninner_term = \"xterm-256color\"")
-                .unwrap();
+        let config = Config::parse(
+            "terminal_profile = \"tmux-256color\"\n\
+             inner_term = \"xterm-256color\"\n\
+             windows_shell = [\"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\", \"--login\"]",
+        )
+        .unwrap();
         assert_eq!(config.terminal_profile, "tmux-256color");
         assert_eq!(config.inner_term, "xterm-256color");
+        assert_eq!(
+            config.windows_shell,
+            ["C:\\msys64\\usr\\bin\\bash.exe", "--login"]
+        );
 
         assert_eq!(
             Config::parse("terminal_profile = \"unknown\"").unwrap_err(),

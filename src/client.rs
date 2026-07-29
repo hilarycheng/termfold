@@ -12,6 +12,8 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_os = "linux")]
+use crate::runtime::ClientStream;
 use crate::{
     config::Config,
     ipc::{self, Message},
@@ -19,8 +21,6 @@ use crate::{
     runtime::RuntimeDir,
     session::{MAX_SESSIONS_PER_USER, Size},
 };
-#[cfg(target_os = "linux")]
-use crate::runtime::ClientStream;
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -38,9 +38,9 @@ const SIGNALS: [libc::c_int; 5] = [
 #[path = "client_windows.rs"]
 mod platform;
 #[cfg(target_os = "windows")]
-use platform::{BlockedSignals, TerminalGuard};
-#[cfg(target_os = "windows")]
 pub(crate) use platform::terminal_size;
+#[cfg(target_os = "windows")]
+use platform::{BlockedSignals, TerminalGuard};
 
 #[cfg(target_os = "linux")]
 struct TerminalGuard(Arc<TerminalRestorer>);

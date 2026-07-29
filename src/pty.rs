@@ -31,7 +31,11 @@ pub struct LaunchContext {
 }
 
 impl LaunchContext {
-    pub fn capture(terminfo_root: PathBuf, inner_term: String) -> io::Result<Self> {
+    pub fn capture(
+        terminfo_root: PathBuf,
+        inner_term: String,
+        _windows_shell: &[String],
+    ) -> io::Result<Self> {
         Ok(Self {
             shell: approved_shell(),
             working_directory: env::current_dir()?,

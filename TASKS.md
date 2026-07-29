@@ -245,7 +245,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: a continuously noisy pane cannot delay another pane's screen or
     history updates, including across tab switches and detach/reattach.
 
-- [ ] **T23 — Fix immediate Windows session-server exit**
+- [*] **T23 — Fix immediate Windows session-server exit**
   - Diagnose and fix native Windows startup immediately reporting
     `termfold: session server exited with exit code: 0`.
   - Root-cause evidence and the constrained correction are recorded in
@@ -253,3 +253,5 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T21.
   - Done when: creating a Windows session leaves its server running and attaches
     the client successfully without the early-exit message.
+  - Native Windows tests, lint, release build, and create/attach/kill acceptance
+    passed.

@@ -129,14 +129,13 @@ pub fn run(
     initial_size: Size,
     config: Config,
 ) -> Result<(), String> {
-    let socket = runtime.bind(&name)?;
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| format!("cannot configure session listener: {error}"))?;
-
     let terminfo_root = runtime.materialize_terminfo()?;
-    let context = LaunchContext::capture(terminfo_root, config.inner_term.clone())
-        .map_err(|error| format!("cannot capture shell environment: {error}"))?;
+    let context = LaunchContext::capture(
+        terminfo_root,
+        config.inner_term.clone(),
+        &config.windows_shell,
+    )
+    .map_err(|error| format!("cannot capture shell environment: {error}"))?;
     let mut session = Session::new(name);
     let first_pane = session
         .active_pane()
@@ -167,6 +166,10 @@ pub fn run(
     let mut full_dirty = false;
     let mut content_dirty = false;
     let mut terminate = false;
+    let socket = runtime.bind(session.name())?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("cannot configure session listener: {error}"))?;
 
     while !terminate {
         accept_clients(

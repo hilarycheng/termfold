@@ -177,11 +177,7 @@ fn print_sessions(sessions: &[client::SessionInfo]) {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn diagnose(config: &config::Config) -> Result<(), String> {
     let (term, colorterm) = outer::detected_environment();
-    let selected = outer::select(
-        &config.terminal_profile,
-        &term,
-        &colorterm,
-    );
+    let selected = outer::select(&config.terminal_profile, &term, &colorterm);
     let capabilities = selected.capabilities;
     let runtime = runtime::RuntimeDir::discover()?;
     let expected_terminfo = runtime.path().join("terminfo");

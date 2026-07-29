@@ -10,9 +10,8 @@ use std::{
         process::ExitStatusExt,
     },
     path::{Path, PathBuf},
-    ptr,
     process::ExitStatus,
-    thread,
+    ptr, thread,
     time::{Duration, Instant},
 };
 
@@ -30,11 +29,11 @@ use windows_sys::Win32::{
         },
         Pipes::{CreatePipe, PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState},
         Threading::{
-            CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-            CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-            GetExitCodeProcess, InitializeProcThreadAttributeList, PROCESS_INFORMATION,
-            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ResumeThread, STARTUPINFOEXW, TerminateProcess,
-            UpdateProcThreadAttribute, WaitForSingleObject,
+            CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+            InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+            PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+            TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
         },
     },
 };
@@ -53,6 +52,7 @@ pub(crate) fn is_eof_error(error: &io::Error) -> bool {
 #[derive(Debug)]
 pub struct LaunchContext {
     shell: OsString,
+    arguments: Vec<OsString>,
     working_directory: PathBuf,
     environment: Vec<(OsString, OsString)>,
     terminfo_root: PathBuf,
@@ -60,9 +60,15 @@ pub struct LaunchContext {
 }
 
 impl LaunchContext {
-    pub fn capture(terminfo_root: PathBuf, inner_term: String) -> io::Result<Self> {
+    pub fn capture(
+        terminfo_root: PathBuf,
+        inner_term: String,
+        windows_shell: &[String],
+    ) -> io::Result<Self> {
+        let (shell, arguments) = approved_shell(windows_shell)?;
         Ok(Self {
-            shell: approved_shell()?,
+            shell,
+            arguments,
             working_directory: env::current_dir()?,
             environment: env::vars_os().collect(),
             terminfo_root,
@@ -155,7 +161,10 @@ impl Write for PtyMaster {
             return Ok(0);
         }
         let Some(input) = &self.input else {
-            return Err(io::Error::new(ErrorKind::BrokenPipe, "ConPTY input is closed"));
+            return Err(io::Error::new(
+                ErrorKind::BrokenPipe,
+                "ConPTY input is closed",
+            ));
         };
         let mut written = 0;
         let length = buffer.len().min(u32::MAX as usize) as u32;
@@ -201,16 +210,17 @@ pub struct PtyChild {
 impl PtyChild {
     pub fn spawn(context: &LaunchContext, size: Size) -> io::Result<Self> {
         validate_size(size)?;
-        let (console, mut master) = create_pseudo_console(size)?;
+        let (console, mut master, console_input, console_output) = create_pseudo_console(size)?;
         let mut attribute_size = 0;
         // SAFETY: first call queries the required attribute-list size.
         unsafe {
             InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &raw mut attribute_size);
         }
         if attribute_size == 0 {
+            let error = io::Error::last_os_error();
             master.close();
             close_console(console);
-            return Err(io::Error::last_os_error());
+            return Err(error);
         }
         let words = attribute_size.div_ceil(size_of::<usize>());
         let mut attributes = vec![0_usize; words];
@@ -220,11 +230,12 @@ impl PtyChild {
             InitializeProcThreadAttributeList(attribute_list, 1, 0, &raw mut attribute_size)
         } == 0
         {
+            let error = io::Error::last_os_error();
             master.close();
             close_console(console);
-            return Err(io::Error::last_os_error());
+            return Err(error);
         }
-        // SAFETY: attribute_list is initialized and console is a live HPCON value.
+        // SAFETY: both attribute values remain live until the list is deleted.
         if unsafe {
             UpdateProcThreadAttribute(
                 attribute_list,
@@ -249,36 +260,41 @@ impl PtyChild {
 
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.lpAttributeList = attribute_list;
         let application = wide(&context.shell);
+        let mut command_line = command_line(context);
         let current_directory = wide(context.working_directory.as_os_str());
         let environment = environment_block(context);
         let mut process = PROCESS_INFORMATION::default();
+        let flags = EXTENDED_STARTUPINFO_PRESENT
+            | CREATE_UNICODE_ENVIRONMENT
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_SUSPENDED;
         // SAFETY: all pointers remain live for CreateProcessW and startup contains a
         // valid pseudoconsole attribute list.
         let created = unsafe {
             CreateProcessW(
                 application.as_ptr(),
-                ptr::null_mut(),
+                command_line.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
                 0,
-                EXTENDED_STARTUPINFO_PRESENT
-                    | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_NEW_PROCESS_GROUP
-                    | CREATE_SUSPENDED,
+                flags,
                 environment.as_ptr().cast(),
                 current_directory.as_ptr(),
                 &startup.StartupInfo,
                 &raw mut process,
             )
         };
+        let create_error = (created == 0).then(io::Error::last_os_error);
         // SAFETY: CreateProcessW has returned and no longer reads the attribute list.
         unsafe {
             DeleteProcThreadAttributeList(attribute_list);
         }
-        if created == 0 {
-            let error = io::Error::last_os_error();
+        drop(console_input);
+        drop(console_output);
+        if let Some(error) = create_error {
             master.close();
             close_console(console);
             return Err(error);
@@ -483,7 +499,7 @@ pub fn terminate_all(children: &mut [&mut PtyChild]) -> io::Result<()> {
     first_error.map_or(Ok(()), Err)
 }
 
-fn create_pseudo_console(size: Size) -> io::Result<(HPCON, PtyMaster)> {
+fn create_pseudo_console(size: Size) -> io::Result<(HPCON, PtyMaster, File, File)> {
     let (input_read, input_write) = anonymous_pipe()?;
     let (output_read, output_write) = anonymous_pipe()?;
     let mut console: HPCON = 0;
@@ -500,8 +516,6 @@ fn create_pseudo_console(size: Size) -> io::Result<(HPCON, PtyMaster)> {
     if result < 0 {
         return Err(hresult_error("cannot create ConPTY", result));
     }
-    drop(input_read);
-    drop(output_write);
     let mode = PIPE_NOWAIT;
     // SAFETY: input_write is the writable host end of an anonymous pipe.
     if unsafe {
@@ -525,6 +539,8 @@ fn create_pseudo_console(size: Size) -> io::Result<(HPCON, PtyMaster)> {
             input: Some(input_write),
             output: Some(output_read),
         },
+        input_read,
+        output_write,
     ))
 }
 
@@ -573,13 +589,29 @@ fn create_kill_job() -> io::Result<HANDLE> {
     }
 }
 
-fn approved_shell() -> io::Result<OsString> {
+fn approved_shell(configured: &[String]) -> io::Result<(OsString, Vec<OsString>)> {
+    if let Some((shell, arguments)) = configured.split_first() {
+        let path = Path::new(shell);
+        if !path.is_absolute() || !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "configuration field 'windows_shell': first value must be an absolute executable file",
+            ));
+        }
+        return Ok((
+            OsString::from(shell.as_str()),
+            arguments
+                .iter()
+                .map(|argument| OsString::from(argument.as_str()))
+                .collect(),
+        ));
+    }
     let configured = env::var_os("COMSPEC").filter(|shell| {
         let path = Path::new(shell);
         path.is_absolute() && fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
     });
     if let Some(shell) = configured {
-        return Ok(shell);
+        return Ok((shell, Vec::new()));
     }
     let fallback = env::var_os("SystemRoot")
         .map(PathBuf::from)
@@ -588,7 +620,42 @@ fn approved_shell() -> io::Result<OsString> {
         .filter(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()));
     fallback
         .map(PathBuf::into_os_string)
+        .map(|shell| (shell, Vec::new()))
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "cannot locate cmd.exe"))
+}
+
+fn command_line(context: &LaunchContext) -> Vec<u16> {
+    let mut command = Vec::new();
+    for argument in std::iter::once(context.shell.as_os_str())
+        .chain(context.arguments.iter().map(OsString::as_os_str))
+    {
+        if !command.is_empty() {
+            command.push(b' ' as u16);
+        }
+        quote_argument(&mut command, argument);
+    }
+    command.push(0);
+    command
+}
+
+fn quote_argument(command: &mut Vec<u16>, argument: &OsStr) {
+    command.push(b'"' as u16);
+    let mut backslashes = 0;
+    for character in argument.encode_wide() {
+        if character == b'\\' as u16 {
+            backslashes += 1;
+        } else {
+            if character == b'"' as u16 {
+                command.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            } else {
+                command.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+            }
+            backslashes = 0;
+            command.push(character);
+        }
+    }
+    command.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    command.push(b'"' as u16);
 }
 
 fn environment_block(context: &LaunchContext) -> Vec<u16> {

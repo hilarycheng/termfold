@@ -159,7 +159,8 @@ session, tab, pane, and focus changes are shared by all attached clients.
 
 - On Linux, use `$SHELL` only when it is an absolute executable path; otherwise
   use `/bin/sh`.
-- On Windows, use absolute `%COMSPEC%`; otherwise use
+- On Windows, use the configured `windows_shell` executable and arguments when
+  present. Otherwise use absolute `%COMSPEC%`, falling back to
   `%SystemRoot%\System32\cmd.exe`.
 - Execute the shell directly without command interpolation.
 - The first pane MUST inherit the creating client's working directory and
@@ -476,6 +477,8 @@ active_tab_foreground = "black"
 active_tab_background = "bright-yellow"
 terminal_profile = "auto"
 inner_term = "termfold-256color"
+# Windows only; omitted by default:
+# windows_shell = ["C:\\msys64\\usr\\bin\\bash.exe", "--login"]
 ```
 
 Unknown fields, invalid key syntax, invalid time formats, unknown terminal
@@ -500,6 +503,10 @@ file automatically.
 - `terminal_profile` MUST be `auto` or the exact name of a built-in profile.
 - `inner_term` MUST be `termfold-256color` or the explicitly supported
   compatibility value `xterm-256color`.
+- `windows_shell`, when set, MUST be a non-empty array containing an absolute
+  executable path followed by zero or more literal arguments. Termfold MUST
+  execute it directly without command interpolation. Changes apply only to new
+  sessions.
 
 Built-in themes MUST be embedded and MUST NOT require runtime downloads. They
 apply only to Termfold-owned UI and MUST use the normal outer-terminal colour

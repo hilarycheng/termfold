@@ -16,9 +16,9 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-        ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, GENERIC_READ, GENERIC_WRITE, HANDLE,
-        INVALID_HANDLE_VALUE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
+        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        INVALID_HANDLE_VALUE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::{
         Authorization::{
@@ -29,19 +29,20 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_FIRST_PIPE_INSTANCE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+        FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
+        WriteFile,
     },
     System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
-            GetNamedPipeClientProcessId, GetNamedPipeServerProcessId, PIPE_NOWAIT,
-            PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-            PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe, SetNamedPipeHandleState,
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+            GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, SetNamedPipeHandleState,
             WaitNamedPipeW,
         },
         Threading::{
-            CreateMutexW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
+            CreateEventW, CreateMutexW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
             PROCESS_QUERY_LIMITED_INFORMATION, ReleaseMutex, WaitForSingleObject,
         },
     },
@@ -97,53 +98,149 @@ impl Read for ClientStream {
         if buffer.is_empty() {
             return Ok(0);
         }
-        if let Some(timeout) = self.read_timeout {
-            let deadline = Instant::now() + timeout;
-            loop {
-                let mut available = 0;
-                // SAFETY: file is a live named-pipe handle and available is writable.
-                if unsafe {
-                    PeekNamedPipe(
-                        self.file.as_raw_handle() as HANDLE,
-                        ptr::null_mut(),
-                        0,
-                        ptr::null_mut(),
-                        &raw mut available,
-                        ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    let error = io::Error::last_os_error();
-                    return if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
-                        Ok(0)
-                    } else {
-                        Err(error)
-                    };
-                }
-                if available != 0 {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        ErrorKind::TimedOut,
-                        "session read timed out",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(2));
+        let handle = self.file.as_raw_handle() as HANDLE;
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        let result = overlapped_io(handle, self.read_timeout, |overlapped| {
+            // SAFETY: buffer and overlapped remain live until the operation completes.
+            unsafe {
+                ReadFile(
+                    handle,
+                    buffer.as_mut_ptr(),
+                    length,
+                    ptr::null_mut(),
+                    overlapped,
+                )
             }
+        });
+        match result {
+            Ok(read) => Ok(read as usize),
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(code)
+                        if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_NO_DATA as i32
+                ) =>
+            {
+                Ok(0)
+            }
+            Err(error) => Err(error),
         }
-        self.file.read(buffer)
     }
 }
 
 impl Write for ClientStream {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.file.write(buffer)
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let handle = self.file.as_raw_handle() as HANDLE;
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        overlapped_io(handle, None, |overlapped| {
+            // SAFETY: buffer and overlapped remain live until the operation completes.
+            unsafe { WriteFile(handle, buffer.as_ptr(), length, ptr::null_mut(), overlapped) }
+        })
+        .map(|written| written as usize)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        Ok(())
     }
+}
+
+struct PendingIo {
+    handle: HANDLE,
+    state: Box<OVERLAPPED>,
+    event: HANDLE,
+    pending: bool,
+}
+
+impl PendingIo {
+    fn new(handle: HANDLE) -> io::Result<Self> {
+        // SAFETY: default security, unnamed event, and valid Boolean flags.
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut state = Box::new(OVERLAPPED::default());
+        state.hEvent = event;
+        Ok(Self {
+            handle,
+            state,
+            event,
+            pending: false,
+        })
+    }
+
+    fn start(&mut self, result: i32) -> io::Result<()> {
+        self.pending = true;
+        if result != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+            Ok(())
+        } else {
+            self.pending = false;
+            Err(error)
+        }
+    }
+
+    fn wait(&mut self, timeout: u32) -> io::Result<Option<u32>> {
+        // SAFETY: event remains live while the operation references it.
+        match unsafe { WaitForSingleObject(self.event, timeout) } {
+            WAIT_OBJECT_0 => {
+                let mut transferred = 0;
+                // SAFETY: state belongs to this completed operation.
+                let result = unsafe {
+                    GetOverlappedResult(self.handle, &*self.state, &raw mut transferred, 0)
+                };
+                self.pending = false;
+                if result == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(Some(transferred))
+                }
+            }
+            WAIT_TIMEOUT => Ok(None),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut OVERLAPPED {
+        &raw mut *self.state
+    }
+}
+
+impl Drop for PendingIo {
+    fn drop(&mut self) {
+        if self.pending {
+            // SAFETY: handle and state remain live through cancellation completion.
+            unsafe {
+                CancelIoEx(self.handle, &*self.state);
+                WaitForSingleObject(self.event, INFINITE);
+            }
+        }
+        // SAFETY: event is no longer referenced by an outstanding operation.
+        unsafe {
+            CloseHandle(self.event);
+        }
+    }
+}
+
+fn overlapped_io(
+    handle: HANDLE,
+    timeout: Option<Duration>,
+    operation: impl FnOnce(*mut OVERLAPPED) -> i32,
+) -> io::Result<u32> {
+    let mut pending = PendingIo::new(handle)?;
+    let state = pending.as_mut_ptr();
+    pending.start(operation(state))?;
+    let timeout = timeout
+        .map(|duration| duration.as_millis().min(u128::from(u32::MAX)) as u32)
+        .unwrap_or(INFINITE);
+    pending
+        .wait(timeout)?
+        .ok_or_else(|| io::Error::new(ErrorKind::TimedOut, "session read timed out"))
 }
 
 #[derive(Clone, Debug)]
@@ -184,7 +281,7 @@ impl RuntimeDir {
 
     pub fn connect(&self, session: &str) -> Result<ClientStream, String> {
         validate_session_name(session)?;
-        let name = wide(&self.pipe_name(session));
+        let name = wide(self.pipe_name(session));
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             // SAFETY: name is a terminated pipe name and all optional pointers are null.
@@ -195,7 +292,7 @@ impl RuntimeDir {
                     0,
                     ptr::null(),
                     OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
                     ptr::null_mut(),
                 )
             };
@@ -211,14 +308,7 @@ impl RuntimeDir {
                 }
                 let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
                 // SAFETY: handle is a connected named-pipe client handle.
-                if unsafe {
-                    SetNamedPipeHandleState(
-                        handle,
-                        &mode,
-                        ptr::null(),
-                        ptr::null(),
-                    )
-                } == 0
+                if unsafe { SetNamedPipeHandleState(handle, &mode, ptr::null(), ptr::null()) } == 0
                 {
                     let error = io::Error::last_os_error();
                     // SAFETY: handle was returned by CreateFileW and is not yet owned.
@@ -289,7 +379,7 @@ impl RuntimeDir {
     pub fn lock_creation(&self) -> Result<CreationLock, String> {
         let descriptor = SecurityDescriptor::for_user(&self.sid, false)?;
         let attributes = descriptor.attributes();
-        let name = wide(&format!("Local\\termfold-{}-create", self.sid));
+        let name = wide(format!("Local\\termfold-{}-create", self.sid));
         // SAFETY: attributes and name remain live for the call.
         let handle = unsafe { CreateMutexW(&attributes, 0, name.as_ptr()) };
         if handle.is_null() {
@@ -335,14 +425,15 @@ impl RuntimeDir {
             .create_new(true)
             .open(&temporary)
             .map_err(|error| format!("cannot create private terminfo entry: {error}"))?;
-        let result = file.write_all(TERMINFO_ENTRY).and_then(|()| file.sync_all());
+        let result = file
+            .write_all(TERMINFO_ENTRY)
+            .and_then(|()| file.sync_all());
         drop(file);
         if result.is_ok() {
             match fs::symlink_metadata(&target) {
                 Ok(metadata)
                     if metadata.is_file()
-                        && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 =>
-                {}
+                        && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 => {}
                 Ok(_) => {
                     let _ = fs::remove_file(&temporary);
                     return Err("private terminfo entry is not a regular file".into());
@@ -384,7 +475,6 @@ impl Drop for CreationLock {
     }
 }
 
-#[derive(Debug)]
 pub struct SessionSocket {
     listener: SessionListener,
     marker: PathBuf,
@@ -403,19 +493,16 @@ impl SessionSocket {
 
 impl Drop for SessionSocket {
     fn drop(&mut self) {
-        if fs::read_to_string(&self.marker).ok().as_deref()
-            == Some(self.marker_value.as_str())
-        {
+        if fs::read_to_string(&self.marker).ok().as_deref() == Some(self.marker_value.as_str()) {
             let _ = fs::remove_file(&self.marker);
         }
     }
 }
 
-#[derive(Debug)]
 struct SessionListener {
     pipe_name: String,
     sid: String,
-    pending: Mutex<Option<File>>,
+    pending: Mutex<Option<PendingPipe>>,
 }
 
 impl SessionListener {
@@ -440,33 +527,31 @@ impl SessionListener {
         let handle = pending
             .as_ref()
             .expect("pending pipe is initialized")
-            .as_raw_handle() as HANDLE;
-        // SAFETY: handle is a listening named-pipe instance in nonblocking mode.
-        if unsafe { ConnectNamedPipe(handle, ptr::null_mut()) } == 0 {
-            let error = io::Error::last_os_error();
-            match error.raw_os_error() {
-                Some(code) if code == ERROR_PIPE_CONNECTED as i32 => {}
-                Some(code)
-                    if code == ERROR_PIPE_LISTENING as i32 || code == ERROR_NO_DATA as i32 =>
-                {
-                    if code == ERROR_NO_DATA as i32 {
-                        // SAFETY: handle is the server end of the pending pipe.
-                        unsafe {
-                            DisconnectNamedPipe(handle);
-                        }
-                    }
-                    return Err(io::Error::new(ErrorKind::WouldBlock, "no pending client"));
-                }
-                _ => return Err(error),
+            .handle();
+        let pipe = pending.as_mut().expect("pending pipe is initialized");
+        if pipe.connection.is_none() {
+            let mut connection = PendingIo::new(handle)?;
+            let state = connection.as_mut_ptr();
+            // SAFETY: handle is a listening pipe and state remains live while pending.
+            let result = unsafe { ConnectNamedPipe(handle, state) };
+            if result == 0
+                && io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32)
+            {
+                connection.pending = false;
+            } else {
+                connection.start(result)?;
+                pipe.connection = Some(connection);
             }
+        }
+        if let Some(connection) = &mut pipe.connection
+            && connection.wait(0)?.is_none()
+        {
+            return Err(io::Error::new(ErrorKind::WouldBlock, "no pending client"));
         }
 
         let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
         // SAFETY: handle is now a connected named-pipe server handle.
-        if unsafe {
-            SetNamedPipeHandleState(handle, &mode, ptr::null(), ptr::null())
-        } == 0
-        {
+        if unsafe { SetNamedPipeHandleState(handle, &mode, ptr::null(), ptr::null()) } == 0 {
             let error = io::Error::last_os_error();
             // SAFETY: handle is the connected server end of the pending pipe.
             unsafe {
@@ -483,15 +568,32 @@ impl SessionListener {
         }
         let connected = pending.take().expect("connected pipe is present");
         *pending = create_pipe(&self.pipe_name, &self.sid, false).ok();
-        Ok(ClientStream::new(connected))
+        Ok(ClientStream::new(connected.into_file()))
     }
 }
 
-fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<File> {
+struct PendingPipe {
+    connection: Option<PendingIo>,
+    file: File,
+}
+
+impl PendingPipe {
+    fn handle(&self) -> HANDLE {
+        self.file.as_raw_handle() as HANDLE
+    }
+
+    fn into_file(self) -> File {
+        let Self { connection, file } = self;
+        drop(connection);
+        file
+    }
+}
+
+fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<PendingPipe> {
     let descriptor = SecurityDescriptor::for_user(sid, false).map_err(io::Error::other)?;
     let attributes = descriptor.attributes();
     let name = wide(name);
-    let mut open_mode = PIPE_ACCESS_DUPLEX;
+    let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first {
         open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
     }
@@ -500,7 +602,7 @@ fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<File> {
         CreateNamedPipeW(
             name.as_ptr(),
             open_mode,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             PIPE_BUFFER_SIZE,
             PIPE_BUFFER_SIZE,
@@ -512,7 +614,10 @@ fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<File> {
         Err(io::Error::last_os_error())
     } else {
         // SAFETY: handle is uniquely owned and transferred to File.
-        Ok(unsafe { File::from_raw_handle(handle as _) })
+        Ok(PendingPipe {
+            connection: None,
+            file: unsafe { File::from_raw_handle(handle as _) },
+        })
     }
 }
 
@@ -617,7 +722,7 @@ struct SecurityDescriptor(*mut std::ffi::c_void);
 impl SecurityDescriptor {
     fn for_user(sid: &str, inheritable: bool) -> Result<Self, String> {
         let inherit = if inheritable { "OICI" } else { "" };
-        let sddl = wide(&format!("D:P(A;{inherit};GA;;;{sid})"));
+        let sddl = wide(format!("D:P(A;{inherit};GA;;;{sid})"));
         let mut descriptor = ptr::null_mut();
         // SAFETY: sddl is terminated and descriptor is writable. LocalFree owns the
         // returned allocation on success.
@@ -810,15 +915,22 @@ mod tests {
         let mut client = runtime.connect("round-trip").unwrap();
         let mut server = socket.accept().unwrap();
 
-        client.write_all(b"ping").unwrap();
-        let mut request = [0; 4];
-        server.read_exact(&mut request).unwrap();
-        assert_eq!(&request, b"ping");
+        let mut reader = server.try_clone().unwrap();
+        let blocked_reader = thread::spawn(move || {
+            let mut request = [0; 4];
+            reader.read_exact(&mut request).unwrap();
+            request
+        });
 
         server.write_all(b"pong").unwrap();
         let mut response = [0; 4];
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         client.read_exact(&mut response).unwrap();
         assert_eq!(&response, b"pong");
+        client.write_all(b"ping").unwrap();
+        assert_eq!(&blocked_reader.join().unwrap(), b"ping");
 
         drop(server);
         drop(client);
