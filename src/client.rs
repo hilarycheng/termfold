@@ -381,7 +381,12 @@ pub fn attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), S
     match ipc::read_message(&mut stream).map_err(|error| error.to_string())? {
         Some(Message::Attached) => {}
         Some(Message::Error(error)) => return Err(error),
-        Some(_) => return Err("session returned an unexpected attach response".into()),
+        Some(message) => {
+            return Err(format!(
+                "session returned an unexpected attach response: {}",
+                message_name(&message)
+            ));
+        }
         None => return Err("session disconnected during attach".into()),
     }
 
@@ -443,6 +448,22 @@ pub fn attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), S
             Some(Message::Terminating) | None => return Ok(()),
             Some(_) => return Err("session returned an unexpected message".into()),
         }
+    }
+}
+
+fn message_name(message: &Message) -> &'static str {
+    match message {
+        Message::Attach { .. } => "Attach",
+        Message::Detach => "Detach",
+        Message::Input(_) => "Input",
+        Message::Resize { .. } => "Resize",
+        Message::Attached => "Attached",
+        Message::Screen(_) => "Screen",
+        Message::Error(_) => "Error",
+        Message::StatusRequest => "StatusRequest",
+        Message::Status { .. } => "Status",
+        Message::Kill => "Kill",
+        Message::Terminating => "Terminating",
     }
 }
 

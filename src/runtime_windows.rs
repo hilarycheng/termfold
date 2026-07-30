@@ -405,7 +405,7 @@ impl RuntimeDir {
 
     pub fn materialize_terminfo(&self) -> Result<PathBuf, String> {
         let root = self.path.join("terminfo");
-        let entries = root.join("t");
+        let entries = root.join("74");
         ensure_private_dir(&entries, &self.sid)?;
         let target = entries.join("termfold-256color");
         if fs::read(&target).ok().as_deref() == Some(TERMINFO_ENTRY) {

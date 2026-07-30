@@ -17,11 +17,15 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     },
     Storage::FileSystem::{ReadFile, WriteFile},
     System::{
-        Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+        Console::{
+            COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, PSEUDOCONSOLE_INHERIT_CURSOR,
+            ResizePseudoConsole,
+        },
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -41,6 +45,8 @@ use windows_sys::Win32::{
 use crate::session::Size;
 
 pub const TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
+const PSEUDOCONSOLE_WIN32_INPUT_MODE: u32 = 0x4;
 
 pub(crate) fn is_eof_error(error: &io::Error) -> bool {
     matches!(
@@ -261,6 +267,9 @@ impl PtyChild {
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        startup.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+        startup.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         startup.lpAttributeList = attribute_list;
         let application = wide(&context.shell);
         let mut command_line = command_line(context);
@@ -509,7 +518,9 @@ fn create_pseudo_console(size: Size) -> io::Result<(HPCON, PtyMaster, File, File
             coordinates(size),
             input_read.as_raw_handle() as HANDLE,
             output_write.as_raw_handle() as HANDLE,
-            0,
+            PSEUDOCONSOLE_INHERIT_CURSOR
+                | PSEUDOCONSOLE_RESIZE_QUIRK
+                | PSEUDOCONSOLE_WIN32_INPUT_MODE,
             &raw mut console,
         )
     };

@@ -316,6 +316,10 @@ On Windows, omitting `windows_shell` uses `%COMSPEC%`, falling back to
 `%SystemRoot%\System32\cmd.exe`. Shell changes affect only newly created
 sessions. Arguments are passed directly without command interpolation.
 
+MSYS2-compatible applications use a hexadecimal terminfo-directory name on
+Windows. Termfold materializes its private `termfold-256color` entry in that
+layout automatically; no system `tic` installation is required.
+
 ## Terminal compatibility
 
 For common xterm-compatible outer terminals, these values are recommended:
