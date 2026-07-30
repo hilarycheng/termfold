@@ -141,24 +141,28 @@ acceptance remain part of T21.
 
 ## Interactive latency analysis
 
-The current server loop sleeps for 50 ms after each iteration. Client input is
-read by a dedicated thread, but the server observes its channel only on the
-next iteration. It then writes pending pane input at the start of a later
-iteration. This introduces an intentional 50--100 ms input delay before ConPTY
+The former server loop slept for 50 ms after each iteration. Client input was
+read by a dedicated thread, but the server observed its channel only on the
+next iteration. It then wrote pending pane input at the start of a later
+iteration. This introduced an intentional 50--100 ms input delay before ConPTY
 and `cmd.exe` processing, excluding terminal and application latency.
 
-This is a shared server-loop behaviour, not a confirmed MSYS2-specific defect.
-MSYS2 pipe bridging may add overhead, but it has not been measured separately.
+This is a shared server-loop behaviour on Linux, WSL, and native Windows, not a
+confirmed MSYS2-specific defect. MSYS2 pipe bridging may add overhead, but it
+has not been measured separately.
 
-### Proposed correction
+### Implemented correction
 
 Replace periodic input and PTY polling with a bounded central event queue:
 
 1. Client-reader threads enqueue control and input events.
-2. One blocking reader per PTY enqueues output events.
-3. The server blocks until an event or the next status-clock deadline.
-4. The timeout is used only to refresh time-dependent status content.
+2. One blocking reader per PTY enqueues output events. Linux readers wait with
+   `poll`; Windows readers block on the ConPTY output pipe.
+3. The server processes each bounded event batch, then immediately flushes
+   pending PTY input and renders output.
+4. The only periodic wake-up is the existing 50 ms nonblocking listener check;
+   pending escape-sequence deadlines can wake the loop sooner.
 
 This retains bounded queues and requires no async runtime or additional
-dependency. It is an architecture change and requires separate implementation
-approval and native Windows/MSYS2 latency measurement.
+dependency. `cargo build --locked` passed on Linux on 2026-07-30. Native
+Windows/MSYS2 latency measurement remains required.

@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs::{self, File},
-    io,
+    io::{self, Read},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::{fs::PermissionsExt, process::CommandExt},
@@ -61,6 +61,9 @@ pub struct PtyChild {
     process_group: libc::pid_t,
 }
 
+#[derive(Debug)]
+pub struct PtyReader(File);
+
 impl PtyChild {
     pub fn spawn(context: &LaunchContext, size: Size) -> io::Result<Self> {
         validate_size(size)?;
@@ -108,6 +111,10 @@ impl PtyChild {
         &mut self.master
     }
 
+    pub fn output_reader(&self) -> io::Result<PtyReader> {
+        self.master.try_clone().map(PtyReader)
+    }
+
     pub fn id(&self) -> u32 {
         self.child.id()
     }
@@ -132,6 +139,31 @@ impl PtyChild {
             Ok(())
         } else {
             Err(error)
+        }
+    }
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.0.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut descriptor = libc::pollfd {
+                        fd: self.0.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: descriptor references a live PTY master and is writable.
+                    if unsafe { libc::poll(&raw mut descriptor, 1, -1) } == -1 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                }
+                result => return result,
+            }
         }
     }
 }

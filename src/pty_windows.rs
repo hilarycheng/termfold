@@ -97,6 +97,9 @@ pub struct PtyMaster {
     output: Option<File>,
 }
 
+#[derive(Debug)]
+pub struct PtyReader(File);
+
 impl PtyMaster {
     fn close(&mut self) {
         self.input.take();
@@ -369,6 +372,15 @@ impl PtyChild {
         &mut self.master
     }
 
+    pub fn output_reader(&self) -> io::Result<PtyReader> {
+        self.master
+            .output
+            .as_ref()
+            .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "ConPTY output is closed"))
+            .and_then(File::try_clone)
+            .map(PtyReader)
+    }
+
     pub fn id(&self) -> u32 {
         self.pid
     }
@@ -448,6 +460,12 @@ impl PtyChild {
         if let Some(thread) = self.console_close.take() {
             let _ = thread.join();
         }
+    }
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buffer)
     }
 }
 

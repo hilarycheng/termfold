@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     thread,
     time::{Duration, SystemTime},
 };
@@ -21,7 +21,8 @@ use crate::{
 // Two buffered frames plus one being written and one pending frame remain within
 // both the four-frame worst-case payload cap and the normative 4 MiB byte cap.
 const CONNECTION_QUEUE_ITEMS: usize = 2;
-const LOOP_DELAY: Duration = Duration::from_millis(50);
+const EVENT_BATCH_ITEMS: usize = 32;
+const LISTENER_POLL_DELAY: Duration = Duration::from_millis(50);
 const ENTER_MOUSE: &[u8] = b"\x1b[?1003h\x1b[?1006h";
 // ponytail: one event moves 256 cells; raise only if real terminals jump farther.
 const MAX_MOUSE_DRAG_CELLS: u16 = 256;
@@ -31,10 +32,14 @@ enum ClientEvent {
     Closed,
 }
 
+enum ServerEvent {
+    Client(u64, ClientEvent),
+    PaneOutput(PaneId, Vec<u8>),
+}
+
 struct Client {
     id: u64,
     control: ClientStream,
-    inbound: Receiver<ClientEvent>,
     outbound: SyncSender<Message>,
     pending_control: Option<Message>,
     attached: bool,
@@ -74,6 +79,7 @@ impl PendingInput {
         }
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
@@ -121,6 +127,7 @@ struct InputContext<'a> {
     mouse: bool,
     status_line: StatusLine<'a>,
     full_dirty: &'a mut bool,
+    events: &'a SyncSender<ServerEvent>,
 }
 
 pub fn run(
@@ -143,6 +150,10 @@ pub fn run(
     let content_size = pane_area(initial_size);
     let first_child = PtyChild::spawn(&context, content_size)
         .map_err(|error| format!("cannot start shell: {error}"))?;
+    let first_reader = first_child
+        .output_reader()
+        .map_err(|error| format!("cannot read shell output: {error}"))?;
+    let (event_sender, event_receiver) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
     let mut panes = vec![PaneProcess {
         id: first_pane,
         child: first_child,
@@ -150,6 +161,7 @@ pub fn run(
             .map_err(|error| format!("cannot create terminal screen: {error}"))?,
         pending_input: PendingInput::new(),
     }];
+    spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
     let mut authoritative_size = initial_size;
@@ -178,20 +190,14 @@ pub fn run(
             &mut next_client_id,
             config.prefix,
             config.mouse,
+            &event_sender,
         );
         flush_client_controls(&mut clients);
 
-        for pane in &mut panes {
-            if pane.pending_input.flush(pane.child.master()).is_err() {
-                terminate = true;
-                break;
-            }
-        }
-
-        if panes.iter().all(|pane| pane.pending_input.is_empty()) {
-            let events = collect_client_events(&clients);
-            for (client_id, event) in events {
-                match event {
+        let events = collect_server_events(&event_receiver, event_timeout(&clients));
+        for event in events {
+            match event {
+                ServerEvent::Client(client_id, event) => match event {
                     ClientEvent::Closed => remove_client(&mut clients, client_id),
                     ClientEvent::Message(message) => {
                         let mut input = InputContext {
@@ -203,78 +209,61 @@ pub fn run(
                             mouse: config.mouse,
                             status_line: status_line(&config, &metrics),
                             full_dirty: &mut full_dirty,
+                            events: &event_sender,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
                             terminate = true;
                             break;
                         }
                     }
-                }
-            }
-            let pending = clients
-                .iter_mut()
-                .filter_map(|client| {
-                    let actions = client.input.flush_pending_mouse();
-                    (!actions.is_empty()).then_some((client.id, actions))
-                })
-                .collect::<Vec<_>>();
-            for (client_id, actions) in pending {
-                let mut input = InputContext {
-                    session: &mut session,
-                    panes: &mut panes,
-                    size: &mut authoritative_size,
-                    launch: &context,
-                    scrollback_limit: usize::from(config.scrollback_lines),
-                    mouse: config.mouse,
-                    status_line: status_line(&config, &metrics),
-                    full_dirty: &mut full_dirty,
-                };
-                if handle_actions(&mut clients, client_id, actions, &mut input) {
-                    terminate = true;
-                    break;
+                },
+                ServerEvent::PaneOutput(pane_id, output) => {
+                    advance_pane(
+                        &mut panes,
+                        &mut clients,
+                        &session,
+                        pane_id,
+                        &output,
+                        &mut content_dirty,
+                        &mut full_dirty,
+                    );
                 }
             }
         }
 
-        flush_broadcast(&mut pending_broadcast, &clients);
-        for pane in &mut panes {
-            let mut buffer = [0; 8192];
-            match pane.child.master().read(&mut buffer) {
-                Ok(0) => {}
-                Ok(length) => {
-                    let previous_epoch = pane.terminal.scrollback_epoch();
-                    let previous_maximum = pane.terminal.max_scroll_offset();
-                    pane.terminal.advance(&buffer[..length]);
-                    let maximum = pane.terminal.max_scroll_offset();
-                    if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
-                        for client in &mut clients {
-                            if client.scroll_offset.take().is_some() {
-                                client.search_query = None;
-                                client.status = None;
-                                full_dirty = true;
-                            }
-                        }
-                    } else if session.active_pane() == Some(pane.id) {
-                        let added = pane
-                            .terminal
-                            .scrollback_epoch()
-                            .saturating_sub(previous_epoch)
-                            as usize;
-                        for client in &mut clients {
-                            if let Some(offset) = &mut client.scroll_offset {
-                                *offset = offset.saturating_add(added).min(maximum);
-                                set_scroll_status(client, maximum);
-                            }
-                        }
-                    }
-                    pane.pending_input.push(pane.terminal.take_responses());
-                    content_dirty = true;
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) if pty::is_eof_error(&error) => {}
-                Err(_) => terminate = true,
+        let pending = clients
+            .iter_mut()
+            .filter_map(|client| {
+                let actions = client.input.flush_pending_mouse();
+                (!actions.is_empty()).then_some((client.id, actions))
+            })
+            .collect::<Vec<_>>();
+        for (client_id, actions) in pending {
+            let mut input = InputContext {
+                session: &mut session,
+                panes: &mut panes,
+                size: &mut authoritative_size,
+                launch: &context,
+                scrollback_limit: usize::from(config.scrollback_lines),
+                mouse: config.mouse,
+                status_line: status_line(&config, &metrics),
+                full_dirty: &mut full_dirty,
+                events: &event_sender,
+            };
+            if handle_actions(&mut clients, client_id, actions, &mut input) {
+                terminate = true;
+                break;
             }
         }
+
+        for pane in &mut panes {
+            if pane.pending_input.flush(pane.child.master()).is_err() {
+                terminate = true;
+                break;
+            }
+        }
+        flush_client_controls(&mut clients);
+        flush_broadcast(&mut pending_broadcast, &clients);
 
         if pending_broadcast.is_none() && clients.iter().any(|client| client.attached) {
             let now = SystemTime::now();
@@ -412,9 +401,6 @@ pub fn run(
             }
         }
 
-        if !terminate {
-            thread::sleep(LOOP_DELAY);
-        }
     }
 
     for client in &clients {
@@ -434,6 +420,7 @@ fn accept_clients(
     next_client_id: &mut u64,
     prefix: u8,
     mouse: bool,
+    events: &SyncSender<ServerEvent>,
 ) {
     loop {
         let stream = match listener.accept() {
@@ -447,14 +434,14 @@ fn accept_clients(
         let Ok(writer) = stream.try_clone() else {
             continue;
         };
-        let (event_sender, inbound) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
         let (outbound, message_receiver) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
-        thread::spawn(move || read_client(reader, event_sender));
+        let id = *next_client_id;
+        let events = events.clone();
+        thread::spawn(move || read_client(id, reader, events));
         thread::spawn(move || write_client(writer, message_receiver));
         clients.push(Client {
-            id: *next_client_id,
+            id,
             control: stream,
-            inbound,
             outbound,
             pending_control: None,
             attached: false,
@@ -471,16 +458,19 @@ fn accept_clients(
     }
 }
 
-fn read_client(mut stream: ClientStream, sender: SyncSender<ClientEvent>) {
+fn read_client(client_id: u64, mut stream: ClientStream, sender: SyncSender<ServerEvent>) {
     loop {
         match ipc::read_message(&mut stream) {
             Ok(Some(message)) => {
-                if sender.send(ClientEvent::Message(message)).is_err() {
+                if sender
+                    .send(ServerEvent::Client(client_id, ClientEvent::Message(message)))
+                    .is_err()
+                {
                     break;
                 }
             }
             Ok(None) | Err(_) => {
-                let _ = sender.send(ClientEvent::Closed);
+                let _ = sender.send(ServerEvent::Client(client_id, ClientEvent::Closed));
                 break;
             }
         }
@@ -495,19 +485,95 @@ fn write_client(mut stream: ClientStream, receiver: Receiver<Message>) {
     }
 }
 
-fn collect_client_events(clients: &[Client]) -> Vec<(u64, ClientEvent)> {
+fn collect_server_events(
+    receiver: &Receiver<ServerEvent>,
+    timeout: Duration,
+) -> Vec<ServerEvent> {
     let mut events = Vec::new();
-    for client in clients {
-        if client.pending_control.is_some() {
-            continue;
-        }
-        match client.inbound.try_recv() {
-            Ok(event) => events.push((client.id, event)),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => events.push((client.id, ClientEvent::Closed)),
+    match receiver.recv_timeout(timeout) {
+        Ok(event) => events.push(event),
+        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
+    }
+    events.extend(receiver.try_iter().take(EVENT_BATCH_ITEMS.saturating_sub(1)));
+    events
+}
+
+fn event_timeout(clients: &[Client]) -> Duration {
+    clients
+        .iter()
+        .filter_map(|client| client.input.pending_timeout())
+        .fold(LISTENER_POLL_DELAY, Duration::min)
+}
+
+fn spawn_pane_reader(
+    pane_id: PaneId,
+    reader: pty::PtyReader,
+    sender: SyncSender<ServerEvent>,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name(format!("termfold-pty-{pane_id:?}"))
+        .spawn(move || read_pane(pane_id, reader, sender))
+        .map(|_| ())
+        .map_err(|error| format!("cannot start PTY reader: {error}"))
+}
+
+fn read_pane(pane_id: PaneId, mut reader: pty::PtyReader, sender: SyncSender<ServerEvent>) {
+    loop {
+        let mut buffer = [0; 8192];
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(length) => {
+                if sender
+                    .send(ServerEvent::PaneOutput(pane_id, buffer[..length].to_vec()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) if pty::is_eof_error(&error) => break,
+            Err(_) => break,
         }
     }
-    events
+}
+
+fn advance_pane(
+    panes: &mut [PaneProcess],
+    clients: &mut [Client],
+    session: &Session,
+    pane_id: PaneId,
+    output: &[u8],
+    content_dirty: &mut bool,
+    full_dirty: &mut bool,
+) {
+    let Some(pane) = panes.iter_mut().find(|pane| pane.id == pane_id) else {
+        return;
+    };
+    let previous_epoch = pane.terminal.scrollback_epoch();
+    let previous_maximum = pane.terminal.max_scroll_offset();
+    pane.terminal.advance(output);
+    let maximum = pane.terminal.max_scroll_offset();
+    if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
+        for client in clients {
+            if client.scroll_offset.take().is_some() {
+                client.search_query = None;
+                client.status = None;
+                *full_dirty = true;
+            }
+        }
+    } else if session.active_pane() == Some(pane.id) {
+        let added = pane
+            .terminal
+            .scrollback_epoch()
+            .saturating_sub(previous_epoch) as usize;
+        for client in clients {
+            if let Some(offset) = &mut client.scroll_offset {
+                *offset = offset.saturating_add(added).min(maximum);
+                set_scroll_status(client, maximum);
+            }
+        }
+    }
+    pane.pending_input.push(pane.terminal.take_responses());
+    *content_dirty = true;
 }
 
 fn handle_message(
@@ -669,6 +735,7 @@ fn handle_action(
                     pane,
                     content_size,
                     input.scrollback_limit,
+                    input.events,
                 )
                 .inspect_err(|_| {
                     let _ = input.session.close_pane(pane, content_size);
@@ -704,6 +771,7 @@ fn handle_action(
                     pane,
                     content_size,
                     input.scrollback_limit,
+                    input.events,
                 )
                 .inspect_err(|_| {
                     let _ = input.session.close_pane(pane, content_size);
@@ -1314,6 +1382,7 @@ fn add_pane(
     pane: PaneId,
     size: Size,
     scrollback_limit: usize,
+    events: &SyncSender<ServerEvent>,
 ) -> Result<(), String> {
     let pane_size = session
         .pane_rects(size)
@@ -1326,8 +1395,12 @@ fn add_pane(
         .unwrap_or(size);
     let child = PtyChild::spawn(context, pane_size)
         .map_err(|error| format!("cannot start shell: {error}"))?;
+    let reader = child
+        .output_reader()
+        .map_err(|error| format!("cannot read shell output: {error}"))?;
     let terminal = Terminal::with_scrollback(pane_size, scrollback_limit)
         .map_err(|error| format!("cannot create terminal screen: {error}"))?;
+    spawn_pane_reader(pane, reader, events.clone())?;
     panes.push(PaneProcess {
         id: pane,
         child,

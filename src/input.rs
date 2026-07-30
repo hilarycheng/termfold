@@ -131,19 +131,10 @@ impl Input {
     }
 
     pub fn flush_pending_mouse(&mut self) -> Vec<Action> {
-        let timeout = if self.pending_mouse == b"\x1b"
-            && matches!(
-                self.mode,
-                Mode::Resize(_) | Mode::Scroll(_) | Mode::Help(_) | Mode::Search(_)
-            ) {
-            ESCAPE_SEQUENCE_TIMEOUT
-        } else {
-            MOUSE_SEQUENCE_TIMEOUT
+        let Some(timeout) = self.pending_timeout() else {
+            return Vec::new();
         };
-        if self
-            .pending_since
-            .is_none_or(|since| since.elapsed() < timeout)
-        {
+        if !timeout.is_zero() {
             return Vec::new();
         }
         self.pending_since = None;
@@ -176,6 +167,20 @@ impl Input {
         }
         push_forward(&mut actions, &mut forwarded);
         actions
+    }
+
+    pub fn pending_timeout(&self) -> Option<Duration> {
+        let since = self.pending_since?;
+        let timeout = if self.pending_mouse == b"\x1b"
+            && matches!(
+                self.mode,
+                Mode::Resize(_) | Mode::Scroll(_) | Mode::Help(_) | Mode::Search(_)
+            ) {
+            ESCAPE_SEQUENCE_TIMEOUT
+        } else {
+            MOUSE_SEQUENCE_TIMEOUT
+        };
+        Some(timeout.saturating_sub(since.elapsed()))
     }
 
     fn advance_byte(&mut self, byte: u8, actions: &mut Vec<Action>, forwarded: &mut Vec<u8>) {
