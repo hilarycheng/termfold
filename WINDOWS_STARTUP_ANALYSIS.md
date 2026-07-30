@@ -138,3 +138,27 @@ Native Windows verification completed on 2026-07-29:
 
 Interactive Windows Terminal, WezTerm, Command Prompt, and configured MSYS2-shell
 acceptance remain part of T21.
+
+## Interactive latency analysis
+
+The current server loop sleeps for 50 ms after each iteration. Client input is
+read by a dedicated thread, but the server observes its channel only on the
+next iteration. It then writes pending pane input at the start of a later
+iteration. This introduces an intentional 50--100 ms input delay before ConPTY
+and `cmd.exe` processing, excluding terminal and application latency.
+
+This is a shared server-loop behaviour, not a confirmed MSYS2-specific defect.
+MSYS2 pipe bridging may add overhead, but it has not been measured separately.
+
+### Proposed correction
+
+Replace periodic input and PTY polling with a bounded central event queue:
+
+1. Client-reader threads enqueue control and input events.
+2. One blocking reader per PTY enqueues output events.
+3. The server blocks until an event or the next status-clock deadline.
+4. The timeout is used only to refresh time-dependent status content.
+
+This retains bounded queues and requires no async runtime or additional
+dependency. It is an architecture change and requires separate implementation
+approval and native Windows/MSYS2 latency measurement.
