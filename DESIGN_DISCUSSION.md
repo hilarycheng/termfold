@@ -12,13 +12,15 @@ not an implementation-status document.
 
 ## Windows rendering
 
-Linux rendering is reported as acceptable; optimize the native Windows path
-only after measuring the failing case and outer terminal.
-
-Current shared rendering scans and snapshots the visible terminal cells on
-each PTY update. Windows-specific investigation must distinguish renderer CPU,
-named-pipe transfer, and outer-terminal output latency before changing shared
-rendering behaviour.
+- Keep one shared VT renderer for Linux, Windows Terminal, and WezTerm.
+- Track each terminal screen's changed row ranges instead of cloning and
+  comparing every visible cell after each PTY update.
+- Emit each changed range as one cursor move followed by sequential text and
+  only the required SGR changes.
+- Use full redraws for layout, resize, and screen-buffer changes. Do not add a
+  console-only Windows rendering backend.
+- If latency remains, measure renderer CPU, named-pipe transfer, and
+  outer-terminal output separately before changing the renderer again.
 
 ## Updating while sessions are active
 

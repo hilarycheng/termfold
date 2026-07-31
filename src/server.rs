@@ -174,7 +174,6 @@ pub fn run(
     metrics.refresh(config.cpu_temperature_path.as_deref());
     let mut sampled_metrics = None;
     let mut rendered_status = None;
-    let mut snapshot = render::Snapshot::new();
     let mut full_dirty = false;
     let mut content_dirty = false;
     let mut terminate = false;
@@ -314,7 +313,6 @@ pub fn run(
                         )
                     })
                     .collect();
-                snapshot = render::snapshot(&pane_screens);
                 Some(frames)
             } else if content_dirty {
                 content_dirty = false;
@@ -338,14 +336,12 @@ pub fn run(
                                     &session,
                                     &pane_screens,
                                     authoritative_size,
-                                    &snapshot,
                                     *capabilities,
                                 )
                             },
                         )
                     })
                     .collect();
-                snapshot = render::snapshot(&pane_screens);
                 Some(frames)
             } else if rendered_status != Some(key) {
                 rendered_status = Some(key);
@@ -371,6 +367,9 @@ pub fn run(
                 None
             };
             if let Some(frames) = frames {
+                for pane in &mut panes {
+                    pane.terminal.clear_damage();
+                }
                 pending_broadcast = Some(PendingBroadcast { frames });
                 flush_broadcast(&mut pending_broadcast, &clients);
             }

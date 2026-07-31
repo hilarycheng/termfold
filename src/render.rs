@@ -19,8 +19,6 @@ use crate::{
     terminal::{Attributes, Cell, Color, Terminal},
 };
 
-pub type Snapshot = Vec<(PaneId, Vec<Vec<Cell>>)>;
-
 #[derive(Clone, Copy)]
 pub enum View {
     Live,
@@ -257,18 +255,10 @@ fn help_lines(prefix: u8) -> Vec<String> {
     .into()
 }
 
-pub fn snapshot(panes: &[(PaneId, &Terminal)]) -> Snapshot {
-    panes
-        .iter()
-        .map(|(pane, terminal)| (*pane, terminal.screen().rows().to_vec()))
-        .collect()
-}
-
 pub fn changes(
     session: &Session,
     panes: &[(PaneId, &Terminal)],
     size: Size,
-    previous: &Snapshot,
     capabilities: Capabilities,
 ) -> Vec<u8> {
     let rects = session.pane_rects(Size {
@@ -287,20 +277,23 @@ pub fn changes(
             continue;
         };
         let rows = terminal.screen().rows();
-        let old = previous.iter().find(|(id, _)| id == pane);
         for (y, row) in rows.iter().enumerate() {
-            for (x, cell) in row.iter().enumerate() {
-                if old.and_then(|(_, rows)| rows.get(y).and_then(|row| row.get(x))) == Some(cell) {
-                    continue;
-                }
+            let Some((start, end)) = terminal.damage().get(y).copied().flatten() else {
+                continue;
+            };
+            let start = start.saturating_sub(
+                row.get(start)
+                    .is_some_and(Cell::is_continuation) as usize,
+            );
+            move_cursor(
+                &mut output,
+                rect.y.saturating_add(y as u16),
+                rect.x.saturating_add(start as u16),
+            );
+            for cell in &row[start..end] {
                 if cell.is_continuation() {
                     continue;
                 }
-                move_cursor(
-                    &mut output,
-                    rect.y.saturating_add(y as u16),
-                    rect.x.saturating_add(x as u16),
-                );
                 set_attributes(
                     &mut output,
                     &mut attributes,
@@ -1234,7 +1227,7 @@ mod tests {
             rows: 2,
         })
         .unwrap();
-        let previous = snapshot(&[(pane, &terminal)]);
+        terminal.clear_damage();
         terminal.advance(b"\x1b[2;3HX");
 
         let output = changes(
@@ -1244,13 +1237,38 @@ mod tests {
                 columns: 10,
                 rows: 3,
             },
-            &previous,
             capabilities(),
         );
 
         assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[2J"));
-        assert!(output.windows(6).any(|bytes| bytes == b"\x1b[2;3H"));
+        assert!(output.windows(6).any(|bytes| bytes == b"\x1b[2;2H"));
         assert!(output.contains(&b'X'));
+    }
+
+    #[test]
+    fn contiguous_changes_use_one_cursor_move() {
+        let session = Session::new("s".into());
+        let pane = session.active_pane().unwrap();
+        let mut terminal = Terminal::new(Size {
+            columns: 10,
+            rows: 2,
+        })
+        .unwrap();
+        terminal.clear_damage();
+        terminal.advance(b"\x1b[2;3HXYZ");
+
+        let output = changes(
+            &session,
+            &[(pane, &terminal)],
+            Size {
+                columns: 10,
+                rows: 3,
+            },
+            capabilities(),
+        );
+
+        assert_eq!(output.windows(6).filter(|bytes| *bytes == b"\x1b[2;2H").count(), 1);
+        assert!(output.windows(3).any(|bytes| bytes == b"XYZ"));
     }
 
     #[test]
@@ -1262,7 +1280,7 @@ mod tests {
             rows: 4,
         })
         .unwrap();
-        let previous = snapshot(&[(pane, &terminal)]);
+        terminal.clear_damage();
         terminal.advance(b"$ command\r\nresult\r\n$ ");
 
         let output = changes(
@@ -1272,7 +1290,6 @@ mod tests {
                 columns: 20,
                 rows: 5,
             },
-            &previous,
             capabilities(),
         );
 

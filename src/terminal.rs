@@ -126,6 +126,7 @@ impl Error for TerminalError {}
 #[derive(Debug)]
 pub struct Screen {
     rows: Vec<Vec<Cell>>,
+    damage: Vec<Option<(usize, usize)>>,
     scrollback: VecDeque<Vec<Cell>>,
     scrollback_limit: usize,
     scrollback_epoch: u64,
@@ -144,6 +145,7 @@ impl Screen {
         let rows = usize::from(size.rows);
         Ok(Self {
             rows: vec![vec![Cell::blank(Attributes::default()); columns]; rows],
+            damage: vec![Some((0, columns)); rows],
             scrollback: VecDeque::new(),
             scrollback_limit,
             scrollback_epoch: 0,
@@ -158,6 +160,10 @@ impl Screen {
 
     pub fn rows(&self) -> &[Vec<Cell>] {
         &self.rows
+    }
+
+    pub fn damage(&self) -> &[Option<(usize, usize)>] {
+        &self.damage
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -188,6 +194,7 @@ impl Screen {
         self.scroll_top = 0;
         self.scroll_bottom = self.height() - 1;
         self.wrap_pending = false;
+        self.mark_all();
     }
 
     fn resize(&mut self, size: Size) -> Result<(), TerminalError> {
@@ -204,6 +211,7 @@ impl Screen {
         }
         self.rows
             .resize(height, vec![Cell::blank(Attributes::default()); columns]);
+        self.damage.resize(height, None);
         self.cursor.row = self.cursor.row.min(height - 1);
         self.cursor.column = self.cursor.column.min(columns - 1);
         self.saved_cursor.row = self.saved_cursor.row.min(height - 1);
@@ -217,7 +225,32 @@ impl Screen {
             }
         }
         self.wrap_pending = false;
+        self.mark_all();
         Ok(())
+    }
+
+    fn mark(&mut self, row: usize, start: usize, end: usize) {
+        if row >= self.height() || start >= end {
+            return;
+        }
+        let end = end.min(self.columns());
+        let start = start.min(end);
+        if start >= end {
+            return;
+        }
+        self.damage[row] = Some(match self.damage[row] {
+            Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
+            None => (start, end),
+        });
+    }
+
+    fn mark_all(&mut self) {
+        let columns = self.columns();
+        self.damage.fill(Some((0, columns)));
+    }
+
+    fn clear_damage(&mut self) {
+        self.damage.fill(None);
     }
 
     fn blank_row(&self, attributes: Attributes) -> Vec<Cell> {
@@ -238,6 +271,7 @@ impl Screen {
         }
         let columns = self.columns();
         self.rows[row][start..end.min(columns)].fill(Cell::blank(attributes));
+        self.mark(row, start, end);
     }
 
     fn scroll_up(&mut self, count: usize, attributes: Attributes) {
@@ -258,6 +292,9 @@ impl Screen {
             self.rows
                 .insert(self.scroll_bottom, self.blank_row(attributes));
         }
+        if count != 0 {
+            self.mark_all();
+        }
     }
 
     fn scroll_down(&mut self, count: usize, attributes: Attributes) {
@@ -266,6 +303,9 @@ impl Screen {
             self.rows.remove(self.scroll_bottom);
             self.rows
                 .insert(self.scroll_top, self.blank_row(attributes));
+        }
+        if count != 0 {
+            self.mark_all();
         }
     }
 }
@@ -313,6 +353,15 @@ impl Terminal {
 
     pub fn screen(&self) -> &Screen {
         self.state.screen()
+    }
+
+    pub fn damage(&self) -> &[Option<(usize, usize)>] {
+        self.state.screen().damage()
+    }
+
+    pub fn clear_damage(&mut self) {
+        self.state.primary.clear_damage();
+        self.state.alternate.clear_damage();
     }
 
     pub fn modes(&self) -> Modes {
@@ -575,6 +624,7 @@ impl State {
                 let mut combining = cell.combining.take().map_or_else(String::new, String::from);
                 combining.push(character);
                 cell.combining = Some(combining.into_boxed_str());
+                screen.mark(screen.cursor.row, column, column + 1);
             }
             return;
         }
@@ -632,6 +682,15 @@ impl State {
         } else {
             screen.cursor.column += width;
         }
+        screen.mark(
+            row,
+            column.saturating_sub(1),
+            if insert {
+                screen.columns()
+            } else {
+                column.saturating_add(width).saturating_add(1)
+            },
+        );
     }
 
     fn move_cursor(&mut self, row: usize, column: usize) {
@@ -677,12 +736,16 @@ impl State {
             }
             7 => self.auto_wrap = enabled,
             25 => self.modes.cursor_visible = enabled,
-            47 => self.alternate_active = enabled,
+            47 => {
+                self.alternate_active = enabled;
+                self.screen_mut().mark_all();
+            }
             1047 => {
                 self.alternate_active = enabled;
                 if enabled {
                     self.alternate.clear();
                 }
+                self.screen_mut().mark_all();
             }
             1048 => {
                 if enabled {
@@ -700,6 +763,7 @@ impl State {
                     self.alternate_active = false;
                     self.restore_cursor();
                 }
+                self.screen_mut().mark_all();
             }
             1000 => {
                 self.modes.mouse = if enabled {
@@ -1089,6 +1153,7 @@ fn insert_cells(screen: &mut Screen, count: usize, attributes: Attributes) {
         screen.rows[row].pop();
     }
     normalize_row(&mut screen.rows[row]);
+    screen.mark(row, column.saturating_sub(1), screen.columns());
 }
 
 fn delete_cells(screen: &mut Screen, count: usize, attributes: Attributes) {
@@ -1099,6 +1164,7 @@ fn delete_cells(screen: &mut Screen, count: usize, attributes: Attributes) {
         screen.rows[row].push(Cell::blank(attributes));
     }
     normalize_row(&mut screen.rows[row]);
+    screen.mark(row, column.saturating_sub(1), screen.columns());
 }
 
 fn insert_lines(screen: &mut Screen, count: usize, attributes: Attributes) {
@@ -1110,6 +1176,7 @@ fn insert_lines(screen: &mut Screen, count: usize, attributes: Attributes) {
         screen.rows.remove(screen.scroll_bottom);
         screen.rows.insert(row, screen.blank_row(attributes));
     }
+    screen.mark_all();
 }
 
 fn delete_lines(screen: &mut Screen, count: usize, attributes: Attributes) {
@@ -1123,6 +1190,7 @@ fn delete_lines(screen: &mut Screen, count: usize, attributes: Attributes) {
             .rows
             .insert(screen.scroll_bottom, screen.blank_row(attributes));
     }
+    screen.mark_all();
 }
 
 fn move_tabs(screen: &mut Screen, count: usize, forward: bool) {
