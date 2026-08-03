@@ -78,7 +78,6 @@ struct ViewerPrompt {
     query: Vec<u8>,
     filter: Vec<u8>,
     selected: usize,
-    new_tab: bool,
 }
 
 impl PaneProcess {
@@ -992,7 +991,7 @@ fn handle_action(
             set_status(clients, client_id, None, input.full_dirty);
             return false;
         }
-        Action::ViewPrompt(new_tab) => {
+        Action::ViewPrompt(_) => {
             let directory = input
                 .session
                 .active_pane()
@@ -1010,7 +1009,6 @@ fn handle_action(
                             query: Vec::new(),
                             filter: Vec::new(),
                             selected: 0,
-                            new_tab,
                         });
                         client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
                     }
@@ -1106,6 +1104,25 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
+        Action::ViewSelect(amount) => {
+            let selection = clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.viewer_prompt.as_mut())
+                .map(|prompt| select_viewer_entry(prompt, amount));
+            match selection {
+                Some(Ok(query)) => {
+                    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                        client.input.set_view_prompt(query);
+                        client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+                    }
+                }
+                Some(Err(error)) => set_status(clients, client_id, Some(error), input.full_dirty),
+                None => {}
+            }
+            *input.full_dirty = true;
+            return false;
+        }
         Action::OpenViewer(query) => {
             let result = open_prompt_viewer(clients, client_id, input, query);
             if let Err(error) = result {
@@ -1126,6 +1143,23 @@ fn handle_action(
         }
         Action::ViewerScroll(amount) => {
             let result = active_viewer(input).map(|viewer| viewer.move_lines(amount));
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerViewport(amount) => {
+            let result = active_viewer(input).map(|viewer| viewer.scroll_viewport(amount));
             if let Some(Err(error)) = result {
                 set_status(
                     clients,
@@ -1544,7 +1578,10 @@ fn viewer_prompt_status(prompt: &ViewerPrompt) -> String {
         prompt.directory.display(),
         String::from_utf8_lossy(&prompt.query)
     );
-    for (index, entry) in entries.iter().take(8).enumerate() {
+    let first = selected
+        .saturating_sub(7)
+        .min(entries.len().saturating_sub(8));
+    for (index, entry) in entries.iter().enumerate().skip(first).take(8) {
         if index == selected {
             status.push_str(" [");
         } else {
@@ -1558,8 +1595,30 @@ fn viewer_prompt_status(prompt: &ViewerPrompt) -> String {
             status.push(']');
         }
     }
-    status.push_str(" | Tab complete Enter open Backspace parent Esc cancel");
+    status.push_str(
+        " | arrows/C-n/p select Right/Enter open Left parent Backspace edit/parent Tab complete Esc cancel",
+    );
     status
+}
+
+fn select_viewer_entry(prompt: &mut ViewerPrompt, amount: i32) -> Result<Vec<u8>, String> {
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    if entries.is_empty() {
+        return Err("no matching entries".to_owned());
+    }
+    let current = entries
+        .iter()
+        .position(|entry| entry.name.as_bytes() == prompt.query.as_slice())
+        .unwrap_or_else(|| prompt.selected % entries.len());
+    let shift = amount.unsigned_abs() as usize % entries.len();
+    let selected = if amount >= 0 {
+        (current + shift) % entries.len()
+    } else {
+        (current + entries.len() - shift) % entries.len()
+    };
+    prompt.selected = selected;
+    prompt.query = entries[selected].name.as_bytes().to_vec();
+    Ok(prompt.query.clone())
 }
 
 fn open_prompt_directory(
@@ -1589,7 +1648,6 @@ fn open_prompt_directory(
                 query: Vec::new(),
                 filter: Vec::new(),
                 selected: 0,
-                new_tab: prompt.new_tab,
             });
             client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
         }
@@ -1616,7 +1674,6 @@ fn open_prompt_directory(
             query: Vec::new(),
             filter: Vec::new(),
             selected: 0,
-            new_tab: prompt.new_tab,
         });
         client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
     }
@@ -1674,28 +1731,17 @@ fn open_viewer(input: &mut InputContext<'_>, requested: &str) -> Result<(), Stri
     } else {
         directory.join(requested)
     };
-    open_viewer_at(input, path, false)
+    open_viewer_at(input, path)
 }
 
-fn open_viewer_at(
-    input: &mut InputContext<'_>,
-    path: PathBuf,
-    new_tab: bool,
-) -> Result<(), String> {
+fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), String> {
     let mut viewer = Viewer::open(path.clone())
         .map_err(|error| format!("cannot open viewer file {}: {error}", path.display()))?;
     let content_size = pane_area(*input.size);
-    let pane = if new_tab {
-        input
-            .session
-            .create_tab()
-            .map_err(|error| error.to_string())?
-    } else {
-        input
-            .session
-            .split_active(crate::session::Split::TopBottom, content_size)
-            .map_err(|error| error.to_string())?
-    };
+    let pane = input
+        .session
+        .create_tab()
+        .map_err(|error| error.to_string())?;
     let Some(pane_size) = input
         .session
         .pane_rects(content_size)
@@ -1707,7 +1753,7 @@ fn open_viewer_at(
         })
     else {
         let _ = input.session.close_pane(pane, content_size);
-        return Err("viewer pane has no size".into());
+        return Err("viewer tab has no size".into());
     };
     let mut terminal = match Terminal::new(pane_size) {
         Ok(terminal) => terminal,
@@ -1736,7 +1782,7 @@ fn open_viewer_at(
         input.panes.retain(|candidate| candidate.id != pane);
         let _ = input.session.close_pane(pane, content_size);
         let _ = resize_all(input.session, input.panes, *input.size, *input.size);
-        return Err(format!("cannot resize viewer pane: {error}"));
+        return Err(format!("cannot resize viewer tab: {error}"));
     }
     Ok(())
 }
@@ -1767,13 +1813,12 @@ fn open_prompt_viewer(
                 query: Vec::new(),
                 filter: Vec::new(),
                 selected: 0,
-                new_tab: prompt.new_tab,
             });
             client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
         }
         return Ok(());
     }
-    open_viewer_at(input, target, prompt.new_tab)?;
+    open_viewer_at(input, target)?;
     if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
         client.viewer_prompt = None;
         client.input.enter_viewer();
@@ -2404,6 +2449,41 @@ mod tests {
         assert_eq!(prompt_root(&directory, b'/'), Some(PathBuf::from("/")));
         assert_eq!(prompt_root(&directory, b'\\'), None);
         assert_eq!(prompt_drive_root(b"C:"), None);
+    }
+
+    #[test]
+    fn viewer_selection_wraps_directory_entries() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "termfold-viewer-selection-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("alpha"), b"").unwrap();
+        fs::write(directory.join("beta"), b"").unwrap();
+        let mut prompt = ViewerPrompt {
+            directory: directory.clone(),
+            query: Vec::new(),
+            filter: Vec::new(),
+            selected: 0,
+        };
+
+        assert_eq!(
+            select_viewer_entry(&mut prompt, 1).unwrap(),
+            b"beta".to_vec()
+        );
+        assert_eq!(
+            select_viewer_entry(&mut prompt, 1).unwrap(),
+            b"alpha".to_vec()
+        );
+        assert_eq!(
+            select_viewer_entry(&mut prompt, -1).unwrap(),
+            b"beta".to_vec()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(windows)]

@@ -1096,7 +1096,12 @@ fn working_directory(value: &[u8]) -> Option<PathBuf> {
         return None;
     }
     let value = std::str::from_utf8(value).ok()?.strip_prefix("file://")?;
-    let (authority, path) = value.split_once('/')?;
+    let (authority, path) = if value.starts_with('/') {
+        ("", value)
+    } else {
+        let (authority, _) = value.split_once('/')?;
+        (authority, &value[authority.len()..])
+    };
     if !authority.is_empty() && authority != "localhost" {
         return None;
     }

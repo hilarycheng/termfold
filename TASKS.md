@@ -300,14 +300,71 @@ This file tracks implementation work. Product behaviour remains authoritative in
     reruns them.
 
 - [*] **T27 — Add bounded large-file viewer**
-  - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the
-    current-directory path prompt, bounded block reading, navigation, and literal
-    forward/reverse search.
+  - Add `Ctrl-b v` for a dedicated viewer tab, `termfold view FILE`, OSC 7
+    working-directory tracking, the current-directory path prompt, bounded block
+    reading, navigation, and literal forward/reverse search.
   - Requirements: Approved Post-First-Release Scope; Large-file viewer.
   - Depends on: T02, T03, T08, T10, T11.
   - Done when: large files remain bounded in memory, navigation and search work in
     both directions, and path fallback is deterministic without external commands.
-  - Implemented with a bounded virtual viewer pane, session-scoped IPC requests,
-    OSC 7 file-URL parsing, editable directory completion, and fixed-block search.
+  - Implemented with a bounded virtual viewer in a dedicated tab, session-scoped
+    IPC requests, OSC 7 file-URL parsing, editable directory completion, and
+    fixed-block search.
     Linux and Windows targets type-check and Clippy passes; runtime tests are
     blocked in this host by the missing `cc` linker and inaccessible WSL service.
+
+- [*] **T28 — Make viewer page loading and eviction transactional**
+  - Keep file offsets as the source of truth and retain only the visible page,
+    the existing bounded fixed-size block cache, and bounded search offsets.
+    Never load the complete file or create a second page-sized file buffer.
+  - Page Down must load every missing block needed to build the next visible page
+    and must continue across block boundaries. Page Up must reuse cached blocks
+    when present and reload evicted blocks when necessary.
+  - Keep blocks used by the current display valid until the replacement page has
+    been built successfully. Commit the new cursor, viewport, and visible page
+    together; an I/O failure must preserve the previous display and report an
+    actionable error instead of leaving the viewer blank or unresponsive.
+  - After a successful page commit, evict least-recently-used blocks until the
+    cache is within its configured block-count limit. Dropping an evicted block
+    must release its byte allocation; paging repeatedly must not grow retained
+    memory with the number of visited pages.
+  - On navigation at the known end of file, refresh file metadata. If the file
+    grew, invalidate and reload a cached partial tail block before reading the
+    appended data. If it shrank, discard blocks beyond the new length, clamp the
+    cursor and viewport to valid line boundaries, and discard invalid search
+    offsets.
+  - Add focused checks using files larger than the cache for forward paging,
+    backward paging after eviction, bounded cache size, released page data,
+    growth within a cached tail block, truncation, and I/O-error state rollback.
+  - Requirements: Approved Post-First-Release Scope; Large-file viewer; Resource
+    Limits; Error Handling.
+  - Depends on: T27.
+  - Done when: paging crosses block boundaries in both directions, cache and page
+    memory remain bounded, file changes cannot leave stale offsets or blocks, and
+    failed loads leave the last complete page usable.
+  - Validated with focused viewer paging, eviction, growth, truncation, and
+    rollback checks; Clippy, musl checking, and the full test suite pass.
+
+- [ ] **T29 — Optimize and measure viewer paging responsiveness**
+  - Replace byte-at-a-time cache lookup and promotion during page navigation with
+    forward and reverse scans over contiguous cached block slices. Promote or
+    load a cache entry once per block crossing, not once per byte.
+  - Read only blocks required to locate the target cursor and render the visible
+    page. Keep warm Page Up/Page Down cache-only and keep cold paging sequential;
+    do not prefetch the complete file.
+  - Bound displayed-line storage as today and scan long physical lines blockwise
+    so a missing newline does not cause per-byte cache churn. Preserve logical
+    file-line navigation and existing cursor/viewport behaviour.
+  - Measure warm-cache and cold-cache Page Up/Page Down on a file larger than the
+    cache, including block-boundary newlines and a long physical line. Record
+    elapsed time, blocks read, peak cache bytes, and retained page bytes before
+    and after the optimization.
+  - Do not add memory mapping, a background reader, speculative prefetch, or a new
+    dependency unless the measurements show synchronous block scanning still
+    causes visible stalls and a separate architectural change is approved.
+  - Requirements: Approved Post-First-Release Scope; Large-file viewer; Resource
+    Limits; Implementation and Acceptance.
+  - Depends on: T28.
+  - Done when: measured paging performs work proportional to crossed blocks rather
+    than bytes, repeated navigation remains within the memory bound, and results
+    establish whether any asynchronous reader is necessary.

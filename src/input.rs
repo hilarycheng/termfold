@@ -46,9 +46,11 @@ pub enum Action {
     ViewDirectory { query: Vec<u8>, separator: u8 },
     ViewParent,
     ViewComplete(Vec<u8>),
+    ViewSelect(i32),
     OpenViewer(Vec<u8>),
     ViewCancelled,
     ViewerScroll(i32),
+    ViewerViewport(i32),
     ViewerPage(bool),
     ViewerHalfPage(bool),
     ViewerLineStart,
@@ -145,6 +147,32 @@ impl Input {
                     MouseParse::Invalid => {}
                 }
             }
+            if input[offset] == 27 && matches!(self.mode, Mode::ViewPrompt(_, _)) {
+                match parse_view_prompt(&input[offset..]) {
+                    ViewPromptParse::Complete(direction, length) => {
+                        push_forward(&mut actions, &mut forwarded);
+                        let action = match direction {
+                            Direction::Up => Action::ViewSelect(-1),
+                            Direction::Down => Action::ViewSelect(1),
+                            Direction::Left => Action::ViewParent,
+                            Direction::Right => match &self.mode {
+                                Mode::ViewPrompt(path, _) => Action::OpenViewer(path.clone()),
+                                _ => unreachable!(),
+                            },
+                        };
+                        actions.push(action);
+                        offset += length;
+                        self.pending_since = None;
+                        continue;
+                    }
+                    ViewPromptParse::Incomplete => {
+                        self.pending_mouse.extend_from_slice(&input[offset..]);
+                        self.pending_since.get_or_insert_with(Instant::now);
+                        break;
+                    }
+                    ViewPromptParse::Invalid => {}
+                }
+            }
             if input[offset] == 27
                 && offset + 1 == input.len()
                 && matches!(
@@ -237,7 +265,7 @@ impl Input {
         let since = self.pending_since?;
         let timeout = if matches!(self.mode, Mode::ViewerPrefix) {
             VIEWER_PREFIX_TIMEOUT
-        } else if self.pending_mouse == b"\x1b"
+        } else if self.pending_mouse.starts_with(b"\x1b")
             && matches!(
                 self.mode,
                 Mode::Resize(_)
@@ -263,10 +291,10 @@ impl Input {
             self.mode = Mode::Viewer(Vec::new());
             if byte == b'x' {
                 self.mode = Mode::ConfirmClose(true);
-                actions.push(Action::Status("close pane? (y/n)".into()));
+                actions.push(Action::Status("close viewer tab? (y/n)".into()));
                 return;
             }
-            if byte == b'V' {
+            if matches!(byte, b'v' | b'V') {
                 self.mode = Mode::ViewPrompt(Vec::new(), true);
                 actions.push(Action::ViewPrompt(true));
                 return;
@@ -438,6 +466,9 @@ impl Input {
                 query.push(byte);
                 actions.push(search_status(query));
             }
+            Mode::ViewPrompt(_, _) if matches!(byte, 14 | 16) => {
+                actions.push(Action::ViewSelect(if byte == 14 { 1 } else { -1 }));
+            }
             Mode::ViewPrompt(_, return_viewer) if matches!(byte, 3 | 27) => {
                 self.mode = if *return_viewer {
                     Mode::Viewer(Vec::new())
@@ -463,11 +494,7 @@ impl Input {
                 actions.push(Action::ViewComplete(path.clone()));
             }
             Mode::ViewPrompt(path, _) if matches!(byte, b'\r' | b'\n') => {
-                if path.is_empty() {
-                    actions.push(Action::Status("viewer path is empty".into()));
-                } else {
-                    actions.push(Action::OpenViewer(path.clone()));
-                }
+                actions.push(Action::OpenViewer(path.clone()));
             }
             Mode::ViewPrompt(path, _) if path.len() == MAX_VIEW_PATH_BYTES => {
                 actions.push(Action::Status("viewer path is too long".into()));
@@ -501,8 +528,8 @@ impl Input {
                     [21] => Some(Action::ViewerHalfPage(false)),
                     [4] => Some(Action::ViewerHalfPage(true)),
                     [6] => Some(Action::ViewerPage(true)),
-                    [5] => Some(Action::ViewerScroll(1)),
-                    [25] => Some(Action::ViewerScroll(-1)),
+                    [5] => Some(Action::ViewerViewport(1)),
+                    [25] => Some(Action::ViewerViewport(-1)),
                     [b'0'] | [27, b'[', b'H'] | [27, b'[', b'1', b'~'] | [27, b'[', b'7', b'~'] => {
                         Some(Action::ViewerLineStart)
                     }
@@ -591,6 +618,33 @@ enum MouseParse {
     Invalid,
 }
 
+enum ViewPromptParse {
+    Complete(Direction, usize),
+    Incomplete,
+    Invalid,
+}
+
+fn parse_view_prompt(bytes: &[u8]) -> ViewPromptParse {
+    for (sequence, direction) in [
+        (b"\x1b[A".as_slice(), Direction::Up),
+        (b"\x1b[B".as_slice(), Direction::Down),
+        (b"\x1b[C".as_slice(), Direction::Right),
+        (b"\x1b[D".as_slice(), Direction::Left),
+        (b"\x1bOA".as_slice(), Direction::Up),
+        (b"\x1bOB".as_slice(), Direction::Down),
+        (b"\x1bOC".as_slice(), Direction::Right),
+        (b"\x1bOD".as_slice(), Direction::Left),
+    ] {
+        if bytes.starts_with(sequence) {
+            return ViewPromptParse::Complete(direction, sequence.len());
+        }
+        if sequence.starts_with(bytes) {
+            return ViewPromptParse::Incomplete;
+        }
+    }
+    ViewPromptParse::Invalid
+}
+
 fn parse_mouse(bytes: &[u8]) -> MouseParse {
     if !b"\x1b[<".starts_with(bytes) && !bytes.starts_with(b"\x1b[<") {
         return MouseParse::Invalid;
@@ -659,7 +713,7 @@ fn prefix_action(prefix: u8, sequence: &[u8]) -> Option<Action> {
             b'?' => Action::HelpView,
             b'[' => Action::ScrollView,
             b'v' => Action::ViewPrompt(false),
-            b'V' => Action::ViewPrompt(true),
+            b'V' => Action::ViewPrompt(false),
             b'C' => Action::ClearScrollback,
             b'S' => Action::Status("save scrollback file: ".into()),
             _ => Action::Status("unsupported prefix command".into()),
@@ -786,7 +840,7 @@ mod tests {
             (b"\x02C", Action::ClearScrollback),
             (b"\x02[", Action::ScrollView),
             (b"\x02v", Action::ViewPrompt(false)),
-            (b"\x02V", Action::ViewPrompt(true)),
+            (b"\x02V", Action::ViewPrompt(false)),
         ] {
             let mut input = Input::new(2, false);
             assert_eq!(input.advance(bytes), vec![action]);
@@ -823,6 +877,18 @@ mod tests {
     fn viewer_prompt_and_navigation_are_consumed() {
         let mut input = Input::new(2, false);
         assert_eq!(input.advance(b"\x02v"), vec![Action::ViewPrompt(false)]);
+        assert!(input.advance(b"\x1b").is_empty());
+        assert_eq!(
+            input.advance(b"[A\x1b[B\x1b[C\x1b[D\x0e\x10"),
+            vec![
+                Action::ViewSelect(-1),
+                Action::ViewSelect(1),
+                Action::OpenViewer(Vec::new()),
+                Action::ViewParent,
+                Action::ViewSelect(1),
+                Action::ViewSelect(-1),
+            ]
+        );
         assert_eq!(
             input.advance(b"log"),
             vec![
@@ -884,8 +950,8 @@ mod tests {
                 Action::ViewerHalfPage(false),
                 Action::ViewerHalfPage(true),
                 Action::ViewerPage(true),
-                Action::ViewerScroll(1),
-                Action::ViewerScroll(-1),
+                Action::ViewerViewport(1),
+                Action::ViewerViewport(-1),
             ]
         );
         assert_eq!(
@@ -902,7 +968,7 @@ mod tests {
         assert_eq!(input.flush_pending_mouse(), vec![Action::ViewerPage(false)]);
         assert_eq!(
             input.advance(b"\x02x"),
-            vec![Action::Status("close pane? (y/n)".into())]
+            vec![Action::Status("close viewer tab? (y/n)".into())]
         );
         assert_eq!(
             input.advance(b"n"),
@@ -915,6 +981,8 @@ mod tests {
         assert!(input.advance(b"\x1b").is_empty());
         input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
         assert!(input.flush_pending_mouse().is_empty());
+        assert_eq!(input.advance(b"\x02v"), vec![Action::ViewPrompt(true)]);
+        assert_eq!(input.advance(b"\x03"), vec![Action::ViewCancelled]);
         assert_eq!(input.advance(b"\x02V"), vec![Action::ViewPrompt(true)]);
         assert_eq!(input.advance(b"\x03"), vec![Action::ViewCancelled]);
         assert_eq!(input.advance(b"j"), vec![Action::ViewerScroll(1)]);

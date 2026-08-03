@@ -75,7 +75,7 @@ search, and Vim-like navigation.
 ### Entry points
 
 - `Ctrl-b v` prompts for a path using the active pane's working directory and
-  opens a viewer pane.
+  opens a dedicated viewer tab. `Ctrl-b V` remains an alias.
 - `termfold view FILE` targets the caller's current Termfold session.
 - Panes need a Termfold-provided session identifier so the CLI can identify
   that session. Outside Termfold, require an explicit session argument.
@@ -85,6 +85,9 @@ search, and Vim-like navigation.
 - Use standard-library seek/read operations over fixed-size blocks.
 - Retain only the displayed page, a small block cache, and a bounded cache of
   matching byte offsets.
+- Build replacement pages transactionally, committing the cursor, viewport, and
+  visible page together; evict least-recently-used blocks only after a successful
+  commit and refresh metadata when the file size changes.
 - `/` searches forward; `?` searches backward; `n` and `N` repeat in each
   direction; `g` and `G` go to start and end.
 - Do not use `grep`, shell interpolation, or a full-file index. They conflict
