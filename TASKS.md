@@ -345,7 +345,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Validated with focused viewer paging, eviction, growth, truncation, and
     rollback checks; Clippy, musl checking, and the full test suite pass.
 
-- [ ] **T29 — Optimize and measure viewer paging responsiveness**
+- [*] **T29 — Optimize and measure viewer paging responsiveness**
   - Replace byte-at-a-time cache lookup and promotion during page navigation with
     forward and reverse scans over contiguous cached block slices. Promote or
     load a cache entry once per block crossing, not once per byte.
@@ -368,3 +368,10 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: measured paging performs work proportional to crossed blocks rather
     than bytes, repeated navigation remains within the memory bound, and results
     establish whether any asynchronous reader is necessary.
+  - Implemented blockwise forward/reverse scans and retained bounded page/cache
+    storage. Release measurement recorded initial 278 us/3 blocks, cold Page Down
+    1.46 ms/1 block, warm Page Up 1.15 ms/0 blocks, long-line scanning 1.70 ms/
+    7 blocks/32 cache accesses, 524,305-byte peak cache, and 0/48/48/16 retained
+    page bytes; synchronous paging remains sufficient.
+  - Full unit and lifecycle tests, Clippy, Linux musl and Windows target checks,
+    and the static musl release build passed.

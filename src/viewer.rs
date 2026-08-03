@@ -64,6 +64,12 @@ pub struct Viewer {
     page: Vec<String>,
     committed: ViewState,
     defer_eviction: bool,
+    #[cfg(test)]
+    block_reads: usize,
+    #[cfg(test)]
+    block_accesses: usize,
+    #[cfg(test)]
+    peak_cache_bytes: usize,
 }
 
 impl Viewer {
@@ -97,6 +103,12 @@ impl Viewer {
             page: Vec::new(),
             committed,
             defer_eviction: false,
+            #[cfg(test)]
+            block_reads: 0,
+            #[cfg(test)]
+            block_accesses: 0,
+            #[cfg(test)]
+            peak_cache_bytes: 0,
         })
     }
 
@@ -562,36 +574,29 @@ impl Viewer {
     ) -> io::Result<(u64, String)> {
         let limit = MAX_LINE_BYTES.min(columns.saturating_mul(4).saturating_add(4));
         let mut bytes = Vec::with_capacity(limit.min(budget));
-        let mut position = start;
         let mut skipped = 0;
-        let mut line_ended = false;
-        while skipped < self.horizontal {
-            let Some(byte) = self.byte(position)? else {
-                break;
-            };
-            position += 1;
-            if byte == b'\n' {
-                line_ended = true;
-                break;
+        let horizontal = self.horizontal;
+        let newline = self.scan_forward(start, self.length, |_, byte| {
+            if skipped < horizontal {
+                skipped += 1;
+                return byte == b'\n';
             }
-            skipped += 1;
-        }
-        if line_ended {
-            return Ok((position, String::new()));
-        }
-        while let Some(byte) = self.byte(position)? {
-            position += 1;
             if byte == b'\n' {
-                break;
+                return true;
             }
             if bytes.len() < limit && bytes.len() < budget {
                 bytes.push(byte);
             }
+            false
+        })?;
+        let next = newline.map_or(self.length, |offset| offset + 1);
+        if skipped < horizontal {
+            return Ok((next, String::new()));
         }
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-        Ok((position, display_line(&bytes, columns)))
+        Ok((next, display_line(&bytes, columns)))
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
@@ -657,61 +662,54 @@ impl Viewer {
     }
 
     fn next_line(&mut self, start: u64) -> io::Result<u64> {
-        let mut position = start;
-        while let Some(byte) = self.byte(position)? {
-            position += 1;
-            if byte == b'\n' {
-                break;
-            }
-        }
-        Ok(position)
+        Ok(self
+            .scan_forward(start, self.length, |_, byte| byte == b'\n')?
+            .map_or(self.length, |offset| offset + 1))
     }
 
     fn line_length(&mut self, start: u64) -> io::Result<u64> {
-        let mut position = start;
-        while let Some(byte) = self.byte(position)? {
-            if byte == b'\n' {
-                break;
-            }
-            position += 1;
-        }
-        Ok(position.saturating_sub(start))
+        Ok(self
+            .scan_forward(start, self.length, |_, byte| byte == b'\n')?
+            .unwrap_or(self.length)
+            .saturating_sub(start))
     }
 
     fn previous_line(&mut self, start: u64) -> io::Result<u64> {
         if start == 0 {
             return Ok(0);
         }
-        let mut position = start - 1;
-        if self.byte(position)? == Some(b'\n') {
-            position = position.saturating_sub(1);
-        }
-        while position > 0 && self.byte(position - 1)? != Some(b'\n') {
-            position -= 1;
-        }
-        Ok(position)
+        let boundary = start - 1;
+        let mut skip_boundary = true;
+        let previous = self.scan_reverse(start, 0, |offset, byte| {
+            if skip_boundary && offset == boundary && byte == b'\n' {
+                skip_boundary = false;
+                return false;
+            }
+            byte == b'\n'
+        })?;
+        Ok(previous.map_or(0, |offset| offset + 1))
     }
 
     fn last_line(&mut self) -> io::Result<u64> {
         if self.length == 0 {
             return Ok(0);
         }
-        let mut position = self.length;
-        if self.byte(position - 1)? == Some(b'\n') {
-            position -= 1;
-        }
-        while position > 0 && self.byte(position - 1)? != Some(b'\n') {
-            position -= 1;
-        }
-        Ok(position)
+        let boundary = self.length - 1;
+        let mut skip_boundary = true;
+        let previous = self.scan_reverse(self.length, 0, |offset, byte| {
+            if skip_boundary && offset == boundary && byte == b'\n' {
+                skip_boundary = false;
+                return false;
+            }
+            byte == b'\n'
+        })?;
+        Ok(previous.map_or(0, |offset| offset + 1))
     }
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
-        let mut position = position.min(self.length);
-        while position > 0 && self.byte(position - 1)? != Some(b'\n') {
-            position -= 1;
-        }
-        Ok(position)
+        Ok(self
+            .scan_reverse(position.min(self.length), 0, |_, byte| byte == b'\n')?
+            .map_or(0, |offset| offset + 1))
     }
 
     fn byte(&mut self, offset: u64) -> io::Result<Option<u8>> {
@@ -719,50 +717,135 @@ impl Viewer {
             return Ok(None);
         }
         let block_offset = offset / BLOCK_SIZE * BLOCK_SIZE;
+        let bytes = self.block(block_offset)?;
+        bytes
+            .get((offset - block_offset) as usize)
+            .copied()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "viewer cache block is shorter than the file",
+                )
+            })
+            .map(Some)
+    }
+
+    fn scan_forward<F>(&mut self, start: u64, end: u64, mut visit: F) -> io::Result<Option<u64>>
+    where
+        F: FnMut(u64, u8) -> bool,
+    {
+        let end = end.min(self.length);
+        let mut position = start.min(end);
+        while position < end {
+            let block_offset = position / BLOCK_SIZE * BLOCK_SIZE;
+            let expected = (self.length - block_offset).min(BLOCK_SIZE) as usize;
+            let found = {
+                let bytes = self.block(block_offset)?;
+                if bytes.len() < expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "viewer cache block is shorter than the file",
+                    ));
+                }
+                let first = (position - block_offset) as usize;
+                let last = (end - block_offset).min(expected as u64) as usize;
+                if last <= first {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "viewer cache block does not cover the requested range",
+                    ));
+                }
+                (first..last)
+                    .find(|index| {
+                        let offset = block_offset + *index as u64;
+                        visit(offset, bytes[*index])
+                    })
+                    .map(|index| block_offset + index as u64)
+            };
+            if found.is_some() {
+                return Ok(found);
+            }
+            position = block_offset + (end - block_offset).min(expected as u64);
+        }
+        Ok(None)
+    }
+
+    fn scan_reverse<F>(&mut self, start: u64, end: u64, mut visit: F) -> io::Result<Option<u64>>
+    where
+        F: FnMut(u64, u8) -> bool,
+    {
+        let mut position = start.min(self.length);
+        let end = end.min(position);
+        while position > end {
+            let block_offset = (position - 1) / BLOCK_SIZE * BLOCK_SIZE;
+            let expected = (self.length - block_offset).min(BLOCK_SIZE) as usize;
+            let found = {
+                let bytes = self.block(block_offset)?;
+                if bytes.len() < expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "viewer cache block is shorter than the file",
+                    ));
+                }
+                let first = end.max(block_offset);
+                let last = position.min(block_offset + expected as u64);
+                if last <= first {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "viewer cache block does not cover the requested range",
+                    ));
+                }
+                (first..last)
+                    .rev()
+                    .find(|offset| visit(*offset, bytes[(*offset - block_offset) as usize]))
+            };
+            if found.is_some() {
+                return Ok(found);
+            }
+            position = end.max(block_offset);
+        }
+        Ok(None)
+    }
+
+    fn block(&mut self, block_offset: u64) -> io::Result<&[u8]> {
+        #[cfg(test)]
+        {
+            self.block_accesses += 1;
+        }
         if let Some(index) = self
             .blocks
             .iter()
             .position(|block| block.offset == block_offset)
         {
-            let block = self
-                .blocks
-                .remove(index)
-                .expect("block index came from cache");
-            let byte = block
-                .bytes
-                .get((offset - block_offset) as usize)
-                .copied()
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "viewer cache block is shorter than the file",
-                    )
-                });
-            self.blocks.push_front(block);
-            return byte.map(Some);
+            if index != 0 {
+                let block = self
+                    .blocks
+                    .remove(index)
+                    .expect("block index came from cache");
+                self.blocks.push_front(block);
+            }
+            return Ok(&self.blocks.front().expect("cache block exists").bytes);
         }
 
         self.file.seek(SeekFrom::Start(block_offset))?;
         let length = (self.length - block_offset).min(BLOCK_SIZE) as usize;
         let mut bytes = vec![0; length];
         self.file.read_exact(&mut bytes)?;
-        let byte = bytes
-            .get((offset - block_offset) as usize)
-            .copied()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer block is shorter than the file",
-                )
-            })?;
         self.blocks.push_front(Block {
             offset: block_offset,
             bytes,
         });
+        #[cfg(test)]
+        {
+            self.block_reads += 1;
+            self.peak_cache_bytes = self
+                .peak_cache_bytes
+                .max(self.blocks.iter().map(|block| block.bytes.len()).sum());
+        }
         if !self.defer_eviction {
             self.trim_cache();
         }
-        Ok(Some(byte))
+        Ok(&self.blocks.front().expect("cache block exists").bytes)
     }
 }
 
@@ -820,6 +903,10 @@ mod tests {
 
     fn cache_bytes(viewer: &Viewer) -> usize {
         viewer.blocks.iter().map(|block| block.bytes.len()).sum()
+    }
+
+    fn page_bytes(viewer: &Viewer) -> usize {
+        viewer.page.iter().map(String::capacity).sum()
     }
 
     #[test]
@@ -932,6 +1019,94 @@ mod tests {
             assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
         }
         assert_eq!(viewer.page[0], first_line);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn paging_scans_blocks_without_bytewise_cache_churn() {
+        let path = temp_path("termfold-viewer-metrics");
+        let block_size = BLOCK_SIZE as usize;
+        let mut data = Vec::with_capacity(block_size * (BLOCK_CACHE_SIZE + 6));
+        for _ in 0..(BLOCK_CACHE_SIZE + 4) {
+            data.extend(std::iter::repeat_n(b'x', block_size - 1));
+            data.push(b'\n');
+        }
+        data.extend(std::iter::repeat_n(b'z', block_size * 2 + 17));
+        fs::write(&path, data).unwrap();
+
+        let size = Size {
+            columns: 16,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+
+        let page_before = page_bytes(&viewer);
+        let started = std::time::Instant::now();
+        viewer.render(&mut terminal, size).unwrap();
+        let initial_elapsed = started.elapsed();
+        assert_eq!(viewer.block_reads, 3);
+        assert!(viewer.block_accesses < 20);
+        let initial_reads = viewer.block_reads;
+        let initial_page = page_bytes(&viewer);
+
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            viewer.page(size.rows, true).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+        }
+        let cold_elapsed = started.elapsed();
+        let cold_reads = viewer.block_reads - initial_reads;
+        assert_eq!(cold_reads, 1);
+        let cold_page = page_bytes(&viewer);
+
+        let started = std::time::Instant::now();
+        let warm_reads = viewer.block_reads;
+        for _ in 0..3 {
+            viewer.page(size.rows, false).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+        }
+        let warm_elapsed = started.elapsed();
+        assert_eq!(viewer.block_reads, warm_reads);
+
+        let started = std::time::Instant::now();
+        let long_accesses_before = viewer.block_accesses;
+        viewer.bottom().unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        let long_line_elapsed = started.elapsed();
+        let long_line_reads = viewer.block_reads - warm_reads;
+        let long_line_accesses = viewer.block_accesses - long_accesses_before;
+        assert!(
+            long_line_reads <= BLOCK_CACHE_SIZE,
+            "long-line block reads: {long_line_reads}"
+        );
+        assert!(long_line_accesses < 100);
+        assert!(cache_bytes(&viewer) <= block_size * BLOCK_CACHE_SIZE);
+        let final_page = page_bytes(&viewer);
+
+        eprintln!(
+            concat!(
+                "viewer paging metrics: initial={:?} ({} blocks), ",
+                "cold_down={:?} ({} blocks), ",
+                "warm_up={:?} (0 blocks), ",
+                "long_line={:?} ({} blocks, {} accesses), ",
+                "peak_cache={} bytes, page_bytes={}->{}->{}->{}"
+            ),
+            initial_elapsed,
+            initial_reads,
+            cold_elapsed,
+            cold_reads,
+            warm_elapsed,
+            long_line_elapsed,
+            long_line_reads,
+            long_line_accesses,
+            viewer.peak_cache_bytes,
+            page_before,
+            initial_page,
+            cold_page,
+            final_page
+        );
 
         fs::remove_file(path).unwrap();
     }
