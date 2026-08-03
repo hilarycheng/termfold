@@ -269,7 +269,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Validation passed: Linux unit tests (48), Linux lifecycle tests (8), native
     Windows tests (43), Linux musl release build, and Windows MSVC release build.
 
-- [ ] **T25 — Optimize shared VT rendering**
+- [*] **T25 — Optimize shared VT rendering**
   - Track changed row ranges, emit sequential range updates with minimal cursor and
     SGR changes, and retain full redraws for layout, resize, and buffer changes.
   - Measure renderer CPU, IPC transfer, and outer-terminal output before adding
@@ -278,6 +278,17 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T10, T21, T23.
   - Done when: approved focused checks pass and native Windows latency measurements
     show whether the shared renderer meets the target.
+  - Implementation and focused checks are complete. Native Windows measurement was
+    4.51–4.61 us / 48 VT bytes per incremental frame versus 1.087–1.088 ms /
+    5,180 VT bytes for a full redraw; framed IPC adds 6 bytes. Full native
+    validation has one unrelated runtime-ACL failure. WSL musl validation passed:
+    50 unit tests, 8 lifecycle tests, Clippy, and a 713 KiB static-PIE release
+    binary. WSL musl release PTY measurement: 100 samples, 598 us median and
+    863 us p95 from outer PTY input through Termfold IPC/rendering to output.
+    Native Windows ConPTY release-path measurement: three 100-sample runs,
+    15.34–15.99 ms median and 18.05–20.76 ms p95, including Windows named-pipe
+    IPC, ConPTY I/O, and shared VT rendering. The harness supplied native host
+    query responses; this measures ConPTY rather than the Windows Terminal GUI.
 
 - [ ] **T26 — Add declarative startup profiles**
   - Add creation-only `config.toml` profiles with validated directories, direct

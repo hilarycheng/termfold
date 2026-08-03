@@ -277,14 +277,16 @@ pub fn changes(
             continue;
         };
         let rows = terminal.screen().rows();
-        for (y, row) in rows.iter().enumerate() {
+        let Some((first_row, last_row)) = terminal.dirty_rows() else {
+            continue;
+        };
+        for (offset, row) in rows[first_row..last_row].iter().enumerate() {
+            let y = first_row + offset;
             let Some((start, end)) = terminal.damage().get(y).copied().flatten() else {
                 continue;
             };
-            let start = start.saturating_sub(
-                row.get(start)
-                    .is_some_and(Cell::is_continuation) as usize,
-            );
+            let start =
+                start.saturating_sub(row.get(start).is_some_and(Cell::is_continuation) as usize);
             move_cursor(
                 &mut output,
                 rect.y.saturating_add(y as u16),
@@ -306,7 +308,6 @@ pub fn changes(
         }
     }
 
-    output.extend_from_slice(b"\x1b[0m");
     place_cursor(
         &mut output,
         session.active_pane(),
@@ -833,25 +834,85 @@ fn set_attributes(
     if *current == Some(wanted) {
         return;
     }
-    *current = Some(wanted);
-    let mut sequence = String::from("\x1b[0");
-    for (enabled, code) in [
-        (wanted.bold, 1),
-        (wanted.faint, 2),
-        (wanted.italic, 3),
-        (wanted.underline, 4),
-        (wanted.blink, 5),
-        (wanted.inverse, 7),
-        (wanted.hidden, 8),
-        (wanted.strike, 9),
-    ] {
-        if enabled {
-            let _ = write!(sequence, ";{code}");
+    let previous = current.replace(wanted);
+    let mut sequence = String::from("\x1b[");
+    let mut first = true;
+    if let Some(previous) = previous {
+        let disable_bold_group =
+            (previous.bold && !wanted.bold) || (previous.faint && !wanted.faint);
+        if disable_bold_group {
+            push_sgr_code(&mut sequence, &mut first, 22);
         }
+        if wanted.bold && (!previous.bold || disable_bold_group) {
+            push_sgr_code(&mut sequence, &mut first, 1);
+        }
+        if wanted.faint && (!previous.faint || disable_bold_group) {
+            push_sgr_code(&mut sequence, &mut first, 2);
+        }
+        for (before, after, enable, disable) in [
+            (previous.italic, wanted.italic, 3, 23),
+            (previous.underline, wanted.underline, 4, 24),
+            (previous.blink, wanted.blink, 5, 25),
+            (previous.inverse, wanted.inverse, 7, 27),
+            (previous.hidden, wanted.hidden, 8, 28),
+            (previous.strike, wanted.strike, 9, 29),
+        ] {
+            if before != after {
+                push_sgr_code(
+                    &mut sequence,
+                    &mut first,
+                    if after { enable } else { disable },
+                );
+            }
+        }
+        if previous.foreground != wanted.foreground {
+            push_color_change(&mut sequence, &mut first, wanted.foreground, 39, 38, 30, 90);
+        }
+        if previous.background != wanted.background {
+            push_color_change(
+                &mut sequence,
+                &mut first,
+                wanted.background,
+                49,
+                48,
+                40,
+                100,
+            );
+        }
+        if previous.underline_color != wanted.underline_color {
+            push_color_change(
+                &mut sequence,
+                &mut first,
+                wanted.underline_color,
+                59,
+                58,
+                0,
+                0,
+            );
+        }
+    } else {
+        push_sgr_code(&mut sequence, &mut first, 0);
+        for (enabled, code) in [
+            (wanted.bold, 1),
+            (wanted.faint, 2),
+            (wanted.italic, 3),
+            (wanted.underline, 4),
+            (wanted.blink, 5),
+            (wanted.inverse, 7),
+            (wanted.hidden, 8),
+            (wanted.strike, 9),
+        ] {
+            if enabled {
+                push_sgr_code(&mut sequence, &mut first, code);
+            }
+        }
+        push_color(&mut sequence, &mut first, wanted.foreground, 38, 30, 90);
+        push_color(&mut sequence, &mut first, wanted.background, 48, 40, 100);
+        push_color(&mut sequence, &mut first, wanted.underline_color, 58, 0, 0);
     }
-    push_color(&mut sequence, wanted.foreground, 38, 30, 90);
-    push_color(&mut sequence, wanted.background, 48, 40, 100);
-    push_color(&mut sequence, wanted.underline_color, 58, 0, 0);
+    if first {
+        return;
+    }
     sequence.push('m');
     output.extend_from_slice(sequence.as_bytes());
 }
@@ -916,21 +977,58 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
     )
 }
 
-fn push_color(output: &mut String, color: Color, extended: u8, normal: u8, bright: u8) {
+fn push_sgr_code(output: &mut String, first: &mut bool, code: u16) {
+    if !*first {
+        output.push(';');
+    }
+    *first = false;
+    let _ = write!(output, "{code}");
+}
+
+fn push_color(
+    output: &mut String,
+    first: &mut bool,
+    color: Color,
+    extended: u8,
+    normal: u8,
+    bright: u8,
+) {
     match color {
         Color::Default => {}
         Color::Indexed(index @ 0..=7) if normal != 0 => {
-            let _ = write!(output, ";{}", normal + index);
+            push_sgr_code(output, first, u16::from(normal + index));
         }
         Color::Indexed(index @ 8..=15) if bright != 0 => {
-            let _ = write!(output, ";{}", bright + index - 8);
+            push_sgr_code(output, first, u16::from(bright + index - 8));
         }
         Color::Indexed(index) => {
-            let _ = write!(output, ";{extended};5;{index}");
+            push_sgr_code(output, first, u16::from(extended));
+            push_sgr_code(output, first, 5);
+            push_sgr_code(output, first, u16::from(index));
         }
         Color::Rgb(red, green, blue) => {
-            let _ = write!(output, ";{extended};2;{red};{green};{blue}");
+            push_sgr_code(output, first, u16::from(extended));
+            push_sgr_code(output, first, 2);
+            push_sgr_code(output, first, u16::from(red));
+            push_sgr_code(output, first, u16::from(green));
+            push_sgr_code(output, first, u16::from(blue));
         }
+    }
+}
+
+fn push_color_change(
+    output: &mut String,
+    first: &mut bool,
+    color: Color,
+    reset: u16,
+    extended: u8,
+    normal: u8,
+    bright: u8,
+) {
+    if color == Color::Default {
+        push_sgr_code(output, first, reset);
+    } else {
+        push_color(output, first, color, extended, normal, bright);
     }
 }
 
@@ -1246,6 +1344,34 @@ mod tests {
     }
 
     #[test]
+    fn incremental_render_uses_only_changed_sgr_codes() {
+        let session = Session::new("s".into());
+        let pane = session.active_pane().unwrap();
+        let mut terminal = Terminal::new(Size {
+            columns: 10,
+            rows: 2,
+        })
+        .unwrap();
+        terminal.clear_damage();
+        terminal.advance(b"\x1b[31mA\x1b[32mB");
+
+        let output = changes(
+            &session,
+            &[(pane, &terminal)],
+            Size {
+                columns: 10,
+                rows: 3,
+            },
+            capabilities(),
+        );
+
+        assert!(output.windows(7).any(|bytes| bytes == b"\x1b[0;31m"));
+        assert!(output.windows(5).any(|bytes| bytes == b"\x1b[32m"));
+        assert!(!output.windows(7).any(|bytes| bytes == b"\x1b[0;32m"));
+        assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[0m"));
+    }
+
+    #[test]
     fn contiguous_changes_use_one_cursor_move() {
         let session = Session::new("s".into());
         let pane = session.active_pane().unwrap();
@@ -1267,7 +1393,13 @@ mod tests {
             capabilities(),
         );
 
-        assert_eq!(output.windows(6).filter(|bytes| *bytes == b"\x1b[2;2H").count(), 1);
+        assert_eq!(
+            output
+                .windows(6)
+                .filter(|bytes| *bytes == b"\x1b[2;2H")
+                .count(),
+            1
+        );
         assert!(output.windows(3).any(|bytes| bytes == b"XYZ"));
     }
 

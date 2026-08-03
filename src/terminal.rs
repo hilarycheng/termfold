@@ -127,6 +127,7 @@ impl Error for TerminalError {}
 pub struct Screen {
     rows: Vec<Vec<Cell>>,
     damage: Vec<Option<(usize, usize)>>,
+    dirty_rows: Option<(usize, usize)>,
     scrollback: VecDeque<Vec<Cell>>,
     scrollback_limit: usize,
     scrollback_epoch: u64,
@@ -146,6 +147,7 @@ impl Screen {
         Ok(Self {
             rows: vec![vec![Cell::blank(Attributes::default()); columns]; rows],
             damage: vec![Some((0, columns)); rows],
+            dirty_rows: Some((0, rows)),
             scrollback: VecDeque::new(),
             scrollback_limit,
             scrollback_epoch: 0,
@@ -164,6 +166,10 @@ impl Screen {
 
     pub fn damage(&self) -> &[Option<(usize, usize)>] {
         &self.damage
+    }
+
+    pub fn dirty_rows(&self) -> Option<(usize, usize)> {
+        self.dirty_rows
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -242,15 +248,21 @@ impl Screen {
             Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
             None => (start, end),
         });
+        self.dirty_rows = Some(match self.dirty_rows {
+            Some((old_start, old_end)) => (old_start.min(row), old_end.max(row + 1)),
+            None => (row, row + 1),
+        });
     }
 
     fn mark_all(&mut self) {
         let columns = self.columns();
         self.damage.fill(Some((0, columns)));
+        self.dirty_rows = Some((0, self.height()));
     }
 
     fn clear_damage(&mut self) {
         self.damage.fill(None);
+        self.dirty_rows = None;
     }
 
     fn blank_row(&self, attributes: Attributes) -> Vec<Cell> {
@@ -357,6 +369,10 @@ impl Terminal {
 
     pub fn damage(&self) -> &[Option<(usize, usize)>] {
         self.state.screen().damage()
+    }
+
+    pub fn dirty_rows(&self) -> Option<(usize, usize)> {
+        self.state.screen().dirty_rows()
     }
 
     pub fn clear_damage(&mut self) {
@@ -1362,6 +1378,22 @@ mod tests {
             .unwrap();
         assert_eq!(line(&terminal, 0), "abc");
         assert_eq!(line(&terminal, 2), "   ");
+    }
+
+    #[test]
+    fn tracks_the_dirty_row_envelope() {
+        let mut terminal = terminal(8, 3);
+        terminal.clear_damage();
+        assert_eq!(terminal.dirty_rows(), None);
+
+        terminal.advance(b"\x1b[3;2HX");
+        assert_eq!(terminal.dirty_rows(), Some((2, 3)));
+
+        terminal.advance(b"\x1b[1;1HY");
+        assert_eq!(terminal.dirty_rows(), Some((0, 3)));
+
+        terminal.clear_damage();
+        assert_eq!(terminal.dirty_rows(), None);
     }
 
     #[test]
