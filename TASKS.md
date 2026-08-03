@@ -389,3 +389,17 @@ This file tracks implementation work. Product behaviour remains authoritative in
     page bytes; synchronous paging remains sufficient.
   - Full unit and lifecycle tests, Clippy, Linux musl and Windows target checks,
     and the static musl release build passed.
+
+- [ ] **T30 — Eliminate repeated viewer-navigation starvation**
+  - Reproduce the remaining unresponsive state while holding or repeatedly
+    pressing Page Up/Page Down in the large-file viewer.
+  - Trace input framing, event batching, synchronous page construction, output
+    queues, and terminal rendering together; identify the first unbounded or
+    blocking stage rather than adding another viewer cache.
+  - Preserve bounded memory, transactional page rollback, terminal restoration,
+    and correct ordering of navigation and status messages.
+  - Requirements: Large-file viewer; Resource Limits; Error Handling.
+  - Depends on: T29.
+  - Done when sustained Page Up/Page Down input remains responsive, unrelated
+    pane output continues to flow, and a regression check covers the reproduced
+    workload.

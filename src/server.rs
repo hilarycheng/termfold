@@ -154,6 +154,7 @@ struct InputContext<'a> {
     mouse: bool,
     status_line: StatusLine<'a>,
     full_dirty: &'a mut bool,
+    viewer_dirty: &'a mut Option<u64>,
     events: &'a SyncSender<ServerEvent>,
 }
 
@@ -206,6 +207,7 @@ pub fn run(
     let mut rendered_status = None;
     let mut full_dirty = false;
     let mut content_dirty = false;
+    let mut viewer_dirty = None;
     let mut terminate = false;
     let socket = runtime.bind(session.name())?;
     socket
@@ -238,6 +240,7 @@ pub fn run(
                             mouse: config.mouse,
                             status_line: status_line(&config, &metrics),
                             full_dirty: &mut full_dirty,
+                            viewer_dirty: &mut viewer_dirty,
                             events: &event_sender,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
@@ -277,11 +280,30 @@ pub fn run(
                 mouse: config.mouse,
                 status_line: status_line(&config, &metrics),
                 full_dirty: &mut full_dirty,
+                viewer_dirty: &mut viewer_dirty,
                 events: &event_sender,
             };
             if handle_actions(&mut clients, client_id, actions, &mut input) {
                 terminate = true;
                 break;
+            }
+        }
+
+        if let Some(client_id) = viewer_dirty.take() {
+            let mut input = InputContext {
+                session: &mut session,
+                panes: &mut panes,
+                size: &mut authoritative_size,
+                launch: &context,
+                scrollback_limit: usize::from(config.scrollback_lines),
+                mouse: config.mouse,
+                status_line: status_line(&config, &metrics),
+                full_dirty: &mut full_dirty,
+                viewer_dirty: &mut viewer_dirty,
+                events: &event_sender,
+            };
+            if let Err(error) = render_active_viewer(&mut input) {
+                set_status(&mut clients, client_id, Some(error), input.full_dirty);
             }
         }
 
@@ -1150,10 +1172,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1167,10 +1187,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1185,10 +1203,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1203,10 +1219,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1220,10 +1234,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1238,10 +1250,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1250,11 +1260,7 @@ fn handle_action(
             if let Some(viewer) = active_viewer(input) {
                 viewer.top();
             }
-            if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
-            } else {
-                set_viewer_status(clients, client_id, input);
-            }
+            defer_viewer_refresh(clients, client_id, input);
             *input.full_dirty = true;
             return false;
         }
@@ -1267,10 +1273,8 @@ fn handle_action(
                     Some(format!("viewer navigation failed: {error}")),
                     input.full_dirty,
                 );
-            } else if let Err(error) = render_active_viewer(input) {
-                set_status(clients, client_id, Some(error), input.full_dirty);
             } else {
-                set_viewer_status(clients, client_id, input);
+                defer_viewer_refresh(clients, client_id, input);
             }
             *input.full_dirty = true;
             return false;
@@ -1310,13 +1314,7 @@ fn handle_action(
             };
             let result = active_viewer(input).map(|viewer| viewer.search(&query, forward));
             match result {
-                Some(Ok(true)) => {
-                    if let Err(error) = render_active_viewer(input) {
-                        set_status(clients, client_id, Some(error), input.full_dirty);
-                    } else {
-                        set_viewer_status(clients, client_id, input);
-                    }
-                }
+                Some(Ok(true)) => defer_viewer_refresh(clients, client_id, input),
                 Some(Ok(false)) => set_status(
                     clients,
                     client_id,
@@ -1345,13 +1343,7 @@ fn handle_action(
         Action::ViewerSearchNext(same_direction) => {
             let result = active_viewer(input).map(|viewer| viewer.repeat_search(same_direction));
             match result {
-                Some(Ok(true)) => {
-                    if let Err(error) = render_active_viewer(input) {
-                        set_status(clients, client_id, Some(error), input.full_dirty);
-                    } else {
-                        set_viewer_status(clients, client_id, input);
-                    }
-                }
+                Some(Ok(true)) => defer_viewer_refresh(clients, client_id, input),
                 Some(Ok(false)) => set_status(
                     clients,
                     client_id,
@@ -1483,6 +1475,15 @@ fn active_viewer_columns(input: &InputContext<'_>) -> Option<usize> {
         .iter()
         .find(|pane| pane.id == active && pane.viewer.is_some())
         .map(|pane| usize::from(pane.terminal.screen().size().columns))
+}
+
+fn schedule_viewer_render(viewer_dirty: &mut Option<u64>, client_id: u64) {
+    *viewer_dirty = Some(client_id);
+}
+
+fn defer_viewer_refresh(clients: &mut [Client], client_id: u64, input: &mut InputContext<'_>) {
+    schedule_viewer_render(input.viewer_dirty, client_id);
+    set_viewer_status(clients, client_id, input);
 }
 
 fn render_active_viewer(input: &mut InputContext<'_>) -> Result<(), String> {
@@ -2384,6 +2385,15 @@ mod tests {
 
         assert_eq!(output, b"\x1b[1;1R\x1b[?1;2c");
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn viewer_render_is_coalesced_to_the_latest_input() {
+        let mut pending = None;
+        schedule_viewer_render(&mut pending, 1);
+        schedule_viewer_render(&mut pending, 2);
+
+        assert_eq!(pending, Some(2));
     }
 
     #[test]

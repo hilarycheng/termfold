@@ -11,6 +11,7 @@ use crate::{session::Size, terminal::Terminal};
 
 const BLOCK_SIZE: u64 = 64 * 1024;
 const BLOCK_CACHE_SIZE: usize = 8;
+const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
 const MAX_LINE_BYTES: usize = 64 * 1024;
 
@@ -18,6 +19,13 @@ const MAX_LINE_BYTES: usize = 64 * 1024;
 struct Block {
     offset: u64,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LineBoundary {
+    start: u64,
+    content_end: u64,
+    next: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +71,8 @@ pub struct Viewer {
     search: Option<SearchState>,
     page: Vec<String>,
     committed: ViewState,
-    defer_eviction: bool,
+    protected_blocks: Vec<u64>,
+    lines: VecDeque<LineBoundary>,
     #[cfg(test)]
     block_reads: usize,
     #[cfg(test)]
@@ -102,7 +111,8 @@ impl Viewer {
             search: None,
             page: Vec::new(),
             committed,
-            defer_eviction: false,
+            protected_blocks: Vec::new(),
+            lines: VecDeque::new(),
             #[cfg(test)]
             block_reads: 0,
             #[cfg(test)]
@@ -123,18 +133,18 @@ impl Viewer {
         let committed = self.committed;
         let previous_page = std::mem::take(&mut self.page);
         let previous_blocks = self.cache_offsets();
+        self.protected_blocks = previous_blocks.clone();
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
         let columns = usize::from(size.columns);
-        self.defer_eviction = true;
         let result = self.build_page(size);
-        self.defer_eviction = false;
         let (cursor_row, cursor_line) = match result {
             Ok(page) => page,
             Err(error) => {
                 self.restore_state(committed);
                 self.page = previous_page;
                 self.restore_cache(&previous_blocks);
+                self.protected_blocks.clear();
                 return Err(error);
             }
         };
@@ -143,10 +153,12 @@ impl Viewer {
             self.restore_state(committed);
             self.page = previous_page;
             self.restore_cache(&previous_blocks);
+            self.protected_blocks.clear();
             return Err(error);
         }
 
         self.committed = self.state();
+        self.protected_blocks.clear();
         self.trim_cache();
         drop(previous_page);
 
@@ -209,17 +221,58 @@ impl Viewer {
             .preferred_column
             .max(self.position.saturating_sub(current_line));
         let mut target = current_line;
-        if amount > 0 {
-            for _ in 0..amount.unsigned_abs() {
-                let next = self.next_line(target)?;
-                if next >= self.length {
-                    break;
+        let steps = amount.unsigned_abs() as usize;
+        if amount > 0 && steps > 0 {
+            let length = self.length;
+            let mut remaining = steps;
+            if let Some(line) = self.cached_line(current_line) {
+                if line.next < length {
+                    target = line.next;
+                    remaining -= 1;
+                } else {
+                    remaining = 0;
                 }
-                target = next;
             }
-        } else {
-            for _ in 0..amount.unsigned_abs() {
-                target = self.previous_line(target)?;
+            if remaining > 0 {
+                let mut crossed = 0;
+                self.scan_forward(target, length, |offset, byte| {
+                    if byte != b'\n' {
+                        return false;
+                    }
+                    let next = offset.saturating_add(1);
+                    if next >= length {
+                        return false;
+                    }
+                    target = next;
+                    crossed += 1;
+                    crossed >= remaining
+                })?;
+            }
+        } else if amount < 0 && steps > 0 {
+            let mut remaining = steps;
+            if let Some(previous) = self.cached_previous_line(current_line) {
+                target = previous;
+                remaining -= 1;
+            }
+            if remaining > 0 {
+                let mut crossed = 0;
+                let mut skip_boundary = true;
+                let boundary = target.saturating_sub(1);
+                self.scan_reverse(target, 0, |offset, byte| {
+                    if skip_boundary && offset == boundary && byte == b'\n' {
+                        skip_boundary = false;
+                        return false;
+                    }
+                    if byte != b'\n' {
+                        return false;
+                    }
+                    target = offset.saturating_add(1);
+                    crossed += 1;
+                    crossed >= remaining
+                })?;
+                if crossed < remaining {
+                    target = 0;
+                }
             }
         }
         self.position = target.saturating_add(preferred.min(self.line_length(target)?));
@@ -422,6 +475,7 @@ impl Viewer {
 
         let previous_length = self.length;
         self.length = length;
+        self.lines.clear();
         if length > previous_length {
             if !previous_length.is_multiple_of(BLOCK_SIZE) {
                 let tail = previous_length / BLOCK_SIZE * BLOCK_SIZE;
@@ -461,6 +515,43 @@ impl Viewer {
         self.blocks.iter().map(|block| block.offset).collect()
     }
 
+    fn cached_line(&mut self, start: u64) -> Option<LineBoundary> {
+        let index = self.lines.iter().position(|line| line.start == start)?;
+        let line = self.lines.remove(index)?;
+        self.lines.push_front(line);
+        Some(line)
+    }
+
+    fn cached_line_containing(&mut self, position: u64) -> Option<LineBoundary> {
+        let index = self.lines.iter().position(|line| {
+            line.start <= position
+                && (position < line.next
+                    || (line.content_end == line.next && position == line.next))
+        })?;
+        let line = self.lines.remove(index)?;
+        self.lines.push_front(line);
+        Some(line)
+    }
+
+    fn cached_previous_line(&mut self, start: u64) -> Option<u64> {
+        let index = self.lines.iter().position(|line| line.next == start)?;
+        let line = self.lines.remove(index)?;
+        self.lines.push_front(line);
+        Some(line.start)
+    }
+
+    fn cache_line(&mut self, line: LineBoundary) {
+        if let Some(index) = self
+            .lines
+            .iter()
+            .position(|cached| cached.start == line.start)
+        {
+            self.lines.remove(index);
+        }
+        self.lines.push_front(line);
+        self.lines.truncate(LINE_CACHE_SIZE);
+    }
+
     fn restore_cache(&mut self, offsets: &[u64]) {
         let mut restored = VecDeque::with_capacity(offsets.len());
         for offset in offsets {
@@ -477,7 +568,13 @@ impl Viewer {
 
     fn trim_cache(&mut self) {
         while self.blocks.len() > BLOCK_CACHE_SIZE {
-            self.blocks.pop_back();
+            let Some(index) = (1..self.blocks.len())
+                .rev()
+                .find(|index| !self.protected_blocks.contains(&self.blocks[*index].offset))
+            else {
+                break;
+            };
+            self.blocks.remove(index);
         }
     }
 
@@ -573,6 +670,27 @@ impl Viewer {
         budget: usize,
     ) -> io::Result<(u64, String)> {
         let limit = MAX_LINE_BYTES.min(columns.saturating_mul(4).saturating_add(4));
+        if let Some(line) = self.cached_line(start) {
+            let line_length = line.content_end.saturating_sub(start);
+            if self.horizontal >= line_length || budget == 0 {
+                return Ok((line.next, String::new()));
+            }
+            let read_start = start.saturating_add(self.horizontal);
+            let read_end = read_start
+                .saturating_add(limit.min(budget).saturating_add(4) as u64)
+                .min(line.content_end);
+            let mut bytes = Vec::with_capacity(limit.min(budget));
+            self.scan_forward(read_start, read_end, |_, byte| {
+                if bytes.len() < limit && bytes.len() < budget {
+                    bytes.push(byte);
+                }
+                false
+            })?;
+            if read_end == line.content_end && bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return Ok((line.next, display_line(&bytes, columns)));
+        }
         let mut bytes = Vec::with_capacity(limit.min(budget));
         let mut skipped = 0;
         let horizontal = self.horizontal;
@@ -589,14 +707,26 @@ impl Viewer {
             }
             false
         })?;
-        let next = newline.map_or(self.length, |offset| offset + 1);
+        let line = newline.map_or(
+            LineBoundary {
+                start,
+                content_end: self.length,
+                next: self.length,
+            },
+            |offset| LineBoundary {
+                start,
+                content_end: offset,
+                next: offset + 1,
+            },
+        );
+        self.cache_line(line);
         if skipped < horizontal {
-            return Ok((next, String::new()));
+            return Ok((line.next, String::new()));
         }
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-        Ok((next, display_line(&bytes, columns)))
+        Ok((line.next, display_line(&bytes, columns)))
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
@@ -637,8 +767,9 @@ impl Viewer {
             return Ok(());
         }
 
+        let rows = self.visible_rows.max(1);
         let mut line = self.viewport;
-        for _ in 0..self.visible_rows.max(1) {
+        for _ in 0..rows {
             if line == cursor_line {
                 return Ok(());
             }
@@ -650,7 +781,7 @@ impl Viewer {
         }
 
         let mut viewport = cursor_line;
-        for _ in 1..self.visible_rows.max(1) {
+        for _ in 1..rows {
             let previous = self.previous_line(viewport)?;
             if previous == viewport {
                 break;
@@ -662,21 +793,55 @@ impl Viewer {
     }
 
     fn next_line(&mut self, start: u64) -> io::Result<u64> {
-        Ok(self
-            .scan_forward(start, self.length, |_, byte| byte == b'\n')?
-            .map_or(self.length, |offset| offset + 1))
+        if let Some(line) = self.cached_line(start) {
+            return Ok(line.next);
+        }
+        let newline = self.scan_forward(start, self.length, |_, byte| byte == b'\n')?;
+        let line = newline.map_or(
+            LineBoundary {
+                start,
+                content_end: self.length,
+                next: self.length,
+            },
+            |offset| LineBoundary {
+                start,
+                content_end: offset,
+                next: offset + 1,
+            },
+        );
+        let next = line.next;
+        self.cache_line(line);
+        Ok(next)
     }
 
     fn line_length(&mut self, start: u64) -> io::Result<u64> {
-        Ok(self
-            .scan_forward(start, self.length, |_, byte| byte == b'\n')?
-            .unwrap_or(self.length)
-            .saturating_sub(start))
+        if let Some(line) = self.cached_line(start) {
+            return Ok(line.content_end.saturating_sub(start));
+        }
+        let newline = self.scan_forward(start, self.length, |_, byte| byte == b'\n')?;
+        let line = newline.map_or(
+            LineBoundary {
+                start,
+                content_end: self.length,
+                next: self.length,
+            },
+            |offset| LineBoundary {
+                start,
+                content_end: offset,
+                next: offset + 1,
+            },
+        );
+        let length = line.content_end.saturating_sub(start);
+        self.cache_line(line);
+        Ok(length)
     }
 
     fn previous_line(&mut self, start: u64) -> io::Result<u64> {
         if start == 0 {
             return Ok(0);
+        }
+        if let Some(previous) = self.cached_previous_line(start) {
+            return Ok(previous);
         }
         let boundary = start - 1;
         let mut skip_boundary = true;
@@ -694,6 +859,15 @@ impl Viewer {
         if self.length == 0 {
             return Ok(0);
         }
+        if let Some(index) = self.lines.iter().position(|line| line.next == self.length) {
+            let line = self
+                .lines
+                .remove(index)
+                .expect("line index came from cache");
+            let start = line.start;
+            self.lines.push_front(line);
+            return Ok(start);
+        }
         let boundary = self.length - 1;
         let mut skip_boundary = true;
         let previous = self.scan_reverse(self.length, 0, |offset, byte| {
@@ -707,8 +881,12 @@ impl Viewer {
     }
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
+        let position = position.min(self.length);
+        if let Some(line) = self.cached_line_containing(position) {
+            return Ok(line.start);
+        }
         Ok(self
-            .scan_reverse(position.min(self.length), 0, |_, byte| byte == b'\n')?
+            .scan_reverse(position, 0, |_, byte| byte == b'\n')?
             .map_or(0, |offset| offset + 1))
     }
 
@@ -842,9 +1020,7 @@ impl Viewer {
                 .peak_cache_bytes
                 .max(self.blocks.iter().map(|block| block.bytes.len()).sum());
         }
-        if !self.defer_eviction {
-            self.trim_cache();
-        }
+        self.trim_cache();
         Ok(&self.blocks.front().expect("cache block exists").bytes)
     }
 }
@@ -1019,6 +1195,123 @@ mod tests {
             assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
         }
         assert_eq!(viewer.page[0], first_line);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn page_navigation_scans_many_lines_without_cache_churn() {
+        let path = temp_path("termfold-viewer-line-scan");
+        let mut data = Vec::new();
+        for _ in 0..20_000 {
+            data.extend_from_slice(b"line\n");
+        }
+        fs::write(&path, data).unwrap();
+
+        let size = Size {
+            columns: 16,
+            rows: 64,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        viewer.block_accesses = 0;
+        viewer.block_reads = 0;
+
+        viewer.page(size.rows, true).unwrap();
+        assert!(viewer.block_reads <= 1);
+        assert!(
+            viewer.block_accesses <= 8,
+            "block accesses: {}",
+            viewer.block_accesses
+        );
+
+        viewer.block_accesses = 0;
+        viewer.page(size.rows, false).unwrap();
+        assert!(viewer.block_reads <= 1);
+        assert!(
+            viewer.block_accesses <= 8,
+            "block accesses: {}",
+            viewer.block_accesses
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeated_paging_on_an_eof_line_keeps_work_and_cache_bounded() {
+        let path = temp_path("termfold-viewer-eof-line");
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(BLOCK_SIZE * (BLOCK_CACHE_SIZE as u64 + 4) + 17)
+            .unwrap();
+        drop(file);
+
+        let size = Size {
+            columns: 16,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+        assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
+        assert!(viewer.lines.iter().any(|line| {
+            line.start == 0 && line.content_end == viewer.length && line.next == viewer.length
+        }));
+
+        viewer.block_reads = 0;
+        for _ in 0..4 {
+            viewer.page(size.rows, true).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+            viewer.page(size.rows, false).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+            assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+            assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
+        }
+        assert!(
+            viewer.block_reads <= 1,
+            "repeated EOF reads: {}",
+            viewer.block_reads
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeated_paging_reuses_a_long_line_boundary() {
+        let path = temp_path("termfold-viewer-long-line");
+        let mut data = vec![b'x'; BLOCK_SIZE as usize * (BLOCK_CACHE_SIZE + 4)];
+        data.extend_from_slice(b"\nsecond\nthird\n");
+        fs::write(&path, data).unwrap();
+
+        let size = Size {
+            columns: 16,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer
+            .lines
+            .iter()
+            .any(|line| line.start == 0 && line.next > line.start));
+
+        viewer.block_reads = 0;
+        for _ in 0..4 {
+            viewer.page(size.rows, true).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+            viewer.page(size.rows, false).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+        }
+        assert!(
+            viewer.block_reads <= 1,
+            "repeated long-line reads: {}",
+            viewer.block_reads
+        );
 
         fs::remove_file(path).unwrap();
     }
