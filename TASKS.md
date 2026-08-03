@@ -352,6 +352,17 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Read only blocks required to locate the target cursor and render the visible
     page. Keep warm Page Up/Page Down cache-only and keep cold paging sequential;
     do not prefetch the complete file.
+  - Route Page Up, Page Down, and half-page navigation through the shared
+    fixed-block reader. Align each required file offset to a block boundary,
+    reuse a cached block when present, and otherwise seek and read only that
+    block. Scan forward or backward and load another adjacent block only when
+    the requested movement crosses a boundary. Build the replacement page
+    provisionally, commit its cursor and viewport only after every read succeeds,
+    then trim the least-recently-used cache.
+  - Page Up must reload an evicted previous block. Page Down must continue through
+    every adjacent block required for the next visible page. Ctrl-d must not
+    prefetch independently, but may demand-load a block when its half-page
+    movement crosses an unloaded boundary.
   - Bound displayed-line storage as today and scan long physical lines blockwise
     so a missing newline does not cause per-byte cache churn. Preserve logical
     file-line navigation and existing cursor/viewport behaviour.
@@ -359,6 +370,9 @@ This file tracks implementation work. Product behaviour remains authoritative in
     cache, including block-boundary newlines and a long physical line. Record
     elapsed time, blocks read, peak cache bytes, and retained page bytes before
     and after the optimization.
+  - Verify that paging never reads the complete file, warm paging performs no
+    file I/O, cold paging reads only required blocks, cache size remains bounded
+    after commit, and an I/O failure preserves the previous page.
   - Do not add memory mapping, a background reader, speculative prefetch, or a new
     dependency unless the measurements show synchronous block scanning still
     causes visible stalls and a separate architectural change is approved.
