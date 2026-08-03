@@ -390,7 +390,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Full unit and lifecycle tests, Clippy, Linux musl and Windows target checks,
     and the static musl release build passed.
 
-- [ ] **T30 — Eliminate repeated viewer-navigation starvation**
+- [*] **T30 — Eliminate repeated viewer-navigation starvation**
   - Reproduce the remaining unresponsive state while holding or repeatedly
     pressing Page Up/Page Down in the large-file viewer.
   - Trace input framing, event batching, synchronous page construction, output
@@ -403,3 +403,9 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when sustained Page Up/Page Down input remains responsive, unrelated
     pane output continues to flow, and a regression check covers the reproduced
     workload.
+  - Implemented bounded long-line scan windows and continuation segments so one
+    viewer render or page movement cannot scan an entire unterminated file.
+    Existing event-batch redraw coalescing remains in place.
+  - Validated with bounded unterminated-line rendering and repeated forward and
+    reverse paging checks; full unit and lifecycle tests, Clippy, Windows target
+    checking, and the static musl release validation pass.
