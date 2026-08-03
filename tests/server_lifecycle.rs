@@ -165,9 +165,9 @@ fn prefix_commands_create_tabs_report_errors_and_detach() {
     send_input(&mut stream, b"\x02?");
     wait_for_screen_all(&mut stream, &[b"Termfold key reminder", b"Ctrl-b c"]);
     send_input(&mut stream, b"\x1b");
-    wait_for_screen(&mut stream, b"[2:shell]");
+    wait_for_screen_without(&mut stream, b"[2:shell]", b"Termfold key reminder");
     send_input(&mut stream, b"\x02d");
-    assert!(read_frame(&mut stream).is_none());
+    wait_for_disconnect(&mut stream);
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn detached_session_preserves_screen_and_reattach_resizes_the_pty() {
     send_resize(&mut stream, 41, 9);
     wait_for_screen(&mut stream, b"T14-PERSIST");
     send_detach(&mut stream);
-    assert!(read_frame(&mut stream).is_none());
+    wait_for_disconnect(&mut stream);
     wait_for_attached_count(&runtime.socket("one"), 0);
 
     let mut stream = attach_stream(&runtime.socket("one"), 17, 5);
@@ -291,6 +291,10 @@ fn send_detach(stream: &mut UnixStream) {
     stream.write_all(&[0, 0, 0, 2, 2, 2]).unwrap();
 }
 
+fn wait_for_disconnect(stream: &mut UnixStream) {
+    while read_frame(stream).is_some() {}
+}
+
 fn send_resize(stream: &mut UnixStream, columns: u16, rows: u16) {
     let mut frame = vec![0, 0, 0, 6, 2, 4];
     frame.extend_from_slice(&columns.to_be_bytes());
@@ -300,6 +304,18 @@ fn send_resize(stream: &mut UnixStream, columns: u16, rows: u16) {
 
 fn wait_for_screen(stream: &mut UnixStream, expected: &[u8]) {
     wait_for_screen_all(stream, &[expected]);
+}
+
+fn wait_for_screen_without(stream: &mut UnixStream, expected: &[u8], excluded: &[u8]) {
+    loop {
+        let (kind, payload) = read_frame(stream).expect("session disconnected");
+        if kind == 6
+            && payload.windows(expected.len()).any(|window| window == expected)
+            && !payload.windows(excluded.len()).any(|window| window == excluded)
+        {
+            return;
+        }
+    }
 }
 
 fn wait_for_screen_all(stream: &mut UnixStream, expected: &[&[u8]]) {

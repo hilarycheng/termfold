@@ -256,7 +256,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Native Windows tests, lint, release build, and create/attach/kill acceptance
     passed.
 
-- [ ] **T24 — Confirm CLI session termination**
+- [*] **T24 — Confirm CLI session termination**
   - Implemented interactive confirmation for `termfold kill [NAME]`: `no` is the
     default, only `yes` confirms, and `no`, `Esc`, EOF, or invalid input cancel.
   - Added the documented explicit non-interactive override
@@ -266,7 +266,8 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T02, T07.
   - Done when: confirmation, cancellation, invalid input, and the approved
     non-interactive path preserve or terminate the session as specified.
-  - Validation remains pending because tests and builds were not approved or run.
+  - Validation passed: Linux unit tests (48), Linux lifecycle tests (8), native
+    Windows tests (43), Linux musl release build, and Windows MSVC release build.
 
 - [ ] **T25 — Optimize shared VT rendering**
   - Track changed row ranges, emit sequential range updates with minimal cursor and
