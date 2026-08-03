@@ -4,7 +4,8 @@
 
 This document defines product behaviour. `AGENTS.md` defines the AI workflow.
 
-- **MUST** is required for the first release.
+- **MUST** is required for the milestone named by its section; without a
+  milestone qualifier, it is required for the first release.
 - **SHOULD** is required unless a documented technical reason prevents it.
 - **MAY** is optional.
 - An unresolved requirement blocks only the affected feature, not unrelated work.
@@ -104,6 +105,56 @@ Restoration after `SIGKILL`, kernel failure, power loss, or terminal failure can
 be guaranteed and MUST NOT be claimed.
 
 The non-goals in `AGENTS.md` remain out of scope.
+
+## Approved Post-First-Release Scope
+
+The following work is approved for later milestones. It does not change or
+block first-release acceptance.
+
+### Session termination confirmation
+
+- `termfold kill [NAME]` MUST ask for confirmation before terminating a session.
+- Scripts MUST have a documented explicit non-interactive override.
+- Cancellation or invalid confirmation input MUST leave the session unchanged.
+
+### Shared renderer optimization
+
+- Linux and Windows MUST continue to use one shared VT renderer.
+- Each terminal screen MUST track changed row ranges and render each range with
+  one cursor move, sequential text, and only required SGR changes.
+- Layout, resize, and screen-buffer changes MAY trigger a full redraw.
+- Further renderer branches MUST be justified by separate measurements of
+  renderer CPU time, IPC transfer, and outer-terminal output latency.
+
+### Startup profiles
+
+- Startup profiles MUST be declarative session definitions in `config.toml`.
+- A profile MUST run only when creating a session, never when attaching.
+- A launch target MUST be either the default shell or an absolute executable
+  with literal arguments, executed without command interpolation.
+- A profile MAY set the session's validated initial directory and define
+  multiple tabs with nested horizontal and vertical splits. Each leaf MUST
+  define its launch target and MAY override the profile directory.
+- Every target and directory MUST be validated before spawning. Any launch
+  failure MUST terminate all targets already started for that profile.
+
+### Large-file viewer
+
+- `Ctrl-b v` MUST prompt for a path relative to the active pane's reported
+  working directory and open a read-only viewer pane.
+- `termfold view FILE` MUST target the caller's current Termfold session. Outside
+  Termfold, the command MUST require an explicit session.
+- The viewer MUST use standard-library seek/read operations over fixed-size
+  blocks and retain only the displayed page, a small bounded block cache, and a
+  bounded cache of matching offsets.
+- `g` and `G` MUST move to the start and end; `/` and `?` MUST search forward and
+  backward; `n` and `N` MUST repeat searches in either direction.
+- The path prompt MUST list only the current directory, filter as the user types,
+  cycle or complete matches with `Tab`, enter directories or accept a file with
+  `Enter`, and support parent navigation with `Backspace`.
+- The active directory MUST come from OSC 7 when available. Otherwise the prompt
+  MUST fall back to the server startup directory and remain user-editable.
+- The viewer MUST NOT invoke external search commands or build a full-file index.
 
 ## Command-Line Contract
 

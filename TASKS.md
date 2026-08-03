@@ -255,3 +255,40 @@ This file tracks implementation work. Product behaviour remains authoritative in
     the client successfully without the early-exit message.
   - Native Windows tests, lint, release build, and create/attach/kill acceptance
     passed.
+
+- [ ] **T24 — Confirm CLI session termination**
+  - Add interactive confirmation to `termfold kill [NAME]` and define a documented
+    explicit non-interactive override for scripts.
+  - Requirements: Approved Post-First-Release Scope; Session termination
+    confirmation.
+  - Depends on: T02, T07.
+  - Done when: confirmation, cancellation, invalid input, and the approved
+    non-interactive path preserve or terminate the session as specified.
+
+- [ ] **T25 — Optimize shared VT rendering**
+  - Track changed row ranges, emit sequential range updates with minimal cursor and
+    SGR changes, and retain full redraws for layout, resize, and buffer changes.
+  - Measure renderer CPU, IPC transfer, and outer-terminal output before adding
+    any platform-specific renderer path.
+  - Requirements: Approved Post-First-Release Scope; Shared renderer optimization.
+  - Depends on: T10, T21, T23.
+  - Done when: approved focused checks pass and native Windows latency measurements
+    show whether the shared renderer meets the target.
+
+- [ ] **T26 — Add declarative startup profiles**
+  - Add creation-only `config.toml` profiles with validated directories, direct
+    launch targets, tabs, and nested horizontal and vertical split trees.
+  - Roll back every started target if validation or launch fails.
+  - Requirements: Approved Post-First-Release Scope; Startup profiles.
+  - Depends on: T02, T03, T06, T07.
+  - Done when: profiles create the specified session atomically and attaching never
+    reruns them.
+
+- [ ] **T27 — Add bounded large-file viewer**
+  - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the
+    current-directory path prompt, bounded block reading, navigation, and literal
+    forward/reverse search.
+  - Requirements: Approved Post-First-Release Scope; Large-file viewer.
+  - Depends on: T02, T03, T08, T10, T11.
+  - Done when: large files remain bounded in memory, navigation and search work in
+    both directions, and path fallback is deterministic without external commands.
