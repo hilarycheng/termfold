@@ -6,9 +6,10 @@ not an implementation-status document.
 ## Session termination
 
 - `Ctrl-b x` already asks `close pane? (y/n)` before closing the active pane.
-- `termfold kill [NAME]` terminates the entire session immediately.
-- Proposed: require confirmation for the CLI kill command, with an explicit
-  non-interactive override for scripts.
+- `termfold kill [NAME]` asks for confirmation before terminating the entire
+  session; only `yes` confirms, with `no` as the default.
+- `termfold kill --yes [NAME]` is the explicit non-interactive override for
+  scripts.
 
 ## Windows rendering
 

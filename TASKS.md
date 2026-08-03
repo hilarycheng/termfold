@@ -257,13 +257,16 @@ This file tracks implementation work. Product behaviour remains authoritative in
     passed.
 
 - [ ] **T24 — Confirm CLI session termination**
-  - Add interactive confirmation to `termfold kill [NAME]` and define a documented
-    explicit non-interactive override for scripts.
+  - Implemented interactive confirmation for `termfold kill [NAME]`: `no` is the
+    default, only `yes` confirms, and `no`, `Esc`, EOF, or invalid input cancel.
+  - Added the documented explicit non-interactive override
+    `termfold kill --yes [NAME]` for scripts.
   - Requirements: Approved Post-First-Release Scope; Session termination
     confirmation.
   - Depends on: T02, T07.
   - Done when: confirmation, cancellation, invalid input, and the approved
     non-interactive path preserve or terminate the session as specified.
+  - Validation remains pending because tests and builds were not approved or run.
 
 - [ ] **T25 — Optimize shared VT rendering**
   - Track changed row ranges, emit sequential range updates with minimal cursor and

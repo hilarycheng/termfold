@@ -57,7 +57,7 @@ impl Drop for TestRuntime {
         for name in ["one", "two", "default"] {
             let _ = self
                 .command()
-                .args(["kill", name])
+                .args(["kill", "--yes", name])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -104,8 +104,8 @@ fn sessions_support_multiple_instances_and_concurrent_clients() {
     wait_for_exit(&mut first);
     wait_for_exit(&mut second);
 
-    assert!(runtime.run(&["kill", "one"]).status.success());
-    assert!(runtime.run(&["kill", "two"]).status.success());
+    assert!(runtime.run(&["kill", "--yes", "one"]).status.success());
+    assert!(runtime.run(&["kill", "--yes", "two"]).status.success());
     wait_for_missing(&runtime.socket("one"));
     wait_for_missing(&runtime.socket("two"));
 }

@@ -30,7 +30,7 @@ const HELP: &str = "Usage:
   termfold new [NAME]
   termfold attach [NAME]
   termfold list
-  termfold kill [NAME]
+  termfold kill [--yes] [NAME]
   termfold diagnose
   termfold --help
   termfold --version";
@@ -42,7 +42,7 @@ enum Command {
     New(String),
     Attach(String),
     List,
-    Kill(String),
+    Kill { name: String, yes: bool },
     Diagnose,
     Help,
     Version,
@@ -109,7 +109,7 @@ fn run() -> Result<(), String> {
             Command::New(name) => client::create_and_attach(&runtime, &name, &config),
             Command::Attach(name) => client::attach(&runtime, &name, &config),
             Command::List => list(&runtime),
-            Command::Kill(name) => client::kill(&runtime, &name),
+            Command::Kill { name, yes } => client::kill(&runtime, &name, yes),
             Command::Help | Command::Version | Command::Diagnose | Command::Server { .. } => {
                 unreachable!()
             }
@@ -258,10 +258,24 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
         }
         [command] if command == "new" => Ok(Command::New("default".into())),
         [command] if command == "attach" => Ok(Command::Attach("default".into())),
-        [command] if command == "kill" => Ok(Command::Kill("default".into())),
+        [command] if command == "kill" => Ok(Command::Kill {
+            name: "default".into(),
+            yes: false,
+        }),
+        [command, value] if command == "kill" && value == "--yes" => Ok(Command::Kill {
+            name: "default".into(),
+            yes: true,
+        }),
         [command, name] if command == "new" => Ok(Command::New(valid_name(name)?)),
         [command, name] if command == "attach" => Ok(Command::Attach(valid_name(name)?)),
-        [command, name] if command == "kill" => Ok(Command::Kill(valid_name(name)?)),
+        [command, name] if command == "kill" => Ok(Command::Kill {
+            name: valid_name(name)?,
+            yes: false,
+        }),
+        [command, flag, name] if command == "kill" && flag == "--yes" => Ok(Command::Kill {
+            name: valid_name(name)?,
+            yes: true,
+        }),
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         [command, name, columns, rows] if command == "--server" => Ok(Command::Server {
             name: valid_name(name)?,

@@ -86,7 +86,7 @@ termfold PID_PREFIX            Attach to one matching detached session
 termfold new [NAME]            Create and attach to a session
 termfold attach [NAME]         Attach to an existing session
 termfold list                  List sessions
-termfold kill [NAME]           Terminate a session
+termfold kill [--yes] [NAME]   Terminate a session after confirmation
 termfold diagnose              Show terminal compatibility decisions
 termfold --help                Show command usage
 termfold --version             Show the installed version
@@ -94,6 +94,11 @@ termfold --version             Show the installed version
 
 `NAME` defaults to `default` where applicable and may contain 1–64 ASCII
 letters, digits, underscores, or hyphens.
+
+`termfold kill [NAME]` prompts before termination. The default answer is `no`;
+only the exact answer `yes` terminates the session. `no`, `Esc`, end-of-file,
+and invalid input cancel without changing the session. Scripts may use the
+explicit non-interactive override `termfold kill --yes [NAME]`.
 
 `termfold list` prints each session as:
 

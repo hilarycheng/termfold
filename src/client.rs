@@ -12,13 +12,11 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "linux")]
-use crate::runtime::ClientStream;
 use crate::{
     config::Config,
     ipc::{self, Message},
     outer::{self, Capabilities},
-    runtime::RuntimeDir,
+    runtime::{ClientStream, RuntimeDir},
     session::{MAX_SESSIONS_PER_USER, Size},
 };
 
@@ -467,8 +465,11 @@ fn message_name(message: &Message) -> &'static str {
     }
 }
 
-pub fn kill(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
+pub fn kill(runtime: &RuntimeDir, name: &str, yes: bool) -> Result<(), String> {
     let mut stream = runtime.connect(name)?;
+    if !yes && !confirm_kill(name, &stream)? {
+        return Ok(());
+    }
     stream
         .set_read_timeout(Some(CONTROL_TIMEOUT))
         .map_err(|error| format!("cannot configure session connection: {error}"))?;
@@ -487,6 +488,91 @@ pub fn kill(runtime: &RuntimeDir, name: &str) -> Result<(), String> {
                 return Ok(());
             }
             Err(error) => return Err(format!("session did not terminate: {error}")),
+        }
+    }
+}
+
+fn confirm_kill(name: &str, stream: &ClientStream) -> Result<bool, String> {
+    let mut output = io::stderr().lock();
+    write!(output, "kill session '{name}'? [no/yes] (Esc cancels) ")
+        .map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+    output
+        .flush()
+        .map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+
+    let (term, colorterm) = outer::detected_environment();
+    let mut capabilities = outer::select("auto", &term, &colorterm).capabilities;
+    capabilities.alternate_screen = false;
+    let terminal = TerminalGuard::enter(capabilities)?;
+    let _signals = if let Some(terminal) = &terminal {
+        let writer = Arc::new(Mutex::new(
+            stream
+                .try_clone()
+                .map_err(|error| format!("cannot prepare kill confirmation: {error}"))?,
+        ));
+        Some(BlockedSignals::block()?.listen(
+            writer,
+            Some(Arc::clone(&terminal.0)),
+        )?)
+    } else {
+        None
+    };
+    let answer = if terminal.is_some() {
+        read_raw_confirmation(&mut output)?
+    } else {
+        read_line_confirmation()?
+    };
+    drop(_signals);
+    drop(terminal);
+    writeln!(output).map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+    if answer == b"yes" {
+        Ok(true)
+    } else {
+        writeln!(output, "kill cancelled")
+            .map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+        Ok(false)
+    }
+}
+
+fn read_line_confirmation() -> Result<Vec<u8>, String> {
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("cannot read kill confirmation: {error}"))?;
+    let answer = answer.strip_suffix('\n').unwrap_or(&answer);
+    let answer = answer.strip_suffix('\r').unwrap_or(answer);
+    Ok(answer.as_bytes().to_vec())
+}
+
+fn read_raw_confirmation(output: &mut impl Write) -> Result<Vec<u8>, String> {
+    let mut input = io::stdin().lock();
+    let mut answer = Vec::new();
+    let mut byte = [0; 1];
+    loop {
+        match input.read_exact(&mut byte) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(answer),
+            Err(error) => return Err(format!("cannot read kill confirmation: {error}")),
+        }
+        match byte[0] {
+            3 | 4 | 27 => return Ok(Vec::new()),
+            b'\r' | b'\n' => return Ok(answer),
+            8 | 127 => {
+                if answer.pop().is_some() {
+                    output
+                        .write_all(b"\x08 \x08")
+                        .and_then(|()| output.flush())
+                        .map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+                }
+            }
+            byte if byte.is_ascii_control() => return Ok(Vec::new()),
+            byte => {
+                answer.push(byte);
+                output
+                    .write_all(&[byte])
+                    .and_then(|()| output.flush())
+                    .map_err(|error| format!("cannot write kill confirmation: {error}"))?;
+            }
         }
     }
 }
