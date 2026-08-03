@@ -87,6 +87,8 @@ termfold new [NAME]            Create and attach to a session
 termfold attach [NAME]         Attach to an existing session
 termfold list                  List sessions
 termfold kill [--yes] [NAME]   Terminate a session after confirmation
+termfold view FILE [--session NAME]
+                               Open FILE in a read-only viewer pane
 termfold diagnose              Show terminal compatibility decisions
 termfold --help                Show command usage
 termfold --version             Show the installed version
@@ -108,6 +110,9 @@ PID NAME attached|detached
 
 Multiple clients owned by the same user may attach to the same session. Changes
 to tabs, panes, and focus are shared between attached clients.
+
+`termfold view FILE` opens a bounded read-only viewer in the current Termfold
+session. When run outside a Termfold shell, pass `--session NAME`.
 
 ## Keyboard shortcuts
 
@@ -139,6 +144,8 @@ Do not hold `Ctrl-b` while pressing the command key.
 | `Ctrl-b d` | Detach this client and leave the session running |
 | `Ctrl-b ?` | Show the key-reminder help view |
 | `Ctrl-b [` | Enter the active pane's read-only scroll view |
+| `Ctrl-b v` | Prompt for a file and open a bounded read-only viewer pane |
+| `Ctrl-b V` | Prompt for a file and open the viewer in a new tab |
 | `Ctrl-b C` | Clear all retained scrollback for the active pane |
 | `Ctrl-b S` | Prompt for a file and save the active pane's scrollback |
 
@@ -173,6 +180,29 @@ After `Ctrl-b [`:
 Scroll view is read-only. Use the outer terminal's normal text selection and
 clipboard features to copy visible text. Its bottom-row reminder shows more keys
 when the terminal is wide and a minimal reminder when it is narrow.
+
+### Large-file viewer
+
+After `Ctrl-b v` or `Ctrl-b V`, the prompt lists entries from the active pane's current
+directory. Type to filter, press `Tab` to complete or cycle matches, press
+`Enter` to enter a directory or open a file, and press `Backspace` on an empty
+filter to move to the parent directory. `/` and `\` process directory
+separators; `/` starts a Linux absolute path, while `C:\` and `C:/` start a
+Windows drive-root path. `Esc` or `Ctrl-c` cancels invalid paths without
+closing the prompt.
+
+The viewer reads fixed-size blocks and keeps only the visible page, a small block
+cache, and bounded search offsets. It has an editor-style cursor separate from
+the viewport. `Up`/`Down` and `j`/`k` move the cursor by file line, preserve its
+preferred column when possible, and scroll the viewport only when the cursor
+approaches an edge. Home/End or `0`/`$` move within the current line; `gg`/`G`
+or Ctrl-Home/Ctrl-End move to the file start/end. Page Up/Page Down and
+Ctrl-f/Ctrl-b move by one page; Ctrl-u/Ctrl-d move by half a page; Ctrl-e/Ctrl-y
+scroll the viewport by one line without moving the cursor. A page is the visible
+viewer height minus two rows. Use `/` for forward search, `?` for reverse search,
+and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
+and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
+and otherwise starts from the session's startup directory.
 
 ### Save scrollback
 

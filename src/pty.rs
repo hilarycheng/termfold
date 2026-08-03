@@ -28,6 +28,7 @@ pub struct LaunchContext {
     environment: Vec<(OsString, OsString)>,
     terminfo_root: PathBuf,
     inner_term: String,
+    session_name: Option<OsString>,
 }
 
 impl LaunchContext {
@@ -42,6 +43,7 @@ impl LaunchContext {
             environment: env::vars_os().collect(),
             terminfo_root,
             inner_term,
+            session_name: None,
         })
     }
 
@@ -51,6 +53,10 @@ impl LaunchContext {
 
     pub fn working_directory(&self) -> &Path {
         &self.working_directory
+    }
+
+    pub fn set_session_name(&mut self, name: &str) {
+        self.session_name = Some(name.into());
     }
 }
 
@@ -82,6 +88,9 @@ impl PtyChild {
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(slave));
+        if let Some(session) = &context.session_name {
+            command.env("TERMFOLD_SESSION", session);
+        }
 
         // SAFETY: after fork this closure calls only async-signal-safe libc operations,
         // creates a new session, and makes the already-open slave on stdin controlling.
@@ -352,6 +361,7 @@ mod tests {
             ],
             terminfo_root: "/tmp/terminfo".into(),
             inner_term: "termfold-256color".into(),
+            session_name: None,
         }
     }
 

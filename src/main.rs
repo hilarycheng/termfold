@@ -21,6 +21,8 @@ pub mod runtime;
 mod server;
 pub mod session;
 pub mod terminal;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod viewer;
 
 use std::{env, ffi::OsString, process::ExitCode};
 
@@ -31,6 +33,7 @@ const HELP: &str = "Usage:
   termfold attach [NAME]
   termfold list
   termfold kill [--yes] [NAME]
+  termfold view FILE [--session NAME]
   termfold diagnose
   termfold --help
   termfold --version";
@@ -42,7 +45,15 @@ enum Command {
     New(String),
     Attach(String),
     List,
-    Kill { name: String, yes: bool },
+    Kill {
+        name: String,
+        yes: bool,
+    },
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    View {
+        path: String,
+        session: Option<String>,
+    },
     Diagnose,
     Help,
     Version,
@@ -110,6 +121,14 @@ fn run() -> Result<(), String> {
             Command::Attach(name) => client::attach(&runtime, &name, &config),
             Command::List => list(&runtime),
             Command::Kill { name, yes } => client::kill(&runtime, &name, yes),
+            Command::View { path, session } => {
+                let session = session
+                    .or_else(|| env::var("TERMFOLD_SESSION").ok())
+                    .ok_or_else(|| {
+                        "termfold view requires an explicit session outside Termfold".to_owned()
+                    })?;
+                client::view(&runtime, &valid_name(&session)?, &path)
+            }
             Command::Help | Command::Version | Command::Diagnose | Command::Server { .. } => {
                 unreachable!()
             }
@@ -276,6 +295,29 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
             name: valid_name(name)?,
             yes: true,
         }),
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        [command, path] if command == "view" && !path.is_empty() => Ok(Command::View {
+            path: path.clone(),
+            session: None,
+        }),
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        [command, flag, name, path]
+            if command == "view" && flag == "--session" && !path.is_empty() =>
+        {
+            Ok(Command::View {
+                path: path.clone(),
+                session: Some(valid_name(name)?),
+            })
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        [command, path, flag, name]
+            if command == "view" && flag == "--session" && !path.is_empty() =>
+        {
+            Ok(Command::View {
+                path: path.clone(),
+                session: Some(valid_name(name)?),
+            })
+        }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         [command, name, columns, rows] if command == "--server" => Ok(Command::Server {
             name: valid_name(name)?,

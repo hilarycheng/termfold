@@ -141,14 +141,30 @@ block first-release acceptance.
 ### Large-file viewer
 
 - `Ctrl-b v` MUST prompt for a path relative to the active pane's reported
-  working directory and open a read-only viewer pane.
+  working directory and open a read-only viewer pane. It MUST also accept Linux
+  absolute paths and Windows drive-root paths such as `C:\` and `C:/`.
+- `Ctrl-b V` MUST prompt for the same path and open the read-only viewer in a
+  new tab.
 - `termfold view FILE` MUST target the caller's current Termfold session. Outside
   Termfold, the command MUST require an explicit session.
 - The viewer MUST use standard-library seek/read operations over fixed-size
   blocks and retain only the displayed page, a small bounded block cache, and a
   bounded cache of matching offsets.
-- `g` and `G` MUST move to the start and end; `/` and `?` MUST search forward and
-  backward; `n` and `N` MUST repeat searches in either direction.
+- The viewer MUST maintain a logical file cursor separately from the viewport.
+  Arrow Up/Down and `j`/`k` MUST move the cursor by file line, preserve its
+  preferred column when possible, and scroll the viewport only when the cursor
+  approaches an edge. The viewport SHOULD keep one line of context around the
+  cursor when the file has enough surrounding content.
+- `Home` and `End` (also `0` and `$`) MUST move the cursor to the current line's
+  start and end. `gg` and `G` (also Ctrl-Home and Ctrl-End) MUST move the cursor
+  to the file start and end.
+- Page Up/Page Down and Ctrl-f/Ctrl-b MUST move by one page, where a page is the
+  visible viewer height minus two rows, and MUST keep the cursor visible. Ctrl-u
+  and Ctrl-d MUST move the cursor by half a page. Ctrl-e and Ctrl-y MUST scroll
+  the viewport by one line without moving the logical file cursor.
+- `/` and `?` MUST search forward and backward; `n` and `N` MUST repeat searches
+  in either direction. `Ctrl-b x` MUST close the viewer pane after confirmation;
+  `q` and Esc MUST NOT close it.
 - The path prompt MUST list only the current directory, filter as the user types,
   cycle or complete matches with `Tab`, enter directories or accept a file with
   `Enter`, and support parent navigation with `Backspace`.
@@ -167,6 +183,8 @@ termfold new [NAME]            Create and attach to a session
 termfold attach [NAME]         Attach to an existing session
 termfold list                  List sessions
 termfold kill [NAME]           Terminate a session
+termfold view FILE [--session NAME]
+                               Open FILE in the current or explicit session
 termfold diagnose              Report terminal and compatibility decisions
 termfold --help
 termfold --version
@@ -266,6 +284,8 @@ unchanged to the active application. After a prefix:
 | `d` | Detach |
 | `?` | Show the key-reminder help view |
 | `[` | Enter read-only scroll view |
+| `v` | Prompt for and open a bounded read-only file viewer pane |
+| `V` | Prompt for and open a bounded read-only file viewer in a new tab |
 | `C` | Clear the active pane's entire retained scrollback |
 | `S` | Save the active pane's retained scrollback as plain text after prompting for a filename |
 

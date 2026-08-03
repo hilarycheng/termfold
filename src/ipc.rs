@@ -9,6 +9,7 @@ pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_QUEUE_ITEMS: usize = 256;
 pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_VIEW_PATH_BYTES: usize = 4096;
 
 const PREFIX_SIZE: usize = 4;
 const HEADER_SIZE: usize = 2;
@@ -37,6 +38,10 @@ pub enum Message {
     },
     Kill,
     Terminating,
+    View {
+        path: String,
+    },
+    ViewerOpened,
 }
 
 #[derive(Debug)]
@@ -159,6 +164,8 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
         Message::Status { .. } => (9, &[]),
         Message::Kill => (10, &[]),
         Message::Terminating => (11, &[]),
+        Message::View { path } => (12, path.as_bytes()),
+        Message::ViewerOpened => (13, &[]),
     };
     let fixed_len = match message {
         Message::Attach { .. } => 6,
@@ -166,6 +173,9 @@ fn encode(message: &Message) -> Result<Vec<u8>, ProtocolError> {
         Message::Status { .. } => 8,
         _ => 0,
     };
+    if let Message::View { path } = message {
+        valid_view_path(path)?;
+    }
     let body_len = HEADER_SIZE + payload.len() + fixed_len;
     if body_len > MAX_FRAME_SIZE - PREFIX_SIZE {
         return Err(ProtocolError::FrameTooLarge);
@@ -241,10 +251,25 @@ fn decode(body: &[u8]) -> Result<Message, ProtocolError> {
         }),
         10 if payload.is_empty() => Ok(Message::Kill),
         11 if payload.is_empty() => Ok(Message::Terminating),
-        2 | 5 | 8 | 9 | 10 | 11 => Err(ProtocolError::Malformed(
+        12 => {
+            let path = String::from_utf8(payload.to_vec())
+                .map_err(|_| ProtocolError::Malformed("viewer path is not UTF-8"))?;
+            valid_view_path(&path)?;
+            Ok(Message::View { path })
+        }
+        13 if payload.is_empty() => Ok(Message::ViewerOpened),
+        2 | 5 | 8 | 9 | 10 | 11 | 13 => Err(ProtocolError::Malformed(
             "message has an unexpected payload",
         )),
         kind => Err(ProtocolError::UnsupportedMessage(kind)),
+    }
+}
+
+fn valid_view_path(path: &str) -> Result<(), ProtocolError> {
+    if path.is_empty() || path.len() > MAX_VIEW_PATH_BYTES || path.chars().any(char::is_control) {
+        Err(ProtocolError::Malformed("viewer path is invalid"))
+    } else {
+        Ok(())
     }
 }
 
@@ -297,6 +322,10 @@ mod tests {
             Message::Kill,
             Message::Terminating,
             Message::Detach,
+            Message::View {
+                path: "notes.log".into(),
+            },
+            Message::ViewerOpened,
         ];
 
         for message in messages {

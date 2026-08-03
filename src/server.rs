@@ -1,6 +1,8 @@
 use std::{
     collections::VecDeque,
+    fs,
     io::{self, Read, Write},
+    path::PathBuf,
     sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     thread,
     time::{Duration, SystemTime},
@@ -16,6 +18,7 @@ use crate::{
     runtime::{ClientStream, RuntimeDir, SessionSocket},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
+    viewer::Viewer,
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
@@ -50,6 +53,7 @@ struct Client {
     scroll_offset: Option<usize>,
     help_offset: Option<usize>,
     search_query: Option<String>,
+    viewer_prompt: Option<ViewerPrompt>,
     mouse_capture: Option<MouseCapture>,
 }
 
@@ -61,9 +65,33 @@ enum MouseCapture {
 
 struct PaneProcess {
     id: PaneId,
-    child: PtyChild,
+    child: Option<PtyChild>,
+    viewer: Option<Viewer>,
     terminal: Terminal,
     pending_input: PendingInput,
+    working_directory: PathBuf,
+}
+
+#[derive(Clone)]
+struct ViewerPrompt {
+    directory: PathBuf,
+    query: Vec<u8>,
+    filter: Vec<u8>,
+    selected: usize,
+    new_tab: bool,
+}
+
+impl PaneProcess {
+    fn resize(&mut self, size: Size) -> io::Result<()> {
+        if let Some(child) = &self.child {
+            child.resize(size)?;
+        }
+        self.terminal.resize(size).map_err(io::Error::other)?;
+        if let Some(viewer) = &mut self.viewer {
+            viewer.render(&mut self.terminal, size)?;
+        }
+        Ok(())
+    }
 }
 
 struct PendingInput {
@@ -137,12 +165,13 @@ pub fn run(
     config: Config,
 ) -> Result<(), String> {
     let terminfo_root = runtime.materialize_terminfo()?;
-    let context = LaunchContext::capture(
+    let mut context = LaunchContext::capture(
         terminfo_root,
         config.inner_term.clone(),
         &config.windows_shell,
     )
     .map_err(|error| format!("cannot capture shell environment: {error}"))?;
+    context.set_session_name(&name);
     let mut session = Session::new(name);
     let first_pane = session
         .active_pane()
@@ -156,10 +185,12 @@ pub fn run(
     let (event_sender, event_receiver) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
     let mut panes = vec![PaneProcess {
         id: first_pane,
-        child: first_child,
+        child: Some(first_child),
+        viewer: None,
         terminal: Terminal::with_scrollback(content_size, usize::from(config.scrollback_lines))
             .map_err(|error| format!("cannot create terminal screen: {error}"))?,
         pending_input: PendingInput::new(),
+        working_directory: context.working_directory().to_owned(),
     }];
     spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
     let mut clients = Vec::<Client>::new();
@@ -256,7 +287,9 @@ pub fn run(
         }
 
         for pane in &mut panes {
-            if pane.pending_input.flush(pane.child.master()).is_err() {
+            if let Some(child) = pane.child.as_mut()
+                && pane.pending_input.flush(child.master()).is_err()
+            {
                 terminate = true;
                 break;
             }
@@ -377,10 +410,12 @@ pub fn run(
 
         let mut exited = Vec::new();
         for pane in &mut panes {
-            match pane.child.try_wait() {
-                Ok(Some(_)) => exited.push(pane.id),
-                Ok(None) => {}
-                Err(_) => terminate = true,
+            if let Some(child) = pane.child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(_)) => exited.push(pane.id),
+                    Ok(None) => {}
+                    Err(_) => terminate = true,
+                }
             }
         }
         for pane_id in exited {
@@ -399,7 +434,6 @@ pub fn run(
                 Err(_) => terminate = true,
             }
         }
-
     }
 
     for client in &clients {
@@ -407,7 +441,7 @@ pub fn run(
     }
     let mut children = panes
         .iter_mut()
-        .map(|pane| &mut pane.child)
+        .filter_map(|pane| pane.child.as_mut())
         .collect::<Vec<_>>();
     pty::terminate_all(&mut children)
         .map_err(|error| format!("cannot terminate session children: {error}"))
@@ -451,6 +485,7 @@ fn accept_clients(
             scroll_offset: None,
             help_offset: None,
             search_query: None,
+            viewer_prompt: None,
             mouse_capture: None,
         });
         *next_client_id = next_client_id.saturating_add(1);
@@ -462,7 +497,10 @@ fn read_client(client_id: u64, mut stream: ClientStream, sender: SyncSender<Serv
         match ipc::read_message(&mut stream) {
             Ok(Some(message)) => {
                 if sender
-                    .send(ServerEvent::Client(client_id, ClientEvent::Message(message)))
+                    .send(ServerEvent::Client(
+                        client_id,
+                        ClientEvent::Message(message),
+                    ))
                     .is_err()
                 {
                     break;
@@ -484,16 +522,17 @@ fn write_client(mut stream: ClientStream, receiver: Receiver<Message>) {
     }
 }
 
-fn collect_server_events(
-    receiver: &Receiver<ServerEvent>,
-    timeout: Duration,
-) -> Vec<ServerEvent> {
+fn collect_server_events(receiver: &Receiver<ServerEvent>, timeout: Duration) -> Vec<ServerEvent> {
     let mut events = Vec::new();
     match receiver.recv_timeout(timeout) {
         Ok(event) => events.push(event),
         Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
     }
-    events.extend(receiver.try_iter().take(EVENT_BATCH_ITEMS.saturating_sub(1)));
+    events.extend(
+        receiver
+            .try_iter()
+            .take(EVENT_BATCH_ITEMS.saturating_sub(1)),
+    );
     events
 }
 
@@ -550,6 +589,9 @@ fn advance_pane(
     let previous_epoch = pane.terminal.scrollback_epoch();
     let previous_maximum = pane.terminal.max_scroll_offset();
     pane.terminal.advance(output);
+    if let Some(directory) = pane.terminal.take_working_directory() {
+        pane.working_directory = directory;
+    }
     let maximum = pane.terminal.max_scroll_offset();
     if maximum < previous_maximum && session.active_pane() == Some(pane.id) {
         for client in clients {
@@ -677,10 +719,15 @@ fn handle_message(
             );
         }
         Message::Kill => return true,
+        Message::View { path } => match open_viewer(input, &path) {
+            Ok(()) => queue_control(clients, client_id, Message::ViewerOpened),
+            Err(error) => queue_control(clients, client_id, Message::Error(error)),
+        },
         Message::Attached
         | Message::Screen(_)
         | Message::Error(_)
         | Message::Status { .. }
+        | Message::ViewerOpened
         | Message::Terminating => remove_client(clients, client_id),
     }
     false
@@ -717,6 +764,7 @@ fn handle_action(
             set_status(clients, client_id, None, input.full_dirty);
             if let Some(active) = input.session.active_pane()
                 && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
+                && pane.child.is_some()
             {
                 pane.pending_input.push(bytes);
             }
@@ -789,10 +837,22 @@ fn handle_action(
             let Some(pane_id) = input.session.active_pane() else {
                 return true;
             };
+            let is_viewer = input
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .is_some_and(|pane| pane.viewer.is_some());
             let close = input.session.close_active_pane(content_size);
             if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
                 let mut pane = input.panes.swap_remove(index);
-                let _ = pty::terminate_all(&mut [&mut pane.child]);
+                if let Some(child) = pane.child.as_mut() {
+                    let _ = pty::terminate_all(&mut [child]);
+                }
+            }
+            if is_viewer
+                && let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
+            {
+                client.viewer_prompt = None;
             }
             match close {
                 Ok(CloseResult::SessionEmpty) => return true,
@@ -932,6 +992,359 @@ fn handle_action(
             set_status(clients, client_id, None, input.full_dirty);
             return false;
         }
+        Action::ViewPrompt(new_tab) => {
+            let directory = input
+                .session
+                .active_pane()
+                .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+                .map(|pane| pane.working_directory.clone())
+                .ok_or_else(|| "active pane does not exist".to_string());
+            match directory {
+                Ok(directory) => {
+                    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                        client.scroll_offset = None;
+                        client.help_offset = None;
+                        client.search_query = None;
+                        client.viewer_prompt = Some(ViewerPrompt {
+                            directory,
+                            query: Vec::new(),
+                            filter: Vec::new(),
+                            selected: 0,
+                            new_tab,
+                        });
+                        client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+                    }
+                }
+                Err(error) => set_status(clients, client_id, Some(error), input.full_dirty),
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewQuery(query) => {
+            let status = clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.viewer_prompt.as_mut())
+                .map(|prompt| {
+                    prompt.query = query.clone();
+                    prompt.filter = query.clone();
+                    prompt.selected = 0;
+                    viewer_prompt_status(prompt)
+                });
+            if let Some(status) = status {
+                set_status(clients, client_id, Some(status), input.full_dirty);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewDirectory { query, separator } => {
+            let result = open_prompt_directory(clients, client_id, query, separator);
+            if let Err(error) = result {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewParent => {
+            let status = clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.viewer_prompt.as_mut())
+                .map(|prompt| {
+                    if let Some(parent) = prompt.directory.parent().map(PathBuf::from)
+                        && parent != prompt.directory
+                    {
+                        prompt.directory = parent;
+                        prompt.query.clear();
+                        prompt.filter.clear();
+                        prompt.selected = 0;
+                        "".to_owned()
+                    } else {
+                        "already at filesystem root".to_owned()
+                    }
+                });
+            if let Some(status) = status {
+                if status.is_empty() {
+                    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                        client.input.set_view_prompt(Vec::new());
+                        client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+                    }
+                } else {
+                    set_status(clients, client_id, Some(status), input.full_dirty);
+                }
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewComplete(_) => {
+            let completion = clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+                .and_then(|client| client.viewer_prompt.as_mut())
+                .map(|prompt| {
+                    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+                    if entries.is_empty() {
+                        return Err("no matching entries".to_owned());
+                    }
+                    let index = prompt.selected % entries.len();
+                    prompt.selected = (index + 1) % entries.len();
+                    prompt.query = entries[index].name.as_bytes().to_vec();
+                    Ok(prompt.query.clone())
+                });
+            match completion {
+                Some(Ok(query)) => {
+                    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                        client.input.set_view_prompt(query);
+                        client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+                    }
+                }
+                Some(Err(error)) => set_status(clients, client_id, Some(error), input.full_dirty),
+                None => {}
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::OpenViewer(query) => {
+            let result = open_prompt_viewer(clients, client_id, input, query);
+            if let Err(error) = result {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewCancelled => {
+            if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                client.viewer_prompt = None;
+                client.status = None;
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerScroll(amount) => {
+            let result = active_viewer(input).map(|viewer| viewer.move_lines(amount));
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerPage(forward) => {
+            let rows = active_viewer_rows(input).unwrap_or(content_size.rows);
+            let result = active_viewer(input).map(|viewer| viewer.page(rows, forward));
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerHalfPage(forward) => {
+            let rows = active_viewer_rows(input).unwrap_or(content_size.rows);
+            let result = active_viewer(input).map(|viewer| viewer.half_page(rows, forward));
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerLineStart => {
+            let result = active_viewer(input).map(Viewer::line_start);
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerLineEnd => {
+            let columns = active_viewer_columns(input).unwrap_or(1);
+            let result = active_viewer(input).map(|viewer| viewer.line_end(columns));
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerTop => {
+            if let Some(viewer) = active_viewer(input) {
+                viewer.top();
+            }
+            if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerBottom => {
+            let result = active_viewer(input).map(Viewer::bottom);
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else if let Err(error) = render_active_viewer(input) {
+                set_status(clients, client_id, Some(error), input.full_dirty);
+            } else {
+                set_viewer_status(clients, client_id, input);
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerSearchPrompt(forward) => {
+            set_status(
+                clients,
+                client_id,
+                Some(if forward { "/" } else { "?" }.into()),
+                input.full_dirty,
+            );
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerSearchQuery(query, forward) => {
+            set_status(
+                clients,
+                client_id,
+                Some(viewer_search_status(&query, forward)),
+                input.full_dirty,
+            );
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerSearch(query, forward) => {
+            let query = match String::from_utf8(query) {
+                Ok(query) => query,
+                Err(_) => {
+                    set_status(
+                        clients,
+                        client_id,
+                        Some("viewer search must be UTF-8".into()),
+                        input.full_dirty,
+                    );
+                    return false;
+                }
+            };
+            let result = active_viewer(input).map(|viewer| viewer.search(&query, forward));
+            match result {
+                Some(Ok(true)) => {
+                    if let Err(error) = render_active_viewer(input) {
+                        set_status(clients, client_id, Some(error), input.full_dirty);
+                    } else {
+                        set_viewer_status(clients, client_id, input);
+                    }
+                }
+                Some(Ok(false)) => set_status(
+                    clients,
+                    client_id,
+                    Some(format!(
+                        "no match: {}{query}",
+                        if forward { "/" } else { "?" }
+                    )),
+                    input.full_dirty,
+                ),
+                Some(Err(error)) => set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer search failed: {error}")),
+                    input.full_dirty,
+                ),
+                None => set_status(
+                    clients,
+                    client_id,
+                    Some("active pane is not a viewer".into()),
+                    input.full_dirty,
+                ),
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerSearchNext(same_direction) => {
+            let result = active_viewer(input).map(|viewer| viewer.repeat_search(same_direction));
+            match result {
+                Some(Ok(true)) => {
+                    if let Err(error) = render_active_viewer(input) {
+                        set_status(clients, client_id, Some(error), input.full_dirty);
+                    } else {
+                        set_viewer_status(clients, client_id, input);
+                    }
+                }
+                Some(Ok(false)) => set_status(
+                    clients,
+                    client_id,
+                    Some("no previous viewer search".into()),
+                    input.full_dirty,
+                ),
+                Some(Err(error)) => set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer search failed: {error}")),
+                    input.full_dirty,
+                ),
+                None => set_status(
+                    clients,
+                    client_id,
+                    Some("active pane is not a viewer".into()),
+                    input.full_dirty,
+                ),
+            }
+            *input.full_dirty = true;
+            return false;
+        }
+        Action::ViewerSearchCancelled => {
+            set_viewer_status(clients, client_id, input);
+            *input.full_dirty = true;
+            return false;
+        }
         Action::ClearScrollback => {
             let result = input
                 .session
@@ -1009,6 +1422,363 @@ fn active_scrollback_maximum(input: &InputContext<'_>) -> usize {
         .active_pane()
         .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
         .map_or(0, |pane| pane.terminal.max_scroll_offset())
+}
+
+fn active_viewer<'a>(input: &'a mut InputContext<'_>) -> Option<&'a mut Viewer> {
+    let active = input.session.active_pane()?;
+    input
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == active)
+        .and_then(|pane| pane.viewer.as_mut())
+}
+
+fn active_viewer_rows(input: &InputContext<'_>) -> Option<u16> {
+    let active = input.session.active_pane()?;
+    input
+        .panes
+        .iter()
+        .find(|pane| pane.id == active && pane.viewer.is_some())
+        .map(|pane| pane.terminal.screen().size().rows)
+}
+
+fn active_viewer_columns(input: &InputContext<'_>) -> Option<usize> {
+    let active = input.session.active_pane()?;
+    input
+        .panes
+        .iter()
+        .find(|pane| pane.id == active && pane.viewer.is_some())
+        .map(|pane| usize::from(pane.terminal.screen().size().columns))
+}
+
+fn render_active_viewer(input: &mut InputContext<'_>) -> Result<(), String> {
+    let active = input
+        .session
+        .active_pane()
+        .ok_or_else(|| "active pane does not exist".to_owned())?;
+    let size = input
+        .session
+        .pane_rects(pane_area(*input.size))
+        .into_iter()
+        .find(|(pane, _)| *pane == active)
+        .map(|(_, rect)| Size {
+            columns: rect.width,
+            rows: rect.height,
+        })
+        .ok_or_else(|| "active pane does not exist".to_owned())?;
+    let pane = input
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == active)
+        .ok_or_else(|| "active pane does not exist".to_owned())?;
+    pane.viewer
+        .as_mut()
+        .ok_or_else(|| "active pane is not a viewer".to_owned())?
+        .render(&mut pane.terminal, size)
+        .map_err(|error| format!("cannot render viewer: {error}"))?;
+    Ok(())
+}
+
+fn set_viewer_status(clients: &mut [Client], client_id: u64, input: &mut InputContext<'_>) {
+    let prefix_byte = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .map_or(2, |client| client.input.prefix());
+    let prefix = format!("Ctrl-{}", char::from(prefix_byte + b'a' - 1));
+    let status = input
+        .session
+        .active_pane()
+        .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
+        .and_then(|pane| pane.viewer.as_ref())
+        .map(|viewer| {
+            format!(
+                "VIEW {} | Home/End line gg/G file / ? search n/N repeat {prefix} x close",
+                viewer.path().display()
+            )
+        });
+    set_status(clients, client_id, status, input.full_dirty);
+}
+
+fn viewer_search_status(query: &[u8], forward: bool) -> String {
+    let query = String::from_utf8_lossy(query)
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    format!("{}{query}", if forward { "/" } else { "?" })
+}
+
+#[derive(Clone)]
+struct ViewerEntry {
+    name: String,
+    directory: bool,
+}
+
+fn viewer_entries(directory: &std::path::Path, query: &[u8]) -> Vec<ViewerEntry> {
+    const MAX_PROMPT_ENTRIES: usize = 256;
+    let query = String::from_utf8_lossy(query);
+    let mut entries = fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let directory = entry.metadata().ok()?.is_dir();
+            name.starts_with(query.as_ref())
+                .then_some(ViewerEntry { directory, name })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.truncate(MAX_PROMPT_ENTRIES);
+    entries
+}
+
+fn viewer_prompt_status(prompt: &ViewerPrompt) -> String {
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    let selected = entries
+        .iter()
+        .position(|entry| entry.name.as_bytes() == prompt.query.as_slice())
+        .unwrap_or_else(|| prompt.selected % entries.len().max(1));
+    let mut status = format!(
+        "VIEW {} > {} |",
+        prompt.directory.display(),
+        String::from_utf8_lossy(&prompt.query)
+    );
+    for (index, entry) in entries.iter().take(8).enumerate() {
+        if index == selected {
+            status.push_str(" [");
+        } else {
+            status.push(' ');
+        }
+        status.push_str(&entry.name);
+        if entry.directory {
+            status.push('/');
+        }
+        if index == selected {
+            status.push(']');
+        }
+    }
+    status.push_str(" | Tab complete Enter open Backspace parent Esc cancel");
+    status
+}
+
+fn open_prompt_directory(
+    clients: &mut [Client],
+    client_id: u64,
+    query: Vec<u8>,
+    separator: u8,
+) -> Result<(), String> {
+    let prompt = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .and_then(|client| client.viewer_prompt.clone())
+        .ok_or_else(|| "viewer prompt is not active".to_owned())?;
+    let absolute = if query.is_empty() {
+        prompt_root(&prompt.directory, separator)
+    } else {
+        prompt_drive_root(&query)
+    };
+    if let Some(directory) = absolute {
+        if !directory.is_dir() {
+            return Err(format!("cannot open directory {}", directory.display()));
+        }
+        if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+            client.input.set_view_prompt(Vec::new());
+            client.viewer_prompt = Some(ViewerPrompt {
+                directory,
+                query: Vec::new(),
+                filter: Vec::new(),
+                selected: 0,
+                new_tab: prompt.new_tab,
+            });
+            client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+        }
+        return Ok(());
+    }
+    if query.is_empty() {
+        return Err("absolute path must start with the native separator".to_owned());
+    }
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    let selected = entries
+        .iter()
+        .position(|entry| entry.directory && entry.name.as_bytes() == query.as_slice())
+        .or_else(|| {
+            (!entries.is_empty())
+                .then_some(prompt.selected % entries.len())
+                .filter(|index| entries[*index].directory)
+        })
+        .ok_or_else(|| "select a matching directory before the path separator".to_owned())?;
+    let directory = prompt.directory.join(&entries[selected].name);
+    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+        client.input.set_view_prompt(Vec::new());
+        client.viewer_prompt = Some(ViewerPrompt {
+            directory,
+            query: Vec::new(),
+            filter: Vec::new(),
+            selected: 0,
+            new_tab: prompt.new_tab,
+        });
+        client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prompt_drive_root(query: &[u8]) -> Option<PathBuf> {
+    (query.len() == 2 && query[0].is_ascii_alphabetic() && query[1] == b':')
+        .then(|| PathBuf::from(format!("{}:\\", query[0] as char)))
+}
+
+#[cfg(not(windows))]
+fn prompt_drive_root(_: &[u8]) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(unix)]
+fn prompt_root(_: &std::path::Path, separator: u8) -> Option<PathBuf> {
+    (separator == b'/').then(|| PathBuf::from("/"))
+}
+
+#[cfg(not(unix))]
+fn prompt_root(directory: &std::path::Path, separator: u8) -> Option<PathBuf> {
+    if !matches!(separator, b'/' | b'\\') {
+        return None;
+    }
+    let mut components = directory.components();
+    if !matches!(
+        (components.next(), components.next()),
+        (
+            Some(std::path::Component::Prefix(_)),
+            Some(std::path::Component::RootDir)
+        )
+    ) {
+        return None;
+    }
+    Some(directory.components().take(2).collect())
+}
+
+fn open_viewer(input: &mut InputContext<'_>, requested: &str) -> Result<(), String> {
+    let active = input
+        .session
+        .active_pane()
+        .ok_or_else(|| "active pane does not exist".to_owned())?;
+    let directory = input
+        .panes
+        .iter()
+        .find(|pane| pane.id == active)
+        .map(|pane| pane.working_directory.clone())
+        .ok_or_else(|| "active pane does not exist".to_owned())?;
+    let requested = PathBuf::from(requested);
+    let path = if requested.is_absolute() {
+        requested
+    } else {
+        directory.join(requested)
+    };
+    open_viewer_at(input, path, false)
+}
+
+fn open_viewer_at(
+    input: &mut InputContext<'_>,
+    path: PathBuf,
+    new_tab: bool,
+) -> Result<(), String> {
+    let mut viewer = Viewer::open(path.clone())
+        .map_err(|error| format!("cannot open viewer file {}: {error}", path.display()))?;
+    let content_size = pane_area(*input.size);
+    let pane = if new_tab {
+        input
+            .session
+            .create_tab()
+            .map_err(|error| error.to_string())?
+    } else {
+        input
+            .session
+            .split_active(crate::session::Split::TopBottom, content_size)
+            .map_err(|error| error.to_string())?
+    };
+    let Some(pane_size) = input
+        .session
+        .pane_rects(content_size)
+        .into_iter()
+        .find(|(id, _)| *id == pane)
+        .map(|(_, rect)| Size {
+            columns: rect.width,
+            rows: rect.height,
+        })
+    else {
+        let _ = input.session.close_pane(pane, content_size);
+        return Err("viewer pane has no size".into());
+    };
+    let mut terminal = match Terminal::new(pane_size) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let _ = input.session.close_pane(pane, content_size);
+            return Err(error.to_string());
+        }
+    };
+    if let Err(error) = viewer.render(&mut terminal, pane_size) {
+        let _ = input.session.close_pane(pane, content_size);
+        return Err(format!("cannot render viewer: {error}"));
+    }
+    let working_directory = path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    input.panes.push(PaneProcess {
+        id: pane,
+        child: None,
+        viewer: Some(viewer),
+        terminal,
+        pending_input: PendingInput::new(),
+        working_directory,
+    });
+    if let Err(error) = resize_all(input.session, input.panes, *input.size, *input.size) {
+        input.panes.retain(|candidate| candidate.id != pane);
+        let _ = input.session.close_pane(pane, content_size);
+        let _ = resize_all(input.session, input.panes, *input.size, *input.size);
+        return Err(format!("cannot resize viewer pane: {error}"));
+    }
+    Ok(())
+}
+
+fn open_prompt_viewer(
+    clients: &mut [Client],
+    client_id: u64,
+    input: &mut InputContext<'_>,
+    query: Vec<u8>,
+) -> Result<(), String> {
+    let prompt = clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .and_then(|client| client.viewer_prompt.clone())
+        .ok_or_else(|| "viewer prompt is not active".to_owned())?;
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    let selected = entries
+        .iter()
+        .position(|entry| entry.name.as_bytes() == query.as_slice())
+        .or_else(|| (!entries.is_empty()).then_some(prompt.selected % entries.len()))
+        .ok_or_else(|| "no matching file or directory".to_owned())?;
+    let target = prompt.directory.join(&entries[selected].name);
+    if entries[selected].directory {
+        if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+            client.input.set_view_prompt(Vec::new());
+            client.viewer_prompt = Some(ViewerPrompt {
+                directory: target,
+                query: Vec::new(),
+                filter: Vec::new(),
+                selected: 0,
+                new_tab: prompt.new_tab,
+            });
+            client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
+        }
+        return Ok(());
+    }
+    open_viewer_at(input, target, prompt.new_tab)?;
+    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+        client.viewer_prompt = None;
+        client.input.enter_viewer();
+    }
+    Ok(())
 }
 
 fn render_view(
@@ -1402,9 +2172,11 @@ fn add_pane(
     spawn_pane_reader(pane, reader, events.clone())?;
     panes.push(PaneProcess {
         id: pane,
-        child,
+        child: Some(child),
+        viewer: None,
         terminal,
         pending_input: PendingInput::new(),
+        working_directory: context.working_directory().to_owned(),
     });
     Ok(())
 }
@@ -1450,7 +2222,7 @@ fn resize_all(
                 rows: rect.height,
             })
             .unwrap_or_else(|| pane_area(size));
-        if let Err(error) = panes[index].child.resize(pane_size) {
+        if let Err(error) = panes[index].resize(pane_size) {
             for resized in &mut panes[..index] {
                 let old = rollback_rects
                     .iter()
@@ -1460,15 +2232,10 @@ fn resize_all(
                         rows: rect.height,
                     })
                     .unwrap_or_else(|| pane_area(rollback));
-                let _ = resized.child.resize(old);
-                let _ = resized.terminal.resize(old);
+                let _ = resized.resize(old);
             }
             return Err(error);
         }
-        panes[index]
-            .terminal
-            .resize(pane_size)
-            .map_err(io::Error::other)?;
     }
     Ok(())
 }
@@ -1628,5 +2395,23 @@ mod tests {
         assert!(detailed.contains("g/G ends"));
         assert!(detailed.contains("n/N match"));
         assert!(detailed.ends_with("/error"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn viewer_prompt_root_uses_unix_separator() {
+        let directory = PathBuf::from("/tmp");
+        assert_eq!(prompt_root(&directory, b'/'), Some(PathBuf::from("/")));
+        assert_eq!(prompt_root(&directory, b'\\'), None);
+        assert_eq!(prompt_drive_root(b"C:"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn viewer_prompt_root_uses_windows_drive_and_separators() {
+        let directory = PathBuf::from("C:\\Users");
+        assert_eq!(prompt_root(&directory, b'\\'), Some(PathBuf::from("C:\\")));
+        assert_eq!(prompt_root(&directory, b'/'), Some(PathBuf::from("C:\\")));
+        assert_eq!(prompt_drive_root(b"C:"), Some(PathBuf::from("C:\\")));
     }
 }

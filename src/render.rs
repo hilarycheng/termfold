@@ -246,6 +246,7 @@ fn help_lines(prefix: u8) -> Vec<String> {
         format!("{prefix} x            = Close active pane"),
         format!("{prefix} d            = Detach"),
         format!("{prefix} [            = Enter scroll mode"),
+        format!("{prefix} v / V        = Open viewer pane / new tab"),
         format!("{prefix} C            = Clear retained scrollback"),
         format!("{prefix} S            = Save retained scrollback"),
         format!("{prefix} ?            = Show this key reminder"),

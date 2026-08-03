@@ -63,6 +63,7 @@ pub struct LaunchContext {
     environment: Vec<(OsString, OsString)>,
     terminfo_root: PathBuf,
     inner_term: String,
+    session_name: Option<OsString>,
 }
 
 impl LaunchContext {
@@ -79,6 +80,7 @@ impl LaunchContext {
             environment: env::vars_os().collect(),
             terminfo_root,
             inner_term,
+            session_name: None,
         })
     }
 
@@ -88,6 +90,10 @@ impl LaunchContext {
 
     pub fn working_directory(&self) -> &Path {
         &self.working_directory
+    }
+
+    pub fn set_session_name(&mut self, name: &str) {
+        self.session_name = Some(name.into());
     }
 }
 
@@ -694,7 +700,7 @@ fn environment_block(context: &LaunchContext) -> Vec<u16> {
         .filter(|(key, _)| {
             !matches!(
                 key.to_string_lossy().to_ascii_uppercase().as_str(),
-                "TERM" | "COLORTERM" | "TERMINFO"
+                "TERM" | "COLORTERM" | "TERMINFO" | "TERMFOLD_SESSION"
             )
         })
         .cloned()
@@ -707,6 +713,9 @@ fn environment_block(context: &LaunchContext) -> Vec<u16> {
             context.terminfo_root.as_os_str().to_owned(),
         ),
     ]);
+    if let Some(session) = &context.session_name {
+        environment.push(("TERMFOLD_SESSION".into(), session.clone()));
+    }
     environment.sort_by(|(left, _), (right, _)| {
         left.to_string_lossy()
             .to_ascii_lowercase()

@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, error::Error, fmt};
+use std::{collections::VecDeque, error::Error, fmt, path::PathBuf};
 
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
@@ -392,6 +392,10 @@ impl Terminal {
         std::mem::take(&mut self.state.responses)
     }
 
+    pub fn take_working_directory(&mut self) -> Option<PathBuf> {
+        self.state.working_directory.take()
+    }
+
     pub fn max_scroll_offset(&self) -> usize {
         self.state.primary.scrollback.len()
     }
@@ -592,6 +596,7 @@ struct State {
     insert: bool,
     origin: bool,
     responses: Vec<u8>,
+    working_directory: Option<PathBuf>,
 }
 
 impl State {
@@ -607,6 +612,7 @@ impl State {
             insert: false,
             origin: false,
             responses: Vec::new(),
+            working_directory: None,
         })
     }
 
@@ -739,8 +745,10 @@ impl State {
         let size = self.screen().size();
         let scrollback_limit = self.primary.scrollback_limit;
         let scrollback_epoch = self.primary.scrollback_epoch.saturating_add(1);
+        let working_directory = self.working_directory.take();
         *self = Self::new(size, scrollback_limit).expect("existing terminal size is valid");
         self.primary.scrollback_epoch = scrollback_epoch;
+        self.working_directory = working_directory;
     }
 
     fn set_private_mode(&mut self, mode: u16, enabled: bool) {
@@ -1073,8 +1081,59 @@ impl Perform for State {
         }
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
-        // All OSC, including clipboard-writing OSC 52, is intentionally ignored.
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if params.first().is_some_and(|value| *value == b"7")
+            && let Some(directory) = working_directory(params.get(1).copied().unwrap_or_default())
+        {
+            self.working_directory = Some(directory);
+        }
+    }
+}
+
+fn working_directory(value: &[u8]) -> Option<PathBuf> {
+    const MAX_OSC7_BYTES: usize = 4096;
+    if value.len() > MAX_OSC7_BYTES {
+        return None;
+    }
+    let value = std::str::from_utf8(value).ok()?.strip_prefix("file://")?;
+    let (authority, path) = value.split_once('/')?;
+    if !authority.is_empty() && authority != "localhost" {
+        return None;
+    }
+    let path = percent_decode(path.as_bytes())?;
+    #[cfg(target_os = "windows")]
+    let path = if path.starts_with(b"/") && path.get(2) == Some(&b':') {
+        &path[1..]
+    } else {
+        path.as_slice()
+    };
+    let path = PathBuf::from(String::from_utf8(path.to_vec()).ok()?);
+    path.is_absolute().then_some(path)
+}
+
+fn percent_decode(value: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let mut index = 0;
+    while index < value.len() {
+        if value[index] == b'%' {
+            let high = value.get(index + 1).and_then(|byte| hex(*byte))?;
+            let low = value.get(index + 2).and_then(|byte| hex(*byte))?;
+            decoded.push(high << 4 | low);
+            index += 3;
+        } else {
+            decoded.push(value[index]);
+            index += 1;
+        }
+    }
+    Some(decoded)
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1436,6 +1495,28 @@ mod tests {
         terminal.clear_scrollback();
         assert_eq!(terminal.max_scroll_offset(), 0);
         assert_eq!(terminal.screen().rows(), screen);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tracks_local_osc7_working_directory() {
+        let mut terminal = terminal(20, 2);
+        terminal.advance(b"\x1b]7;file:///tmp/work%20dir\x07");
+        assert_eq!(
+            terminal.take_working_directory(),
+            Some(std::path::PathBuf::from("/tmp/work dir"))
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tracks_local_osc7_working_directory() {
+        let mut terminal = terminal(20, 2);
+        terminal.advance(b"\x1b]7;file:///C:/work%20dir\x07");
+        assert_eq!(
+            terminal.take_working_directory(),
+            Some(std::path::PathBuf::from("C:/work dir"))
+        );
     }
 
     #[test]

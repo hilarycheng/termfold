@@ -449,6 +449,32 @@ pub fn attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), S
     }
 }
 
+pub fn view(runtime: &RuntimeDir, name: &str, path: &str) -> Result<(), String> {
+    if path.is_empty() || path.len() > 4096 || path.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err("viewer path must be 1..4096 printable bytes".into());
+    }
+    let mut stream = runtime.connect(name)?;
+    stream
+        .set_read_timeout(Some(CONTROL_TIMEOUT))
+        .map_err(|error| format!("cannot configure viewer request: {error}"))?;
+    ipc::write_message(
+        &mut stream,
+        &Message::View {
+            path: path.to_owned(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    match ipc::read_message(&mut stream).map_err(|error| error.to_string())? {
+        Some(Message::ViewerOpened) => Ok(()),
+        Some(Message::Error(error)) => Err(error),
+        Some(message) => Err(format!(
+            "session returned an unexpected viewer response: {}",
+            message_name(&message)
+        )),
+        None => Err("session disconnected while opening viewer".into()),
+    }
+}
+
 fn message_name(message: &Message) -> &'static str {
     match message {
         Message::Attach { .. } => "Attach",
@@ -462,6 +488,8 @@ fn message_name(message: &Message) -> &'static str {
         Message::Status { .. } => "Status",
         Message::Kill => "Kill",
         Message::Terminating => "Terminating",
+        Message::View { .. } => "View",
+        Message::ViewerOpened => "ViewerOpened",
     }
 }
 
@@ -505,15 +533,11 @@ fn confirm_kill(name: &str, stream: &ClientStream) -> Result<bool, String> {
     capabilities.alternate_screen = false;
     let terminal = TerminalGuard::enter(capabilities)?;
     let _signals = if let Some(terminal) = &terminal {
-        let writer = Arc::new(Mutex::new(
-            stream
-                .try_clone()
-                .map_err(|error| format!("cannot prepare kill confirmation: {error}"))?,
-        ));
-        Some(BlockedSignals::block()?.listen(
-            writer,
-            Some(Arc::clone(&terminal.0)),
-        )?)
+        let writer =
+            Arc::new(Mutex::new(stream.try_clone().map_err(|error| {
+                format!("cannot prepare kill confirmation: {error}")
+            })?));
+        Some(BlockedSignals::block()?.listen(writer, Some(Arc::clone(&terminal.0)))?)
     } else {
         None
     };

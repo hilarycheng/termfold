@@ -299,7 +299,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: profiles create the specified session atomically and attaching never
     reruns them.
 
-- [ ] **T27 — Add bounded large-file viewer**
+- [*] **T27 — Add bounded large-file viewer**
   - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the
     current-directory path prompt, bounded block reading, navigation, and literal
     forward/reverse search.
@@ -307,3 +307,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Depends on: T02, T03, T08, T10, T11.
   - Done when: large files remain bounded in memory, navigation and search work in
     both directions, and path fallback is deterministic without external commands.
+  - Implemented with a bounded virtual viewer pane, session-scoped IPC requests,
+    OSC 7 file-URL parsing, editable directory completion, and fixed-block search.
+    Linux and Windows targets type-check and Clippy passes; runtime tests are
+    blocked in this host by the missing `cc` linker and inaccessible WSL service.
