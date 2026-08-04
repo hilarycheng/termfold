@@ -202,7 +202,8 @@ or Ctrl-Home/Ctrl-End move to the file start/end. End and `$` stop at the start
 of the last visible token; empty lines use column zero. Page Up/Page Down and
 Ctrl-f/Ctrl-b move by one page; Ctrl-u/Ctrl-d move by half a page; Ctrl-e/Ctrl-y
 scroll the viewport by one line without moving the cursor. A page is the visible
-viewer height minus two rows. Use `/` for forward search, `?` for reverse search,
+viewer height minus two rows. Repeated page input keeps at most one page in flight
+and one changed-direction replacement. Use `/` for forward search, `?` for reverse search,
 and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.

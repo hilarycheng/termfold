@@ -620,7 +620,7 @@ perform file I/O or file scanning.
     tests; the x86_64 musl release build passed and produced a stripped static PIE.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
+- [*] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
   - Add a server-side ViewerGate containing generation, in-flight state, current
     intent, and at most one replacement command.
   - Dispatch one navigation when idle. Drop same-intent repeats while in flight.
@@ -639,6 +639,14 @@ perform file I/O or file scanning.
   - Review gate: verify no same-direction pending count, queue, or coalesced
     latest-page render remains before search work begins.
   - Done when: navigation cannot continue from buffered repeats after input stops.
+  - Implementation: added a per-pane server-side ViewerGate with generation,
+    in-flight intent, and one newest changed-intent replacement; same-intent
+    repeats are dropped, replacement dispatch waits for render commit, and close,
+    search cancellation, and viewer prompt mode changes clear the gate.
+  - Evidence: focused `cargo test --locked server::tests::viewer_gate` passed
+    5 tests; elevated `cargo test --locked --no-fail-fast` passed 106 unit tests
+    and 8 lifecycle tests; the x86_64 musl release build passed. Native
+    Windows/MSVC validation was not available in this Linux host.
 
 - [ ] **T28N — Define text and hex search query types**
   - Create `viewer/search.rs` query parsing without scanning the file.
