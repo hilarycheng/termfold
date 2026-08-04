@@ -521,7 +521,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 30 viewer tests; the
     x86_64 musl release build passed.
 
-- [ ] **T28I — Introduce the Current PageFrame builder**
+- [*] **T28I — Introduce the Current PageFrame builder**
   - Create `viewer/frame.rs` with the approved PageFrame fields: source range,
     decoded rows, line boundaries, source/cell spans, valid cursor stops, and
     visible match ranges.
@@ -538,6 +538,13 @@ perform file I/O or file scanning.
   - Depends on: T28H.
   - Done when: Current PageFrame is the sole source model for the displayed
     viewer page and source bytes per frame stay within 256 KiB.
+  - Implementation: added the bounded `PageFrame` builder and made the committed
+    frame the viewer's sole displayed-page model; decoded rows retain the existing
+    text span/token mapping and resumable line boundaries without retaining a raw
+    page buffer.
+  - Evidence: focused `cargo test --locked viewer::` passed with 33 viewer tests;
+    elevated full `cargo test --locked` passed with 90 unit tests and 8 lifecycle
+    tests; the x86_64 musl release build passed.
 
 - [ ] **T28J — Add Previous/Current/Next frame rotation**
   - Store exactly three optional frame slots in `viewer/frame.rs`.

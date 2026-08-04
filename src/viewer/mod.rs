@@ -6,18 +6,18 @@ use std::{
 
 use crate::{session::Size, terminal::Terminal};
 mod line;
+mod frame;
 mod source;
 mod text;
 
+use frame::PageFrame;
 use line::{LineBoundary, LineScanner, ScanStep};
 use source::FileSource;
 #[cfg(test)]
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
-use text::{decode, DecodedText};
+use text::DecodedText;
 
-const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
-const MAX_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 struct SearchState {
@@ -48,7 +48,7 @@ pub struct Viewer {
     visible_columns: usize,
     matches: Vec<u64>,
     search: Option<SearchState>,
-    page: Vec<String>,
+    current_frame: Option<PageFrame>,
     committed: ViewState,
     lines: VecDeque<LineBoundary>,
 }
@@ -71,7 +71,7 @@ impl Viewer {
             visible_columns: 1,
             matches: Vec::new(),
             search: None,
-            page: Vec::new(),
+            current_frame: None,
             committed,
             lines: VecDeque::new(),
         })
@@ -87,26 +87,42 @@ impl Viewer {
 
     pub fn render(&mut self, terminal: &mut Terminal, size: Size) -> io::Result<()> {
         let committed = self.committed;
-        let previous_page = std::mem::take(&mut self.page);
+        let previous_frame = self.current_frame.take();
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
         let columns = usize::from(size.columns);
-        let result = self.build_page(size);
-        let (cursor_row, cursor_line) = match result {
-            Ok(page) => page,
+        let frame = match self.build_page(size) {
+            Ok(frame) => frame,
             Err(error) => {
                 self.restore_state(committed);
-                self.page = previous_page;
+                self.current_frame = previous_frame;
                 return Err(error);
             }
         };
+        let cursor_line = match self.line_start_at(self.position) {
+            Ok(line) => line,
+            Err(error) => {
+                self.restore_state(committed);
+                self.current_frame = previous_frame;
+                return Err(error);
+            }
+        };
+        let cursor_row = frame.cursor_row(cursor_line);
         let cursor_column = match cursor_row {
-            Some(_) => match self.cursor_column(cursor_line, columns) {
-                Ok(column) => column,
-                Err(error) => {
+            Some(_) => match frame.cursor_column(
+                cursor_line,
+                self.position,
+                self.horizontal,
+                columns,
+            ) {
+                Some(column) => column,
+                None => {
                     self.restore_state(committed);
-                    self.page = previous_page;
-                    return Err(error);
+                    self.current_frame = previous_frame;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "viewer frame has no cursor stop",
+                    ));
                 }
             },
             None => 0,
@@ -114,17 +130,23 @@ impl Viewer {
 
         if let Err(error) = terminal.resize(size).map_err(io::Error::other) {
             self.restore_state(committed);
-            self.page = previous_page;
+            self.current_frame = previous_frame;
             return Err(error);
         }
 
         self.committed = self.state();
-        drop(previous_page);
+        self.current_frame = Some(frame);
 
         terminal.advance(b"\x1b[2J\x1b[H");
-        for line in &self.page {
-            terminal.advance(line.as_bytes());
-            terminal.advance(b"\r\n");
+        if let Some(frame) = self.current_frame.as_ref() {
+            for row in 0..frame.rows.len() {
+                terminal.advance(
+                    frame
+                        .render_row(row, self.horizontal, columns)
+                        .as_bytes(),
+                );
+                terminal.advance(b"\r\n");
+            }
         }
         let (row, column) = match cursor_row {
             Some(row) => (row.saturating_add(1), cursor_column.saturating_add(1)),
@@ -134,37 +156,22 @@ impl Viewer {
         Ok(())
     }
 
-    fn build_page(&mut self, size: Size) -> io::Result<(Option<usize>, u64)> {
+    fn build_page(&mut self, size: Size) -> io::Result<PageFrame> {
         self.position = self.position.min(self.length());
         self.viewport = self.viewport.min(self.length());
         self.viewport = self.line_start_at(self.viewport)?;
-        let cursor_line = self.line_start_at(self.position)?;
-        let mut position = self.viewport;
-        let mut cursor_row = None;
         let rows = usize::from(size.rows);
-        let columns = usize::from(size.columns);
-        let mut budget = columns.saturating_mul(rows).saturating_mul(4);
-        self.page = Vec::with_capacity(rows);
-        for row in 0..rows {
-            if position >= self.length() || budget == 0 {
-                break;
-            }
-            if position == cursor_line {
-                cursor_row = Some(row);
-            }
-            let (next, line, complete) = self.read_line(position, columns, budget)?;
-            let used = line.len().min(budget);
-            budget = budget.saturating_sub(used);
-            self.page.push(line);
-            if !complete {
-                break;
-            }
-            if next <= position {
-                break;
-            }
-            position = next;
-        }
-        Ok((cursor_row, cursor_line))
+        let length = self.length();
+        frame::build(
+            &mut self.source,
+            &mut self.lines,
+            length,
+            self.tab_width,
+            self.viewport,
+            rows,
+            &self.matches,
+            self.search.as_ref().map(|search| search.query.len()),
+        )
     }
 
     pub fn move_lines(&mut self, amount: i32) -> io::Result<()> {
@@ -447,17 +454,6 @@ impl Viewer {
         Some(line.start)
     }
 
-    fn cached_forward_continuation(&mut self, start: u64) -> Option<LineScanner> {
-        let index = self.lines.iter().position(|line| {
-            !line.complete
-                && line.next == start
-                && line.resume.is_some_and(|scanner| scanner.is_forward())
-        })?;
-        let line = self.lines.remove(index)?;
-        self.lines.push_front(line);
-        line.resume
-    }
-
     fn cached_reverse_continuation(&mut self, start: u64) -> Option<LineScanner> {
         let index = self.lines.iter().position(|line| {
             !line.complete
@@ -470,15 +466,7 @@ impl Viewer {
     }
 
     fn cache_line(&mut self, line: LineBoundary) {
-        let forward = line.resume.is_none_or(|scanner| scanner.is_forward());
-        if let Some(index) = self.lines.iter().position(|cached| {
-            cached.start == line.start
-                && cached.resume.is_none_or(|scanner| scanner.is_forward()) == forward
-        }) {
-            self.lines.remove(index);
-        }
-        self.lines.push_front(line);
-        self.lines.truncate(LINE_CACHE_SIZE);
+        frame::cache_line(&mut self.lines, line);
     }
 
     fn search_from(&mut self, query: &[u8], forward: bool, start: u64) -> io::Result<Option<u64>> {
@@ -566,6 +554,7 @@ impl Viewer {
         Ok(true)
     }
 
+    #[cfg(test)]
     fn read_line(
         &mut self,
         start: u64,
@@ -591,58 +580,17 @@ impl Viewer {
     }
 
     fn decode_line(&mut self, line: &LineBoundary) -> io::Result<DecodedText> {
-        if line.content_end.saturating_sub(line.start) > MAX_LINE_BYTES as u64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "viewer line segment is too large",
-            ));
-        }
-        let bytes = self.source.read_range(line.start..line.content_end)?;
-        if bytes.len() != (line.content_end - line.start) as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "viewer source range is shorter than the snapshot",
-            ));
-        }
-        Ok(decode(&bytes, self.tab_width))
+        frame::decode_line(&mut self.source, line, self.tab_width)
     }
 
     fn line_boundary(&mut self, start: u64) -> io::Result<LineBoundary> {
-        let start = start.min(self.length());
-        if let Some(line) = self.cached_line(start) {
-            return Ok(line);
-        }
-        let mut scanner = self
-            .cached_forward_continuation(start)
-            .unwrap_or_else(|| LineScanner::forward(start, self.length()));
-        let line = match scanner.step(&mut self.source)? {
-            ScanStep::Boundary {
-                start: content_end,
-                end: next,
-            } => LineBoundary {
-                start,
-                content_end,
-                next,
-                complete: true,
-                resume: None,
-            },
-            ScanStep::Yield { position, .. } => LineBoundary {
-                start,
-                content_end: position,
-                next: position,
-                complete: false,
-                resume: Some(scanner),
-            },
-            ScanStep::Done { position } => LineBoundary {
-                start,
-                content_end: position,
-                next: position,
-                complete: true,
-                resume: None,
-            },
-        };
-        self.cache_line(line);
-        Ok(line)
+        let length = self.length();
+        frame::line_boundary(
+            &mut self.source,
+            &mut self.lines,
+            length,
+            start,
+        )
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
@@ -681,20 +629,6 @@ impl Viewer {
             .saturating_sub(line)
             .min(boundary.content_end.saturating_sub(line)) as usize;
         Ok(decoded.cursor_cell_at_source(source).unwrap_or(0))
-    }
-
-    fn cursor_column(&mut self, line: u64, columns: usize) -> io::Result<usize> {
-        let boundary = self.line_boundary(line)?;
-        let decoded = self.decode_line(&boundary)?;
-        let position = self
-            .position
-            .saturating_sub(line)
-            .min(boundary.content_end.saturating_sub(line)) as usize;
-        let cursor = decoded.cursor_cell_at_source(position).unwrap_or(0);
-        let horizontal = self.horizontal.min(decoded.width as u64) as usize;
-        Ok(cursor
-            .saturating_sub(horizontal)
-            .min(columns.saturating_sub(1)))
     }
 
     fn adjust_horizontal(&mut self) -> io::Result<()> {
@@ -902,7 +836,22 @@ mod tests {
     }
 
     fn page_bytes(viewer: &Viewer) -> usize {
-        viewer.page.iter().map(String::capacity).sum()
+        viewer.current_frame.as_ref().map_or(0, |frame| {
+            frame
+                .rows
+                .iter()
+                .flat_map(|row| row.tokens.iter())
+                .map(|token| token.rendered.capacity())
+                .sum()
+        })
+    }
+
+    fn page_line(viewer: &Viewer, row: usize, columns: usize) -> String {
+        viewer
+            .current_frame
+            .as_ref()
+            .expect("rendered frame")
+            .render_row(row, viewer.horizontal, columns)
     }
 
     #[test]
@@ -911,9 +860,101 @@ mod tests {
         fs::write(&path, b"a\t\n").unwrap();
         let mut viewer = Viewer::open(path.clone(), 4).unwrap();
 
-        let (_, line, complete) = viewer.read_line(0, 20, MAX_LINE_BYTES).unwrap();
+        let (_, line, complete) = viewer.read_line(0, 20, 64 * 1024).unwrap();
         assert_eq!(line, "a   ");
         assert!(complete);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn current_frame_contains_page_mapping_and_visible_matches() {
+        let path = temp_path("termfold-viewer-frame");
+        fs::write(&path, b"alpha\nbeta\n").unwrap();
+        let size = Size {
+            columns: 16,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.search("beta", true).unwrap());
+        viewer.render(&mut terminal, size).unwrap();
+
+        let frame = viewer.current_frame.as_ref().expect("current frame");
+        assert_eq!(frame.source_range, 0..11);
+        assert_eq!(frame.rows.len(), 2);
+        assert_eq!(
+            frame
+                .line_boundaries
+                .iter()
+                .map(|line| line.start)
+                .collect::<Vec<_>>(),
+            vec![0, 6]
+        );
+        assert_eq!(frame.source_cell_spans.len(), 9);
+        assert_eq!(frame.cursor_stops.len(), 9);
+        assert_eq!(frame.visible_match_ranges, vec![6..10]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty_frame_renders_and_long_pages_stop_at_the_source_limit() {
+        let empty_path = temp_path("termfold-viewer-empty-frame");
+        fs::write(&empty_path, []).unwrap();
+        let empty_size = Size {
+            columns: 8,
+            rows: 3,
+        };
+        let mut empty_terminal = Terminal::new(empty_size).unwrap();
+        let mut empty = Viewer::open(empty_path.clone(), 8).unwrap();
+        empty.render(&mut empty_terminal, empty_size).unwrap();
+        let empty_frame = empty.current_frame.as_ref().expect("empty frame");
+        assert_eq!(empty_frame.source_range, 0..0);
+        assert!(empty_frame.rows.is_empty());
+
+        let long_path = temp_path("termfold-viewer-frame-limit");
+        let mut data = Vec::with_capacity(64 * 1024 * 5);
+        for _ in 0..5 {
+            data.extend(std::iter::repeat_n(b'x', 64 * 1024 - 1));
+            data.push(b'\n');
+        }
+        fs::write(&long_path, data).unwrap();
+        let size = Size {
+            columns: 16,
+            rows: 8,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(long_path.clone(), 8).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        let frame = viewer.current_frame.as_ref().expect("bounded frame");
+        assert_eq!(frame.source_bytes(), 256 * 1024);
+        assert_eq!(frame.rows.len(), 4);
+
+        fs::remove_file(empty_path).unwrap();
+        fs::remove_file(long_path).unwrap();
+    }
+
+    #[test]
+    fn frame_clipping_replacements_and_cursor_use_the_decoded_mapping() {
+        let path = temp_path("termfold-viewer-frame-cursor");
+        fs::write(&path, b"ab\0c\n").unwrap();
+        let size = Size {
+            columns: 3,
+            rows: 2,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.horizontal = 1;
+        viewer.position = 1;
+        viewer.render(&mut terminal, size).unwrap();
+
+        let frame = viewer.current_frame.as_ref().expect("current frame");
+        assert_eq!(frame.render_row(0, viewer.horizontal, 3), "b^@");
+        assert_eq!(terminal.screen().cursor().column, 0);
+        assert_eq!(frame.cursor_stops[1].source, 1);
 
         fs::remove_file(path).unwrap();
     }
@@ -1148,7 +1189,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(size).unwrap();
         viewer.render(&mut terminal, size).unwrap();
-        let first_line = viewer.page[0].clone();
+        let first_line = page_line(&viewer, 0, usize::from(size.columns));
 
         for _ in 0..(BLOCK_CACHE_SIZE * 3 / 2) {
             viewer.page(size.rows, true).unwrap();
@@ -1156,15 +1197,23 @@ mod tests {
             assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
             assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         }
-        assert_ne!(viewer.page[0], first_line);
-        assert!(viewer.page.capacity() <= usize::from(size.rows));
+        assert_ne!(page_line(&viewer, 0, usize::from(size.columns)), first_line);
+        assert!(
+            viewer
+                .current_frame
+                .as_ref()
+                .expect("rendered frame")
+                .rows
+                .len()
+                <= usize::from(size.rows)
+        );
 
         for _ in 0..(BLOCK_CACHE_SIZE * 3 / 2) {
             viewer.page(size.rows, false).unwrap();
             viewer.render(&mut terminal, size).unwrap();
             assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
         }
-        assert_eq!(viewer.page[0], first_line);
+        assert_eq!(page_line(&viewer, 0, usize::from(size.columns)), first_line);
 
         fs::remove_file(path).unwrap();
     }
@@ -1436,7 +1485,17 @@ mod tests {
         };
         let mut terminal = Terminal::new(size).unwrap();
         viewer.render(&mut terminal, size).unwrap();
-        let page = viewer.page.clone();
+        let page_source = viewer
+            .current_frame
+            .as_ref()
+            .map(|frame| frame.source_range.clone());
+        let page_rows = viewer.current_frame.as_ref().map(|frame| {
+            frame
+                .rows
+                .iter()
+                .map(|row| row.render(usize::from(size.columns)))
+                .collect::<Vec<_>>()
+        });
         let state = viewer.state();
 
         let directory = File::open(std::env::temp_dir()).unwrap();
@@ -1445,7 +1504,23 @@ mod tests {
         let error = viewer.render(&mut terminal, size).unwrap_err();
 
         assert!(!error.to_string().is_empty());
-        assert_eq!(viewer.page, page);
+        assert_eq!(
+            viewer
+                .current_frame
+                .as_ref()
+                .map(|frame| frame.source_range.clone()),
+            page_source
+        );
+        assert_eq!(
+            viewer.current_frame.as_ref().map(|frame| {
+                frame
+                    .rows
+                    .iter()
+                    .map(|row| row.render(usize::from(size.columns)))
+                    .collect::<Vec<_>>()
+            }),
+            page_rows
+        );
         assert_eq!(viewer.state().position, state.position);
         assert_eq!(viewer.state().viewport, state.viewport);
         fs::remove_file(path).unwrap();

@@ -20,6 +20,7 @@ pub(super) struct DecodedText {
 }
 
 impl DecodedText {
+    #[cfg(test)]
     pub(super) fn render(&self, columns: usize) -> String {
         self.render_cells(0..columns)
     }
