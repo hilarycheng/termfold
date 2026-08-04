@@ -7,22 +7,17 @@ use std::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::{session::Size, terminal::Terminal};
+mod line;
 mod source;
 
-use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE, FileSource};
+use line::{LineBoundary, LineScanner, ScanStep};
+use source::FileSource;
+#[cfg(test)]
+use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
 
 const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
 const MAX_LINE_BYTES: usize = 64 * 1024;
-const MAX_LINE_SCAN_BYTES: u64 = BLOCK_SIZE * (BLOCK_CACHE_SIZE as u64 * 2);
-
-#[derive(Clone, Copy, Debug)]
-struct LineBoundary {
-    start: u64,
-    content_end: u64,
-    next: u64,
-    complete: bool,
-}
 
 #[derive(Clone, Debug)]
 struct SearchState {
@@ -411,7 +406,9 @@ impl Viewer {
     }
 
     fn cached_line(&mut self, start: u64) -> Option<LineBoundary> {
-        let index = self.lines.iter().position(|line| line.start == start)?;
+        let index = self.lines.iter().position(|line| {
+            line.start == start && line.resume.map_or(true, |scanner| scanner.is_forward())
+        })?;
         let line = self.lines.remove(index)?;
         self.lines.push_front(line);
         Some(line)
@@ -419,7 +416,8 @@ impl Viewer {
 
     fn cached_line_containing(&mut self, position: u64) -> Option<LineBoundary> {
         let index = self.lines.iter().position(|line| {
-            line.start <= position
+            line.resume.map_or(true, |scanner| scanner.is_forward())
+                && line.start <= position
                 && (position < line.next
                     || (line.complete && line.content_end == line.next && position == line.next))
         })?;
@@ -429,17 +427,50 @@ impl Viewer {
     }
 
     fn cached_previous_line(&mut self, start: u64) -> Option<u64> {
-        let index = self.lines.iter().position(|line| line.next == start)?;
+        let index = self
+            .lines
+            .iter()
+            .position(|line| {
+                line.next == start
+                    && line.resume.map_or(true, |scanner| scanner.is_forward())
+            })
+            .or_else(|| self.lines.iter().position(|line| line.next == start))?;
         let line = self.lines.remove(index)?;
         self.lines.push_front(line);
         Some(line.start)
     }
 
+    fn cached_forward_continuation(&mut self, start: u64) -> Option<LineScanner> {
+        let index = self.lines.iter().position(|line| {
+            !line.complete
+                && line.next == start
+                && line.resume.is_some_and(|scanner| scanner.is_forward())
+        })?;
+        let line = self.lines.remove(index)?;
+        self.lines.push_front(line);
+        line.resume
+    }
+
+    fn cached_reverse_continuation(&mut self, start: u64) -> Option<LineScanner> {
+        let index = self.lines.iter().position(|line| {
+            !line.complete
+                && line.start == start
+                && line.resume.is_some_and(|scanner| !scanner.is_forward())
+        })?;
+        let line = self.lines.remove(index)?;
+        self.lines.push_front(line);
+        line.resume
+    }
+
     fn cache_line(&mut self, line: LineBoundary) {
+        let forward = line.resume.map_or(true, |scanner| scanner.is_forward());
         if let Some(index) = self
             .lines
             .iter()
-            .position(|cached| cached.start == line.start)
+            .position(|cached| {
+                cached.start == line.start
+                    && cached.resume.map_or(true, |scanner| scanner.is_forward()) == forward
+            })
         {
             self.lines.remove(index);
         }
@@ -539,66 +570,63 @@ impl Viewer {
         budget: usize,
     ) -> io::Result<(u64, String, bool)> {
         let limit = MAX_LINE_BYTES.min(columns.saturating_mul(4).saturating_add(4));
-        if let Some(line) = self.cached_line(start) {
-            let line_length = line.content_end.saturating_sub(start);
-            if self.horizontal >= line_length || budget == 0 {
-                return Ok((line.next, String::new(), line.complete));
-            }
-            let read_start = start.saturating_add(self.horizontal);
-            let read_end = read_start
-                .saturating_add(limit.min(budget).saturating_add(4) as u64)
-                .min(line.content_end);
-            let mut bytes = Vec::with_capacity(limit.min(budget));
-            self.scan_forward(read_start, read_end, |_, byte| {
-                if bytes.len() < limit && bytes.len() < budget {
-                    bytes.push(byte);
-                }
-                false
-            })?;
-            if read_end == line.content_end && bytes.last() == Some(&b'\r') {
-                bytes.pop();
-            }
-            return Ok((line.next, display_line(&bytes, columns), line.complete));
-        }
-        let mut bytes = Vec::with_capacity(limit.min(budget));
-        let mut skipped = 0;
-        let horizontal = self.horizontal;
-        let scan_end = self.line_scan_end(start);
-        let newline = self.scan_forward(start, scan_end, |_, byte| {
-            if skipped < horizontal {
-                skipped += 1;
-                return byte == b'\n';
-            }
-            if byte == b'\n' {
-                return true;
-            }
-            if bytes.len() < limit && bytes.len() < budget {
-                bytes.push(byte);
-            }
-            false
-        })?;
-        let line = newline.map_or(
-            LineBoundary {
-                start,
-                content_end: scan_end,
-                next: scan_end,
-                complete: scan_end == self.length(),
-            },
-            |offset| LineBoundary {
-                start,
-                content_end: offset,
-                next: offset + 1,
-                complete: true,
-            },
-        );
-        self.cache_line(line);
-        if skipped < horizontal {
+        let line = self.line_boundary(start)?;
+        let line_length = line.content_end.saturating_sub(start);
+        if self.horizontal >= line_length || budget == 0 {
             return Ok((line.next, String::new(), line.complete));
         }
-        if bytes.last() == Some(&b'\r') {
-            bytes.pop();
+        let read_start = start
+            .saturating_add(self.horizontal)
+            .min(line.content_end);
+        let read_end = read_start
+            .saturating_add(limit.min(budget) as u64)
+            .min(line.content_end);
+        let bytes = self.source.read_range(read_start..read_end)?;
+        if bytes.len() != (read_end - read_start) as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "viewer source range is shorter than the snapshot",
+            ));
         }
         Ok((line.next, display_line(&bytes, columns), line.complete))
+    }
+
+    fn line_boundary(&mut self, start: u64) -> io::Result<LineBoundary> {
+        let start = start.min(self.length());
+        if let Some(line) = self.cached_line(start) {
+            return Ok(line);
+        }
+        let mut scanner = self
+            .cached_forward_continuation(start)
+            .unwrap_or_else(|| LineScanner::forward(start, self.length()));
+        let line = match scanner.step(&mut self.source)? {
+            ScanStep::Boundary {
+                start: content_end,
+                end: next,
+            } => LineBoundary {
+                start,
+                content_end,
+                next,
+                complete: true,
+                resume: None,
+            },
+            ScanStep::Yield { position, .. } => LineBoundary {
+                start,
+                content_end: position,
+                next: position,
+                complete: false,
+                resume: Some(scanner),
+            },
+            ScanStep::Done { position } => LineBoundary {
+                start,
+                content_end: position,
+                next: position,
+                complete: true,
+                resume: None,
+            },
+        };
+        self.cache_line(line);
+        Ok(line)
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
@@ -673,52 +701,12 @@ impl Viewer {
     }
 
     fn next_line(&mut self, start: u64) -> io::Result<u64> {
-        if let Some(line) = self.cached_line(start) {
-            return Ok(line.next);
-        }
-        let scan_end = self.line_scan_end(start);
-        let newline = self.scan_forward(start, scan_end, |_, byte| byte == b'\n')?;
-        let line = newline.map_or(
-            LineBoundary {
-                start,
-                content_end: scan_end,
-                next: scan_end,
-                complete: scan_end == self.length(),
-            },
-            |offset| LineBoundary {
-                start,
-                content_end: offset,
-                next: offset + 1,
-                complete: true,
-            },
-        );
-        let next = line.next;
-        self.cache_line(line);
-        Ok(next)
+        Ok(self.line_boundary(start)?.next)
     }
 
     fn line_length(&mut self, start: u64) -> io::Result<u64> {
-        if let Some(line) = self.cached_line(start) {
-            return Ok(line.content_end.saturating_sub(start));
-        }
-        let scan_end = self.line_scan_end(start);
-        let newline = self.scan_forward(start, scan_end, |_, byte| byte == b'\n')?;
-        let line = newline.map_or(
-            LineBoundary {
-                start,
-                content_end: scan_end,
-                next: scan_end,
-                complete: scan_end == self.length(),
-            },
-            |offset| LineBoundary {
-                start,
-                content_end: offset,
-                next: offset + 1,
-                complete: true,
-            },
-        );
+        let line = self.line_boundary(start)?;
         let length = line.content_end.saturating_sub(start);
-        self.cache_line(line);
         Ok(length)
     }
 
@@ -729,24 +717,41 @@ impl Viewer {
         if let Some(previous) = self.cached_previous_line(start) {
             return Ok(previous);
         }
-        let scan_start = start.saturating_sub(MAX_LINE_SCAN_BYTES);
-        let boundary = start - 1;
-        let mut skip_boundary = true;
-        let previous = self.scan_reverse(start, scan_start, |offset, byte| {
-            if skip_boundary && offset == boundary && byte == b'\n' {
-                skip_boundary = false;
-                return false;
+        let mut scanner = self
+            .cached_reverse_continuation(start)
+            .unwrap_or_else(|| LineScanner::reverse(start.min(self.length()), 0, true));
+        Ok(match scanner.step(&mut self.source)? {
+            ScanStep::Boundary { end, .. } => end,
+            ScanStep::Yield {
+                position,
+                content_end,
+            } => {
+                self.cache_line(LineBoundary {
+                    start: position,
+                    content_end: content_end.min(start),
+                    next: start,
+                    complete: false,
+                    resume: Some(scanner),
+                });
+                position
             }
-            byte == b'\n'
-        })?;
-        Ok(previous.map_or(scan_start, |offset| offset + 1))
+            ScanStep::Done { position } => position,
+        })
     }
 
     fn last_line(&mut self) -> io::Result<u64> {
         if self.length() == 0 {
             return Ok(0);
         }
-        if let Some(index) = self.lines.iter().position(|line| line.next == self.length()) {
+        if let Some(index) = self
+            .lines
+            .iter()
+            .position(|line| {
+                line.next == self.length()
+                    && line.resume.map_or(true, |scanner| scanner.is_forward())
+            })
+            .or_else(|| self.lines.iter().position(|line| line.next == self.length()))
+        {
             let line = self
                 .lines
                 .remove(index)
@@ -755,17 +760,27 @@ impl Viewer {
             self.lines.push_front(line);
             return Ok(start);
         }
-        let scan_start = self.length().saturating_sub(MAX_LINE_SCAN_BYTES);
-        let boundary = self.length() - 1;
-        let mut skip_boundary = true;
-        let previous = self.scan_reverse(self.length(), scan_start, |offset, byte| {
-            if skip_boundary && offset == boundary && byte == b'\n' {
-                skip_boundary = false;
-                return false;
+        let length = self.length();
+        let mut scanner = self
+            .cached_reverse_continuation(length)
+            .unwrap_or_else(|| LineScanner::reverse(length, 0, true));
+        Ok(match scanner.step(&mut self.source)? {
+            ScanStep::Boundary { end, .. } => end,
+            ScanStep::Yield {
+                position,
+                content_end,
+            } => {
+                self.cache_line(LineBoundary {
+                    start: position,
+                    content_end: content_end.min(length),
+                    next: length,
+                    complete: false,
+                    resume: Some(scanner),
+                });
+                position
             }
-            byte == b'\n'
-        })?;
-        Ok(previous.map_or(scan_start, |offset| offset + 1))
+            ScanStep::Done { position } => position,
+        })
     }
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
@@ -773,77 +788,35 @@ impl Viewer {
         if self
             .lines
             .iter()
-            .any(|line| !line.complete && line.next == position)
+            .any(|line| {
+                !line.complete
+                    && line.next == position
+                    && line.resume.is_some_and(|scanner| scanner.is_forward())
+            })
         {
             return Ok(position);
         }
         if let Some(line) = self.cached_line_containing(position) {
             return Ok(line.start);
         }
-        let scan_start = position.saturating_sub(MAX_LINE_SCAN_BYTES);
-        Ok(self
-            .scan_reverse(position, scan_start, |_, byte| byte == b'\n')?
-            .map_or(scan_start, |offset| offset + 1))
-    }
-
-    fn line_scan_end(&self, start: u64) -> u64 {
-        start.saturating_add(MAX_LINE_SCAN_BYTES).min(self.length())
-    }
-
-    fn scan_forward<F>(&mut self, start: u64, end: u64, mut visit: F) -> io::Result<Option<u64>>
-    where
-        F: FnMut(u64, u8) -> bool,
-    {
-        let end = end.min(self.length());
-        let mut position = start.min(end);
-        while position < end {
-            let block_offset = position / BLOCK_SIZE * BLOCK_SIZE;
-            let block_end = block_offset.saturating_add(BLOCK_SIZE).min(end);
-            let bytes = self.source.read_range(position..block_end)?;
-            if bytes.len() != (block_end - position) as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer source range is shorter than the snapshot",
-                ));
+        let mut scanner = LineScanner::reverse(position, 0, false);
+        Ok(match scanner.step(&mut self.source)? {
+            ScanStep::Boundary { end, .. } => end,
+            ScanStep::Yield {
+                position: scan_position,
+                content_end,
+            } => {
+                self.cache_line(LineBoundary {
+                    start: scan_position,
+                    content_end: content_end.min(position),
+                    next: position,
+                    complete: false,
+                    resume: Some(scanner),
+                });
+                scan_position
             }
-            if let Some((index, _)) = bytes
-                .iter()
-                .enumerate()
-                .find(|(index, byte)| visit(position + *index as u64, **byte))
-            {
-                return Ok(Some(position + index as u64));
-            }
-            position = block_end;
-        }
-        Ok(None)
-    }
-
-    fn scan_reverse<F>(&mut self, start: u64, end: u64, mut visit: F) -> io::Result<Option<u64>>
-    where
-        F: FnMut(u64, u8) -> bool,
-    {
-        let mut position = start.min(self.length());
-        let end = end.min(position);
-        while position > end {
-            let block_offset = (position - 1) / BLOCK_SIZE * BLOCK_SIZE;
-            let first = end.max(block_offset);
-            let last = position.min(block_offset.saturating_add(BLOCK_SIZE));
-            let bytes = self.source.read_range(first..last)?;
-            if bytes.len() != (last - first) as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer source range is shorter than the snapshot",
-                ));
-            }
-            for index in (0..bytes.len()).rev() {
-                let offset = first + index as u64;
-                if visit(offset, bytes[index]) {
-                    return Ok(Some(offset));
-                }
-            }
-            position = first;
-        }
-        Ok(None)
+            ScanStep::Done { position } => position,
+        })
     }
 }
 
@@ -1084,8 +1057,9 @@ mod tests {
         assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         assert!(viewer.lines.iter().any(|line| {
             line.start == 0
-                && line.content_end == viewer.length()
-                && line.next == viewer.length()
+                && line.content_end == BLOCK_SIZE
+                && line.next == BLOCK_SIZE
+                && !line.complete
         }));
 
         viewer.source.reset_metrics();

@@ -431,6 +431,10 @@ perform file I/O or file scanning.
   - Depends on: T28C.
   - Done when: all line start/end/next/previous results come from one scanner and
     no cursor-visible boundary contains EOL bytes.
+  - Evidence: Ubuntu-24.04 WSL `cargo test --locked` passed with 71 unit tests and
+    8 integration tests; the WSL musl release build passed without warnings.
+    Dedicated CRLF, lone-CR, mixed-EOL, and post-fix native Windows checks remain
+    pending.
 
 - [ ] **T28E — Implement safe text-token decoding**
   - Create `viewer/text.rs`.
