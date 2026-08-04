@@ -546,7 +546,7 @@ perform file I/O or file scanning.
     elevated full `cargo test --locked` passed with 90 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28J — Add Previous/Current/Next frame rotation**
+- [*] **T28J — Add Previous/Current/Next frame rotation**
   - Store exactly three optional frame slots in `viewer/frame.rs`.
   - Implement deterministic Page Up/Page Down rotation when the neighbour matches
     the current snapshot, mode, size, tab width, and expected source boundary.
@@ -560,6 +560,12 @@ perform file I/O or file scanning.
   - Depends on: T28I.
   - Done when: repeated paging reuses valid neighbours and frame count is always
     at most three.
+  - Implementation: added keyed Previous/Current/Next slots with snapshot, mode,
+    size, tab-width, generation, and source-boundary validation; page commits
+    rotate valid neighbours and perform one bounded directional prefetch.
+  - Evidence: focused `cargo test --locked viewer::` passed with 37 tests; full
+    elevated `cargo test --locked` passed with 94 unit tests and 8 lifecycle
+    tests; the x86_64 musl release build passed.
 
 - [ ] **T28K — Add the session-scoped Viewer Worker foundation**
   - Create `viewer/worker.rs` and one worker per Session Server, not one thread per

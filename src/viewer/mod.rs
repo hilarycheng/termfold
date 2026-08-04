@@ -10,7 +10,7 @@ mod frame;
 mod source;
 mod text;
 
-use frame::PageFrame;
+use frame::{FrameContext, FrameKey, FrameSlots, PageFrame};
 use line::{LineBoundary, LineScanner, ScanStep};
 use source::FileSource;
 #[cfg(test)]
@@ -48,7 +48,10 @@ pub struct Viewer {
     visible_columns: usize,
     matches: Vec<u64>,
     search: Option<SearchState>,
-    current_frame: Option<PageFrame>,
+    frames: FrameSlots,
+    mode: u8,
+    generation: u64,
+    pending_page_direction: Option<bool>,
     committed: ViewState,
     lines: VecDeque<LineBoundary>,
 }
@@ -71,7 +74,10 @@ impl Viewer {
             visible_columns: 1,
             matches: Vec::new(),
             search: None,
-            current_frame: None,
+            frames: FrameSlots::default(),
+            mode: 0,
+            generation: 0,
+            pending_page_direction: None,
             committed,
             lines: VecDeque::new(),
         })
@@ -85,93 +91,199 @@ impl Viewer {
         self.source.len()
     }
 
+    fn current_frame(&self) -> Option<&PageFrame> {
+        self.frames.current()
+    }
+
+    fn frame_context(&self, size: Size) -> FrameContext {
+        FrameContext::new(
+            self.length(),
+            self.mode,
+            size,
+            self.tab_width,
+            self.generation,
+        )
+    }
+
+    pub(super) fn invalidate_frames(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.frames.clear();
+        self.pending_page_direction = None;
+    }
+
     pub fn render(&mut self, terminal: &mut Terminal, size: Size) -> io::Result<()> {
         let committed = self.committed;
-        let previous_frame = self.current_frame.take();
+        let previous_frames = self.frames.clone();
+        let previous_direction = self.pending_page_direction;
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
         let columns = usize::from(size.columns);
-        let frame = match self.build_page(size) {
-            Ok(frame) => frame,
-            Err(error) => {
-                self.restore_state(committed);
-                self.current_frame = previous_frame;
-                return Err(error);
+        let result = (|| {
+            self.position = self.position.min(self.length());
+            self.viewport = self.viewport.min(self.length());
+            self.viewport = self.line_start_at(self.viewport)?;
+
+            let context = self.frame_context(size);
+            let key = FrameKey::new(context, self.viewport);
+            let direction = self.pending_page_direction;
+            let same_context = self.frames.context() == Some(context);
+            if same_context && self.frames.current().is_some() {
+                self.validate_snapshot()?;
             }
-        };
-        let cursor_line = match self.line_start_at(self.position) {
-            Ok(line) => line,
-            Err(error) => {
-                self.restore_state(committed);
-                self.current_frame = previous_frame;
-                return Err(error);
-            }
-        };
-        let cursor_row = frame.cursor_row(cursor_line);
-        let cursor_column = match cursor_row {
-            Some(_) => match frame.cursor_column(
-                cursor_line,
-                self.position,
-                self.horizontal,
-                columns,
-            ) {
-                Some(column) => column,
-                None => {
-                    self.restore_state(committed);
-                    self.current_frame = previous_frame;
+            let mut rotated = None;
+            let frame = if same_context && self.frames.current_matches(key) {
+                self.frames
+                    .current()
+                    .cloned()
+                    .ok_or_else(|| io::Error::other("viewer current frame disappeared"))?
+            } else if same_context
+                && direction == Some(true)
+                && self.frames.neighbour_matches(key, true)
+            {
+                rotated = Some(true);
+                self.frames
+                    .neighbour(true)
+                    .cloned()
+                    .ok_or_else(|| io::Error::other("viewer next frame disappeared"))?
+            } else if same_context
+                && direction == Some(false)
+                && self.frames.neighbour_matches(key, false)
+            {
+                rotated = Some(false);
+                self.frames
+                    .neighbour(false)
+                    .cloned()
+                    .ok_or_else(|| io::Error::other("viewer previous frame disappeared"))?
+            } else {
+                self.build_page_at(size, self.viewport, context)?
+            };
+
+            let cursor_line = self.line_start_at(self.position)?;
+            let cursor_row = frame.cursor_row(cursor_line);
+            let cursor_column = match cursor_row {
+                Some(_) => frame
+                    .cursor_column(cursor_line, self.position, self.horizontal, columns)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "viewer frame has no cursor stop",
+                        )
+                    })?,
+                None => 0,
+            };
+
+            terminal.resize(size).map_err(io::Error::other)?;
+
+            self.frames.set_context(context);
+            if let Some(forward) = rotated {
+                let success = if forward {
+                    self.frames.rotate_forward(key)
+                } else {
+                    self.frames.rotate_backward(key)
+                };
+                if !success {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "viewer frame has no cursor stop",
+                        "viewer neighbour frame is no longer valid",
                     ));
                 }
-            },
-            None => 0,
-        };
+            } else if !self.frames.current_matches(key) {
+                self.frames.commit(frame.clone(), direction);
+            }
+            self.committed = self.state();
+            self.pending_page_direction = None;
 
-        if let Err(error) = terminal.resize(size).map_err(io::Error::other) {
-            self.restore_state(committed);
-            self.current_frame = previous_frame;
-            return Err(error);
-        }
-
-        self.committed = self.state();
-        self.current_frame = Some(frame);
-
-        terminal.advance(b"\x1b[2J\x1b[H");
-        if let Some(frame) = self.current_frame.as_ref() {
+            terminal.advance(b"\x1b[2J\x1b[H");
             for row in 0..frame.rows.len() {
-                terminal.advance(
-                    frame
-                        .render_row(row, self.horizontal, columns)
-                        .as_bytes(),
-                );
+                terminal.advance(frame.render_row(row, self.horizontal, columns).as_bytes());
                 terminal.advance(b"\r\n");
             }
+            let (row, column) = match cursor_row {
+                Some(row) => (row.saturating_add(1), cursor_column.saturating_add(1)),
+                None => (1, 1),
+            };
+            terminal.advance(format!("\x1b[{row};{column}H").as_bytes());
+
+            if direction.is_some() {
+                self.prefetch_neighbour(size, direction.unwrap_or(true));
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.restore_state(committed);
+            self.frames = previous_frames;
+            self.pending_page_direction = previous_direction;
         }
-        let (row, column) = match cursor_row {
-            Some(row) => (row.saturating_add(1), cursor_column.saturating_add(1)),
-            None => (1, 1),
-        };
-        terminal.advance(format!("\x1b[{row};{column}H").as_bytes());
-        Ok(())
+        result
     }
 
-    fn build_page(&mut self, size: Size) -> io::Result<PageFrame> {
-        self.position = self.position.min(self.length());
-        self.viewport = self.viewport.min(self.length());
-        self.viewport = self.line_start_at(self.viewport)?;
-        let rows = usize::from(size.rows);
+    fn build_page_at(
+        &mut self,
+        size: Size,
+        viewport: u64,
+        context: FrameContext,
+    ) -> io::Result<PageFrame> {
         let length = self.length();
         frame::build(
             &mut self.source,
             &mut self.lines,
             length,
             self.tab_width,
-            self.viewport,
-            rows,
+            viewport,
+            usize::from(size.rows),
             &self.matches,
             self.search.as_ref().map(|search| search.query.len()),
+            context,
         )
+    }
+
+    fn validate_snapshot(&mut self) -> io::Result<()> {
+        if self.length() > 0 && self.source.read_byte(0)?.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "viewer snapshot is no longer readable",
+            ));
+        }
+        Ok(())
+    }
+
+    fn prefetch_neighbour(&mut self, size: Size, forward: bool) {
+        let Some(current_start) = self.current_frame().map(|frame| frame.key.source_start) else {
+            return;
+        };
+        let steps = usize::from(size.rows.saturating_sub(2).max(1));
+        let mut start = current_start;
+        for _ in 0..steps {
+            let next = if forward {
+                self.next_line(start)
+            } else {
+                self.previous_line(start)
+            };
+            let Ok(next) = next else {
+                return;
+            };
+            if (forward && next <= start) || (!forward && next >= start) {
+                return;
+            }
+            start = next;
+        }
+        if (forward && start >= self.length()) || (!forward && start == current_start) {
+            return;
+        }
+
+        let context = self.frame_context(size);
+        if self
+            .frames
+            .neighbour_matches(FrameKey::new(context, start), forward)
+        {
+            return;
+        }
+        let Ok(frame) = self.build_page_at(size, start, context) else {
+            return;
+        };
+        if frame.key.source_start == start {
+            self.frames.insert_neighbour(frame, forward);
+        }
     }
 
     pub fn move_lines(&mut self, amount: i32) -> io::Result<()> {
@@ -242,21 +354,29 @@ impl Viewer {
     }
 
     pub fn page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
-        self.navigation(|viewer| {
+        let result = self.navigation(|viewer| {
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1));
             let amount = i32::try_from(lines).unwrap_or(i32::MAX);
             viewer.move_lines_inner(if forward { amount } else { -amount })
-        })
+        });
+        if result.is_ok() {
+            self.pending_page_direction = Some(forward);
+        }
+        result
     }
 
     pub fn half_page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
-        self.navigation(|viewer| {
+        let result = self.navigation(|viewer| {
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1)) / 2;
             let amount = i32::try_from(lines.max(1)).unwrap_or(i32::MAX);
             viewer.move_lines_inner(if forward { amount } else { -amount })
-        })
+        });
+        if result.is_ok() {
+            self.pending_page_direction = Some(forward);
+        }
+        result
     }
 
     pub fn top(&mut self) {
@@ -321,6 +441,7 @@ impl Viewer {
 
     pub fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
         let query = query.as_bytes().to_vec();
+        let has_query = !query.is_empty();
         let state = self.state();
         let matches = self.matches.clone();
         let search = self.search.clone();
@@ -340,11 +461,14 @@ impl Viewer {
             self.restore_state(state);
             self.matches = matches;
             self.search = search;
+        } else if has_query {
+            self.invalidate_frames();
         }
         result
     }
 
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
+        let had_search = self.search.is_some();
         let state = self.state();
         let matches = self.matches.clone();
         let search = self.search.clone();
@@ -384,6 +508,8 @@ impl Viewer {
             self.restore_state(state);
             self.matches = matches;
             self.search = search;
+        } else if had_search {
+            self.invalidate_frames();
         }
         result
     }
@@ -836,7 +962,7 @@ mod tests {
     }
 
     fn page_bytes(viewer: &Viewer) -> usize {
-        viewer.current_frame.as_ref().map_or(0, |frame| {
+        viewer.current_frame().map_or(0, |frame| {
             frame
                 .rows
                 .iter()
@@ -848,8 +974,7 @@ mod tests {
 
     fn page_line(viewer: &Viewer, row: usize, columns: usize) -> String {
         viewer
-            .current_frame
-            .as_ref()
+            .current_frame()
             .expect("rendered frame")
             .render_row(row, viewer.horizontal, columns)
     }
@@ -882,7 +1007,7 @@ mod tests {
         assert!(viewer.search("beta", true).unwrap());
         viewer.render(&mut terminal, size).unwrap();
 
-        let frame = viewer.current_frame.as_ref().expect("current frame");
+        let frame = viewer.current_frame().expect("current frame");
         assert_eq!(frame.source_range, 0..11);
         assert_eq!(frame.rows.len(), 2);
         assert_eq!(
@@ -911,7 +1036,7 @@ mod tests {
         let mut empty_terminal = Terminal::new(empty_size).unwrap();
         let mut empty = Viewer::open(empty_path.clone(), 8).unwrap();
         empty.render(&mut empty_terminal, empty_size).unwrap();
-        let empty_frame = empty.current_frame.as_ref().expect("empty frame");
+        let empty_frame = empty.current_frame().expect("empty frame");
         assert_eq!(empty_frame.source_range, 0..0);
         assert!(empty_frame.rows.is_empty());
 
@@ -929,7 +1054,7 @@ mod tests {
         let mut terminal = Terminal::new(size).unwrap();
         let mut viewer = Viewer::open(long_path.clone(), 8).unwrap();
         viewer.render(&mut terminal, size).unwrap();
-        let frame = viewer.current_frame.as_ref().expect("bounded frame");
+        let frame = viewer.current_frame().expect("bounded frame");
         assert_eq!(frame.source_bytes(), 256 * 1024);
         assert_eq!(frame.rows.len(), 4);
 
@@ -951,7 +1076,7 @@ mod tests {
         viewer.position = 1;
         viewer.render(&mut terminal, size).unwrap();
 
-        let frame = viewer.current_frame.as_ref().expect("current frame");
+        let frame = viewer.current_frame().expect("current frame");
         assert_eq!(frame.render_row(0, viewer.horizontal, 3), "b^@");
         assert_eq!(terminal.screen().cursor().column, 0);
         assert_eq!(frame.cursor_stops[1].source, 1);
@@ -1199,13 +1324,7 @@ mod tests {
         }
         assert_ne!(page_line(&viewer, 0, usize::from(size.columns)), first_line);
         assert!(
-            viewer
-                .current_frame
-                .as_ref()
-                .expect("rendered frame")
-                .rows
-                .len()
-                <= usize::from(size.rows)
+            viewer.current_frame().expect("rendered frame").rows.len() <= usize::from(size.rows)
         );
 
         for _ in 0..(BLOCK_CACHE_SIZE * 3 / 2) {
@@ -1237,7 +1356,7 @@ mod tests {
         viewer.source.reset_metrics();
 
         viewer.page(size.rows, true).unwrap();
-        assert!(viewer.source.block_reads() <= 1);
+        assert!(viewer.source.block_reads() <= 2);
         assert!(
             viewer.source.block_accesses() <= 8,
             "block accesses: {}",
@@ -1246,7 +1365,7 @@ mod tests {
 
         viewer.source.reset_metrics();
         viewer.page(size.rows, false).unwrap();
-        assert!(viewer.source.block_reads() <= 1);
+        assert!(viewer.source.block_reads() <= 2);
         assert!(
             viewer.source.block_accesses() <= 8,
             "block accesses: {}",
@@ -1294,7 +1413,7 @@ mod tests {
             assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         }
         assert!(
-            viewer.source.block_reads() <= 1,
+            viewer.source.block_reads() <= 2,
             "repeated EOF reads: {}",
             viewer.source.block_reads()
         );
@@ -1331,7 +1450,7 @@ mod tests {
             viewer.render(&mut terminal, size).unwrap();
         }
         assert!(
-            viewer.source.block_reads() <= 1,
+            viewer.source.block_reads() <= 2,
             "repeated long-line reads: {}",
             viewer.source.block_reads()
         );
@@ -1420,7 +1539,7 @@ mod tests {
         }
         let cold_elapsed = started.elapsed();
         let cold_reads = viewer.source.block_reads() - initial_reads;
-        assert_eq!(cold_reads, 1);
+        assert!(cold_reads <= 2, "cold paging reads including prefetch: {cold_reads}");
         let cold_page = page_bytes(&viewer);
 
         let started = std::time::Instant::now();
@@ -1486,10 +1605,9 @@ mod tests {
         let mut terminal = Terminal::new(size).unwrap();
         viewer.render(&mut terminal, size).unwrap();
         let page_source = viewer
-            .current_frame
-            .as_ref()
+            .current_frame()
             .map(|frame| frame.source_range.clone());
-        let page_rows = viewer.current_frame.as_ref().map(|frame| {
+        let page_rows = viewer.current_frame().map(|frame| {
             frame
                 .rows
                 .iter()
@@ -1506,13 +1624,12 @@ mod tests {
         assert!(!error.to_string().is_empty());
         assert_eq!(
             viewer
-                .current_frame
-                .as_ref()
+                .current_frame()
                 .map(|frame| frame.source_range.clone()),
             page_source
         );
         assert_eq!(
-            viewer.current_frame.as_ref().map(|frame| {
+            viewer.current_frame().map(|frame| {
                 frame
                     .rows
                     .iter()
