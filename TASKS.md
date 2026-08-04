@@ -667,7 +667,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 51 viewer tests; the
     x86_64-unknown-linux-musl release build passed.
 
-- [ ] **T28O — Implement incremental cancellable forward/reverse search**
+- [*] **T28O — Implement incremental cancellable forward/reverse search**
   - Search Current from the cursor first, then the neighbour in the requested
     direction, then scan the snapshot in 64 KiB steps.
   - Support forward/reverse, `n`/`N`, matches crossing block boundaries, and one
@@ -682,6 +682,12 @@ perform file I/O or file scanning.
     another viewer receives service during a long search.
   - Depends on: T28K, T28N.
   - Done when: no search loop can monopolize Viewer Worker or Session Server.
+  - Implementation: replaced byte-at-a-time full-range scanning with bounded
+    64 KiB source chunks, current/nearby frame priority, one-wrap range planning,
+    strict repeat offsets, generation cancellation, and round-robin worker steps.
+  - Evidence: `cargo test --locked viewer::` passed with 56 viewer tests; the
+    x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
+    validation was not available in this Linux host.
 
 - [ ] **T28P — Highlight visible search matches**
   - Map every matching source range in Current to display-cell spans through the

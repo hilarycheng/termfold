@@ -37,8 +37,7 @@ impl SearchQuery {
         self.as_bytes().len()
     }
 
-    #[cfg(test)]
-    pub(super) fn matches(&self, candidate: &[u8]) -> bool {
+    pub(super) fn matches_bytes(&self, candidate: &[u8]) -> bool {
         self.as_bytes().len() == candidate.len()
             && self
                 .as_bytes()
@@ -46,6 +45,11 @@ impl SearchQuery {
                 .copied()
                 .zip(candidate.iter().copied())
                 .all(|(query, byte)| self.matches_byte(query, byte))
+    }
+
+    #[cfg(test)]
+    pub(super) fn matches(&self, candidate: &[u8]) -> bool {
+        self.matches_bytes(candidate)
     }
 
     pub(super) fn matches_byte(&self, query: u8, byte: u8) -> bool {

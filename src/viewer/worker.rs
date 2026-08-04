@@ -67,6 +67,7 @@ pub(crate) struct ViewerHandle {
     id: ViewerId,
     generation: u64,
     path: PathBuf,
+    render_size: Option<Size>,
     closed: bool,
     result_sender: SyncSender<ViewerResult>,
     results: Receiver<ViewerResult>,
@@ -128,6 +129,7 @@ impl ViewerWorkerHandle {
                     let (result_sender, results) = mpsc::sync_channel(VIEWER_RESULT_CAPACITY);
                     Ok(ViewerHandle {
                         worker: self.clone(), id, generation, path, closed: false,
+                        render_size: None,
                         result_sender, results,
                     })
                 }
@@ -245,7 +247,12 @@ impl ViewerHandle {
 
     pub(crate) fn request_render(&mut self, size: Size) -> io::Result<()> {
         let terminal = Terminal::new(size).map_err(io::Error::other)?;
-        self.dispatch(ViewerOperation::Render { terminal, size }, false)
+        let invalidate = self.render_size.is_some_and(|previous| previous != size);
+        let result = self.dispatch(ViewerOperation::Render { terminal, size }, invalidate);
+        if result.is_ok() {
+            self.render_size = Some(size);
+        }
+        result
     }
 
     pub(crate) fn poll(&mut self, terminal: &mut Terminal) -> io::Result<Option<ViewerUpdate>> {
@@ -332,11 +339,16 @@ fn run(receiver: Receiver<ViewerCommand>) {
                 if control(command, &mut viewers, &mut active, &mut queue) { return; }
             }
             for command in operations {
-                enqueue(command, &mut viewers, &active, &mut queue);
+                enqueue(command, &mut viewers, &mut active, &mut queue);
             }
         }
         if active.is_none() { active = queue.pop_front(); }
-        if let Some(work) = active.take() { active = step(work, &mut viewers); }
+        if let Some(work) = active.take() {
+            if let Some(work) = step(work, &mut viewers) {
+                queue.push_back(work);
+            }
+            active = queue.pop_front();
+        }
     }
 }
 
@@ -374,7 +386,12 @@ fn control(command: ViewerCommand, viewers: &mut HashMap<ViewerId, WorkerViewer>
     false
 }
 
-fn enqueue(command: ViewerCommand, viewers: &mut HashMap<ViewerId, WorkerViewer>, active: &Option<Work>, queue: &mut VecDeque<Work>) {
+fn enqueue(
+    command: ViewerCommand,
+    viewers: &mut HashMap<ViewerId, WorkerViewer>,
+    active: &mut Option<Work>,
+    queue: &mut VecDeque<Work>,
+) {
     let ViewerCommand::Run { id, generation, operation, reply } = command else { return };
     let Some(viewer) = viewers.get_mut(&id) else {
         send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) });
@@ -383,6 +400,9 @@ fn enqueue(command: ViewerCommand, viewers: &mut HashMap<ViewerId, WorkerViewer>
     if generation < viewer.generation {
         send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) });
         return;
+    }
+    if generation > viewer.generation {
+        cancel(id, active, queue);
     }
     if queue.len() + usize::from(active.is_some()) >= VIEWER_COMMAND_CAPACITY {
         send(&reply, ViewerResult::Error { id, generation, message: "viewer worker work queue is full".into(), terminal: take_terminal_from(operation) });
@@ -621,6 +641,74 @@ mod tests {
         assert!(matches!(close_result.recv_timeout(Duration::from_millis(500)).unwrap(), ViewerResult::Closed { .. }));
         worker.shutdown();
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn long_search_yields_to_another_viewer() {
+        let first_path = path("search-first");
+        let second_path = path("search-second");
+        fs::write(&first_path, vec![b'a'; 8 * 1024 * 1024]).unwrap();
+        fs::write(&second_path, b"second").unwrap();
+        let mut worker = ViewerWorker::spawn().unwrap();
+        let handle = worker.handle();
+        let first = handle.open(first_path.clone(), 8).unwrap();
+        let second = handle.open(second_path.clone(), 8).unwrap();
+        let sender = handle.sender;
+
+        let (search_reply, _search_result) = mpsc::sync_channel(1);
+        sender
+            .send(ViewerCommand::Run {
+                id: first.id,
+                generation: first.generation,
+                operation: ViewerOperation::Search {
+                    query: vec![b'z'; 256],
+                    forward: true,
+                },
+                reply: search_reply,
+            })
+            .unwrap();
+        let (second_reply, second_result) = mpsc::sync_channel(1);
+        sender
+            .send(ViewerCommand::Run {
+                id: second.id,
+                generation: second.generation,
+                operation: ViewerOperation::Top,
+                reply: second_reply,
+            })
+            .unwrap();
+        assert!(matches!(
+            second_result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ViewerResult::Done { id, .. } if id == second.id
+        ));
+
+        let (first_close_reply, first_close_result) = mpsc::sync_channel(1);
+        sender
+            .send(ViewerCommand::Close {
+                id: first.id,
+                generation: first.generation + 1,
+                reply: first_close_reply,
+            })
+            .unwrap();
+        assert!(matches!(
+            first_close_result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ViewerResult::Closed { id, .. } if id == first.id
+        ));
+        let (second_close_reply, second_close_result) = mpsc::sync_channel(1);
+        sender
+            .send(ViewerCommand::Close {
+                id: second.id,
+                generation: second.generation + 1,
+                reply: second_close_reply,
+            })
+            .unwrap();
+        assert!(matches!(
+            second_close_result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ViewerResult::Closed { id, .. } if id == second.id
+        ));
+
+        worker.shutdown();
+        fs::remove_file(first_path).unwrap();
+        fs::remove_file(second_path).unwrap();
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     io,
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -32,7 +33,8 @@ struct SearchState {
 pub(super) struct SearchWork {
     query: SearchQuery,
     forward: bool,
-    ranges: VecDeque<(u64, u64)>,
+    ranges: VecDeque<Range<u64>>,
+    matches: Vec<u64>,
 }
 
 pub(super) enum SearchStart {
@@ -124,7 +126,6 @@ impl Viewer {
         )
     }
 
-    #[cfg(test)]
     pub(super) fn invalidate_frames(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.frames.clear();
@@ -461,76 +462,44 @@ impl Viewer {
 
     #[cfg(test)]
     pub fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
-        let query = match SearchQuery::parse(query.as_bytes()) {
-            Ok(query) => query,
-            Err(_) => return Ok(false),
-        };
         let state = self.state();
         let matches = self.matches.clone();
         let search = self.search.clone();
-        let result = (|| {
-            let found = self.search_from(&query, forward, self.position)?;
-            self.search = found.map(|offset| SearchState {
-                query,
-                forward,
-                offset,
-            });
-            Ok(found.is_some())
+        let result = (|| match self.begin_search_work(query.as_bytes().to_vec(), forward) {
+            SearchStart::Complete(found) => Ok(found),
+            SearchStart::Work(mut work) => loop {
+                match self.step_search_work(&mut work)? {
+                    SearchStep::Continue => continue,
+                    SearchStep::Complete(found) => break Ok(found),
+                }
+            },
         })();
         if result.is_err() {
             self.restore_state(state);
             self.matches = matches;
             self.search = search;
-        } else {
-            self.invalidate_frames();
         }
         result
     }
 
     #[cfg(test)]
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
-        let had_search = self.search.is_some();
         let state = self.state();
         let matches = self.matches.clone();
         let search = self.search.clone();
-        let result = (|| {
-            let Some(previous) = self.search.clone() else {
-                return Ok(false);
-            };
-            let forward = if same_direction {
-                previous.forward
-            } else {
-                !previous.forward
-            };
-            let start = if forward {
-                previous.offset.saturating_add(1)
-            } else {
-                previous.offset.saturating_sub(1)
-            };
-            if let Some(offset) = self.cached_match(start, forward) {
-                self.set_position(offset)?;
-                self.search = Some(SearchState {
-                    query: previous.query,
-                    forward,
-                    offset,
-                });
-                return Ok(true);
-            }
-            let query = previous.query;
-            let found = self.search_from(&query, forward, start)?;
-            self.search = found.map(|offset| SearchState {
-                query,
-                forward,
-                offset,
-            });
-            Ok(found.is_some())
+        let result = (|| match self.begin_repeat_search_work(same_direction)? {
+            SearchStart::Complete(found) => Ok(found),
+            SearchStart::Work(mut work) => loop {
+                match self.step_search_work(&mut work)? {
+                    SearchStep::Continue => continue,
+                    SearchStep::Complete(found) => break Ok(found),
+                }
+            },
         })();
         if result.is_err() {
             self.restore_state(state);
             self.matches = matches;
             self.search = search;
-        } else if had_search {
-            self.invalidate_frames();
         }
         result
     }
@@ -539,7 +508,6 @@ impl Viewer {
         let Ok(query) = SearchQuery::parse(&input) else {
             return SearchStart::Complete(false);
         };
-        self.matches.clear();
         self.search_work_at(query, forward, self.position)
     }
 
@@ -555,91 +523,161 @@ impl Viewer {
         } else {
             !previous.forward
         };
-        let start = if forward {
-            previous.offset.saturating_add(1)
-        } else {
-            previous.offset.saturating_sub(1)
-        };
-        if let Some(offset) = self.cached_match(start, forward) {
+        if let Some(offset) = self.cached_match(previous.offset, forward) {
             self.set_position(offset)?;
             self.search = Some(SearchState {
                 query: previous.query,
                 forward,
                 offset,
             });
+            self.invalidate_frames();
             return Ok(SearchStart::Complete(true));
         }
-        self.matches.clear();
-        Ok(self.search_work_at(previous.query, forward, start))
+        Ok(self.search_work_at_excluding(
+            previous.query,
+            forward,
+            previous.offset,
+            Some(previous.offset),
+        ))
     }
 
     fn search_work_at(&mut self, query: SearchQuery, forward: bool, start: u64) -> SearchStart {
+        self.search_work_at_excluding(query, forward, start, None)
+    }
+
+    fn search_work_at_excluding(
+        &mut self,
+        query: SearchQuery,
+        forward: bool,
+        start: u64,
+        excluded: Option<u64>,
+    ) -> SearchStart {
         if query.as_bytes().is_empty() {
             return SearchStart::Complete(false);
         }
         let Some(maximum) = self.length().checked_sub(query.len() as u64) else {
-            self.search = None;
             return SearchStart::Complete(false);
         };
-        let start = start.min(maximum);
-        let mut ranges = VecDeque::with_capacity(2);
-        if forward {
-            ranges.push_back((start, maximum));
-            if start > 0 {
-                ranges.push_back((0, start - 1));
-            }
+        let query_len = query.len() as u64;
+        let start = if forward {
+            start.min(maximum.saturating_add(1))
         } else {
-            ranges.push_back((start, 0));
-            if start < maximum {
-                ranges.push_back((maximum, start + 1));
-            }
+            start.min(maximum)
+        };
+        let limit = maximum.saturating_add(1);
+        let primary = if forward {
+            start..limit
+        } else {
+            0..start.saturating_add(1)
+        };
+        let current = self
+            .current_frame()
+            .and_then(|frame| frame_candidate_range(frame.source_range.clone(), query_len))
+            .and_then(|range| intersect_range(range, &primary));
+        let neighbour = self
+            .frames
+            .neighbour(forward)
+            .and_then(|frame| frame_candidate_range(frame.source_range.clone(), query_len))
+            .and_then(|range| intersect_range(range, &primary));
+
+        let mut ranges = VecDeque::with_capacity(5);
+        let mut selected = excluded
+            .filter(|offset| *offset < limit)
+            .map(|offset| vec![offset..offset.saturating_add(1)])
+            .unwrap_or_default();
+        for priority in [current, neighbour].into_iter().flatten() {
+            let mut pieces = subtract_range(priority, &selected);
+            order_ranges(&mut pieces, forward);
+            selected.extend(pieces.iter().cloned());
+            ranges.extend(pieces);
         }
+        let mut remaining = subtract_range(primary, &selected);
+        order_ranges(&mut remaining, forward);
+        ranges.extend(remaining);
+
+        let wrap = if forward {
+            0..start.min(limit)
+        } else {
+            start.saturating_add(1).min(limit)..limit
+        };
+        let mut wrapped = subtract_range(wrap, &selected);
+        order_ranges(&mut wrapped, forward);
+        ranges.extend(wrapped);
+
         SearchStart::Work(SearchWork {
             query,
             forward,
             ranges,
+            matches: Vec::new(),
         })
     }
 
     pub(super) fn step_search_work(&mut self, work: &mut SearchWork) -> io::Result<SearchStep> {
-        let Some((start, end)) = work.ranges.front_mut() else {
-            self.search = None;
+        let Some(range) = work.ranges.front().cloned() else {
             return Ok(SearchStep::Complete(false));
         };
-        let (scan_start, scan_end, exhausted) = if work.forward {
-            let scan_end = start
-                .saturating_add(source::BLOCK_SIZE.saturating_sub(1))
-                .min(*end);
-            let scan_start = *start;
-            *start = scan_end.saturating_add(1);
-            (scan_start, scan_end, scan_end == *end)
+        let query_len = work.query.len();
+        let candidate_limit = source::BLOCK_SIZE as usize - query_len + 1;
+        let (scan_start, scan_end) = if work.forward {
+            let scan_end = range
+                .start
+                .saturating_add(candidate_limit as u64)
+                .min(range.end);
+            (range.start, scan_end)
         } else {
-            let scan_start = start
-                .saturating_sub(source::BLOCK_SIZE.saturating_sub(1))
-                .max(*end);
-            let scan_end = *start;
-            *start = scan_start.saturating_sub(1);
-            (scan_end, scan_start, scan_start == *end)
+            let scan_start = range
+                .end
+                .saturating_sub(candidate_limit as u64)
+                .max(range.start);
+            (scan_start, range.end)
         };
-        let found = if work.forward {
-            self.collect_forward(&work.query, scan_start, scan_end)?
+        let read_end = scan_end
+            .saturating_add(query_len.saturating_sub(1) as u64)
+            .min(self.length());
+        let bytes = self.source.read_range(scan_start..read_end)?;
+        let candidate_count = (scan_end - scan_start) as usize;
+        let mut found = None;
+        if work.forward {
+            for offset in 0..candidate_count {
+                let end = offset.saturating_add(query_len);
+                if end <= bytes.len() && work.query.matches_bytes(&bytes[offset..end]) {
+                    let source = scan_start + offset as u64;
+                    remember_match(&mut work.matches, source);
+                    found.get_or_insert(source);
+                }
+            }
         } else {
-            self.collect_reverse(&work.query, scan_start, scan_end)?
-        };
-        if exhausted {
+            for offset in (0..candidate_count).rev() {
+                let end = offset.saturating_add(query_len);
+                if end <= bytes.len() && work.query.matches_bytes(&bytes[offset..end]) {
+                    let source = scan_start + offset as u64;
+                    remember_match(&mut work.matches, source);
+                    found.get_or_insert(source);
+                }
+            }
+        }
+        if work.forward {
+            if let Some(range) = work.ranges.front_mut() {
+                range.start = scan_end;
+            }
+        } else if let Some(range) = work.ranges.front_mut() {
+            range.end = scan_start;
+        }
+        if work.ranges.front().is_some_and(|range| range.is_empty()) {
             work.ranges.pop_front();
         }
         if let Some(offset) = found {
             self.set_position(offset)?;
+            self.matches = std::mem::take(&mut work.matches);
             self.search = Some(SearchState {
                 query: work.query.clone(),
                 forward: work.forward,
                 offset,
             });
+            self.invalidate_frames();
             return Ok(SearchStep::Complete(true));
         }
         if work.ranges.is_empty() {
-            self.search = None;
             Ok(SearchStep::Complete(false))
         } else {
             Ok(SearchStep::Continue)
@@ -727,108 +765,16 @@ impl Viewer {
         frame::cache_line(&mut self.lines, line);
     }
 
-    #[cfg(test)]
-    fn search_from(
-        &mut self,
-        query: &SearchQuery,
-        forward: bool,
-        start: u64,
-    ) -> io::Result<Option<u64>> {
-        self.matches.clear();
-        let maximum = self.length().checked_sub(query.len() as u64);
-        let Some(maximum) = maximum else {
-            return Ok(None);
-        };
-        let start = start.min(maximum);
-        let found = if forward {
-            let found = self.collect_forward(query, start, maximum)?;
-            if found.is_some() || start == 0 {
-                found
-            } else {
-                self.collect_forward(query, 0, start - 1)?
-            }
-        } else {
-            let found = self.collect_reverse(query, start, 0)?;
-            if found.is_some() || start == maximum {
-                found
-            } else {
-                self.collect_reverse(query, maximum, start + 1)?
-            }
-        };
-        if let Some(offset) = found {
-            self.set_position(offset)?;
-        }
-        Ok(found)
-    }
-
-    fn collect_forward(
-        &mut self,
-        query: &SearchQuery,
-        start: u64,
-        end: u64,
-    ) -> io::Result<Option<u64>> {
-        let mut found = None;
-        let mut offset = start;
-        loop {
-            if self.matches_at(offset, query)? {
-                found.get_or_insert(offset);
-                if self.matches.len() < MAX_MATCH_OFFSETS {
-                    self.matches.push(offset);
-                }
-            }
-            if offset == end {
-                break;
-            }
-            offset += 1;
-        }
-        Ok(found)
-    }
-
-    fn collect_reverse(
-        &mut self,
-        query: &SearchQuery,
-        start: u64,
-        end: u64,
-    ) -> io::Result<Option<u64>> {
-        let mut found = None;
-        let mut offset = start;
-        loop {
-            if self.matches_at(offset, query)? {
-                found.get_or_insert(offset);
-                if self.matches.len() < MAX_MATCH_OFFSETS {
-                    self.matches.push(offset);
-                }
-            }
-            if offset == end {
-                break;
-            }
-            offset = offset.saturating_sub(1);
-        }
-        Ok(found)
-    }
-
     fn cached_match(&self, start: u64, forward: bool) -> Option<u64> {
         if forward {
-            self.matches.iter().copied().find(|offset| *offset >= start)
+            self.matches.iter().copied().find(|offset| *offset > start)
         } else {
             self.matches
                 .iter()
                 .copied()
-                .filter(|offset| *offset <= start)
+                .filter(|offset| *offset < start)
                 .max()
         }
-    }
-
-    fn matches_at(&mut self, offset: u64, query: &SearchQuery) -> io::Result<bool> {
-        for (index, byte) in query.as_bytes().iter().copied().enumerate() {
-            let Some(actual) = self.source.read_byte(offset + index as u64)? else {
-                return Ok(false);
-            };
-            if !query.matches_byte(byte, actual) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     #[cfg(test)]
@@ -1071,6 +1017,52 @@ impl Viewer {
             }
             ScanStep::Done { position } => position,
         })
+    }
+}
+
+fn frame_candidate_range(frame: Range<u64>, query_len: u64) -> Option<Range<u64>> {
+    let end = frame.end.checked_sub(query_len.saturating_sub(1))?;
+    (frame.start < end).then_some(frame.start..end)
+}
+
+fn intersect_range(first: Range<u64>, second: &Range<u64>) -> Option<Range<u64>> {
+    let start = first.start.max(second.start);
+    let end = first.end.min(second.end);
+    (start < end).then_some(start..end)
+}
+
+fn subtract_range(base: Range<u64>, excluded: &[Range<u64>]) -> Vec<Range<u64>> {
+    let mut parts = vec![base];
+    for cut in excluded {
+        let mut remaining = Vec::with_capacity(parts.len() + 1);
+        for part in parts {
+            if cut.end <= part.start || cut.start >= part.end {
+                remaining.push(part);
+                continue;
+            }
+            if part.start < cut.start {
+                remaining.push(part.start..cut.start.min(part.end));
+            }
+            if cut.end < part.end {
+                remaining.push(cut.end.max(part.start)..part.end);
+            }
+        }
+        parts = remaining;
+    }
+    parts
+}
+
+fn order_ranges(ranges: &mut [Range<u64>], forward: bool) {
+    if forward {
+        ranges.sort_by_key(|range| range.start);
+    } else {
+        ranges.sort_by(|first, second| second.end.cmp(&first.end));
+    }
+}
+
+fn remember_match(matches: &mut Vec<u64>, offset: u64) {
+    if matches.len() < MAX_MATCH_OFFSETS {
+        matches.push(offset);
     }
 }
 
@@ -1414,6 +1406,111 @@ mod tests {
             SearchStart::Complete(false)
         ));
         assert_eq!(viewer.search, previous);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_prioritizes_current_and_neighbour_frames() {
+        let path = temp_path("termfold-viewer-search-priority");
+        fs::write(&path, vec![b'x'; 400]).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        let size = Size {
+            columns: 80,
+            rows: 24,
+        };
+        let context = viewer.frame_context(size);
+        viewer.frames.set_context(context);
+        viewer.frames.commit(
+            PageFrame {
+                key: FrameKey::new(context, 100),
+                source_range: 100..200,
+                ..PageFrame::default()
+            },
+            None,
+        );
+        viewer.frames.insert_neighbour(
+            PageFrame {
+                key: FrameKey::new(context, 200),
+                source_range: 200..300,
+                ..PageFrame::default()
+            },
+            true,
+        );
+
+        let SearchStart::Work(work) = viewer.begin_search_work(b"xxx".to_vec(), true) else {
+            panic!("search should be incremental");
+        };
+        assert_eq!(
+            work.ranges.iter().take(2).cloned().collect::<Vec<_>>(),
+            vec![100..198, 200..298]
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_wraps_once_and_reverses_without_repeating_the_cursor() {
+        let path = temp_path("termfold-viewer-search-wrap");
+        fs::write(&path, b"hit---middle---hit").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        let first = 0;
+        let second = 15;
+
+        viewer.position = second;
+        assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, second);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, first);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, second);
+
+        viewer.position = first;
+        assert!(viewer.search("hit", false).unwrap());
+        assert_eq!(viewer.position, first);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, second);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, first);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn incremental_search_finds_a_match_across_a_raw_block() {
+        let path = temp_path("termfold-viewer-search-block-boundary");
+        let mut data = vec![b'x'; BLOCK_SIZE as usize - 1];
+        data.extend_from_slice(b"abc");
+        fs::write(&path, &data).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search("abc", true).unwrap());
+        assert_eq!(viewer.position, BLOCK_SIZE - 1);
+        viewer.position = viewer.length();
+        assert!(viewer.search("abc", false).unwrap());
+        assert_eq!(viewer.position, BLOCK_SIZE - 1);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn incremental_search_terminates_without_a_match() {
+        let path = temp_path("termfold-viewer-search-no-match");
+        fs::write(&path, vec![b'x'; BLOCK_SIZE as usize * 2]).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        let SearchStart::Work(mut work) = viewer.begin_search_work(b"z".to_vec(), true) else {
+            panic!("search should be incremental");
+        };
+        let mut steps = 0;
+        let result = loop {
+            steps += 1;
+            match viewer.step_search_work(&mut work).unwrap() {
+                SearchStep::Continue => continue,
+                SearchStep::Complete(found) => break found,
+            }
+        };
+        assert!(!result);
+        assert!(steps >= 3);
 
         fs::remove_file(path).unwrap();
     }
