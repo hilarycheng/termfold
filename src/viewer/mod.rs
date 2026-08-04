@@ -8,11 +8,13 @@ use crate::{session::Size, terminal::Terminal};
 mod line;
 mod frame;
 mod source;
+mod search;
 mod text;
 pub(super) mod worker;
 
 use frame::{FrameContext, FrameKey, FrameSlots, PageFrame};
 use line::{LineBoundary, LineScanner, ScanStep};
+use search::SearchQuery;
 use source::FileSource;
 #[cfg(test)]
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
@@ -20,15 +22,15 @@ use text::DecodedText;
 
 const MAX_MATCH_OFFSETS: usize = 4096;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct SearchState {
-    query: Vec<u8>,
+    query: SearchQuery,
     forward: bool,
     offset: u64,
 }
 
 pub(super) struct SearchWork {
-    query: Vec<u8>,
+    query: SearchQuery,
     forward: bool,
     ranges: VecDeque<(u64, u64)>,
 }
@@ -459,15 +461,14 @@ impl Viewer {
 
     #[cfg(test)]
     pub fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
-        let query = query.as_bytes().to_vec();
-        let has_query = !query.is_empty();
+        let query = match SearchQuery::parse(query.as_bytes()) {
+            Ok(query) => query,
+            Err(_) => return Ok(false),
+        };
         let state = self.state();
         let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| {
-            if query.is_empty() {
-                return Ok(false);
-            }
             let found = self.search_from(&query, forward, self.position)?;
             self.search = found.map(|offset| SearchState {
                 query,
@@ -480,7 +481,7 @@ impl Viewer {
             self.restore_state(state);
             self.matches = matches;
             self.search = search;
-        } else if has_query {
+        } else {
             self.invalidate_frames();
         }
         result
@@ -534,7 +535,10 @@ impl Viewer {
         result
     }
 
-    pub(super) fn begin_search_work(&mut self, query: Vec<u8>, forward: bool) -> SearchStart {
+    pub(super) fn begin_search_work(&mut self, input: Vec<u8>, forward: bool) -> SearchStart {
+        let Ok(query) = SearchQuery::parse(&input) else {
+            return SearchStart::Complete(false);
+        };
         self.matches.clear();
         self.search_work_at(query, forward, self.position)
     }
@@ -569,8 +573,8 @@ impl Viewer {
         Ok(self.search_work_at(previous.query, forward, start))
     }
 
-    fn search_work_at(&mut self, query: Vec<u8>, forward: bool, start: u64) -> SearchStart {
-        if query.is_empty() {
+    fn search_work_at(&mut self, query: SearchQuery, forward: bool, start: u64) -> SearchStart {
+        if query.as_bytes().is_empty() {
             return SearchStart::Complete(false);
         }
         let Some(maximum) = self.length().checked_sub(query.len() as u64) else {
@@ -724,7 +728,12 @@ impl Viewer {
     }
 
     #[cfg(test)]
-    fn search_from(&mut self, query: &[u8], forward: bool, start: u64) -> io::Result<Option<u64>> {
+    fn search_from(
+        &mut self,
+        query: &SearchQuery,
+        forward: bool,
+        start: u64,
+    ) -> io::Result<Option<u64>> {
         self.matches.clear();
         let maximum = self.length().checked_sub(query.len() as u64);
         let Some(maximum) = maximum else {
@@ -752,7 +761,12 @@ impl Viewer {
         Ok(found)
     }
 
-    fn collect_forward(&mut self, query: &[u8], start: u64, end: u64) -> io::Result<Option<u64>> {
+    fn collect_forward(
+        &mut self,
+        query: &SearchQuery,
+        start: u64,
+        end: u64,
+    ) -> io::Result<Option<u64>> {
         let mut found = None;
         let mut offset = start;
         loop {
@@ -770,7 +784,12 @@ impl Viewer {
         Ok(found)
     }
 
-    fn collect_reverse(&mut self, query: &[u8], start: u64, end: u64) -> io::Result<Option<u64>> {
+    fn collect_reverse(
+        &mut self,
+        query: &SearchQuery,
+        start: u64,
+        end: u64,
+    ) -> io::Result<Option<u64>> {
         let mut found = None;
         let mut offset = start;
         loop {
@@ -800,9 +819,12 @@ impl Viewer {
         }
     }
 
-    fn matches_at(&mut self, offset: u64, query: &[u8]) -> io::Result<bool> {
-        for (index, byte) in query.iter().enumerate() {
-            if self.source.read_byte(offset + index as u64)? != Some(*byte) {
+    fn matches_at(&mut self, offset: u64, query: &SearchQuery) -> io::Result<bool> {
+        for (index, byte) in query.as_bytes().iter().copied().enumerate() {
+            let Some(actual) = self.source.read_byte(offset + index as u64)? else {
+                return Ok(false);
+            };
+            if !query.matches_byte(byte, actual) {
                 return Ok(false);
             }
         }
@@ -1375,6 +1397,23 @@ mod tests {
         assert_eq!(viewer.position, 5);
         viewer.bottom().unwrap();
         assert_eq!(viewer.position, 24);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_query_keeps_the_last_successful_query() {
+        let path = temp_path("termfold-viewer-invalid-query");
+        fs::write(&path, b"hit\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        assert!(viewer.search("hit", true).unwrap());
+        let previous = viewer.search.clone();
+
+        assert!(matches!(
+            viewer.begin_search_work(b"hex:GG".to_vec(), true),
+            SearchStart::Complete(false)
+        ));
+        assert_eq!(viewer.search, previous);
 
         fs::remove_file(path).unwrap();
     }

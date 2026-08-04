@@ -648,7 +648,7 @@ perform file I/O or file scanning.
     and 8 lifecycle tests; the x86_64 musl release build passed. Native
     Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28N — Define text and hex search query types**
+- [*] **T28N — Define text and hex search query types**
   - Create `viewer/search.rs` query parsing without scanning the file.
   - Text queries MUST be literal, ASCII case-insensitive, non-ASCII exact, and
     limited to 256 bytes.
@@ -661,6 +661,11 @@ perform file I/O or file scanning.
   - Depends on: T28C.
   - Done when: query comparison and parsing are independent of UI input state and
     file scanning.
+  - Implementation: added bounded `SearchQuery` text/hex parsing with ASCII-only
+    case folding, exact non-ASCII and invalid-byte comparison, and invalid-query
+    state preservation.
+  - Evidence: `cargo test --locked viewer::` passed with 51 viewer tests; the
+    x86_64-unknown-linux-musl release build passed.
 
 - [ ] **T28O — Implement incremental cancellable forward/reverse search**
   - Search Current from the cursor first, then the neighbour in the requested
