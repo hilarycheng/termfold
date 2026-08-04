@@ -1,7 +1,7 @@
 # Termfold Task List
 
 This file tracks implementation work. Product behaviour remains authoritative in
-`REQUIREMENTS.md`; workflow and approval rules remain authoritative in `AGENTS.md`.
+`REQUIREMENT.md`; workflow and approval rules remain authoritative in `AGENTS.md`.
 
 ## Workflow
 
@@ -20,14 +20,14 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Define valid configuration ranges and supported date/time format syntax.
   - Approve binary size, startup, idle memory, idle CPU, and minimum-kernel budgets
     before release validation.
-  - Requirements: Resource Limits; Configuration; Implementation and Acceptance.
+  - Requirement: Resource Limits; Configuration; Implementation and Acceptance.
   - Depends on: none.
   - Done when: each value is added to the normative requirements with approval.
 
 - [*] **T01 — Create the Rust baseline**
   - Create the binary crate, lockfile, stable-toolchain policy, musl target setup,
     and size-focused release profile.
-  - Requirements: Implementation and Acceptance; release rules in `AGENTS.md`.
+  - Requirement: Implementation and Acceptance; release rules in `AGENTS.md`.
   - Depends on: none.
   - Done when: the minimal project structure and required build configuration exist.
 
@@ -35,7 +35,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Implement the required commands including `diagnose` routing, PID-prefix selector,
     defaults, session-name validation, strict configuration parsing including
     `terminal_profile` and `inner_term`, and actionable errors.
-  - Requirements: Command-Line Contract; Configuration.
+  - Requirement: Command-Line Contract; Configuration.
   - Depends on: T00, T01.
   - Done when: every documented command parses and every configuration validation
     path behaves as specified. T10A completes `diagnose` output and compatibility.
@@ -43,14 +43,14 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T03 — Implement session, tab, pane, and layout state**
   - Enforce resource limits, split constraints, deterministic focus, resize, and
     close behaviour without starting PTYs yet.
-  - Requirements: Tabs and Panes; Resource Limits; Session and Process Lifecycle.
+  - Requirement: Tabs and Panes; Resource Limits; Session and Process Lifecycle.
   - Depends on: T01.
   - Done when: state transitions cannot violate the documented limits or hierarchy.
 
 - [*] **T04 — Implement secure runtime paths**
   - Validate runtime-directory ownership and permissions, reject symlinks, create
     the Unix socket securely, and handle stale sockets safely.
-  - Requirements: IPC and Filesystem Security.
+  - Requirement: IPC and Filesystem Security.
   - Depends on: T01.
   - Done when: runtime paths and sockets meet every ownership, mode, and type rule.
 
@@ -58,7 +58,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Check in and embed the approved `termfold-256color` entry, then atomically
     materialize and validate it below the secure runtime directory without
     following symlinks or replacing a non-regular file.
-  - Requirements: Shell Launch and Inner Terminal Identity; Inner Terminal
+  - Requirement: Shell Launch and Inner Terminal Identity; Inner Terminal
     Behaviour; IPC and Filesystem Security.
   - Depends on: T04, T08.
   - Done when: the embedded entry matches the tested parser contract and session
@@ -67,7 +67,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T05 — Implement framed IPC**
   - Add versioned messages, the 1 MiB frame limit, malformed-frame rejection, and
     independently bounded multi-client connections with failure isolation.
-  - Requirements: IPC and Filesystem Security; Command-Line Contract.
+  - Requirement: IPC and Filesystem Security; Command-Line Contract.
   - Depends on: T00, T04.
   - Done when: clients and server exchange only bounded, valid protocol messages,
     and one client failure cannot disrupt the session or another client.
@@ -76,7 +76,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Launch the approved shell directly with the required environment and working
     directory, including the approved inner `TERM`, `COLORTERM`, and `TERMINFO`;
     propagate sizes, terminate gracefully, and reap every child.
-  - Requirements: Shell Launch and Inner Terminal Identity; Session and Process
+  - Requirement: Shell Launch and Inner Terminal Identity; Session and Process
     Lifecycle.
   - Depends on: T00, T01, T04A.
   - Done when: pane processes start, resize, terminate, and reap deterministically.
@@ -85,7 +85,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Add one server process per session, auto-start, PID-prefix discovery, create,
     attach, detach, list with attachment state, kill, empty-pane cascading, and
     shutdown with the session.
-  - Requirements: Command-Line Contract; Session and Process Lifecycle.
+  - Requirement: Command-Line Contract; Session and Process Lifecycle.
   - Depends on: T02, T03, T05, T06.
   - Done when: sessions persist only while required, duplicate names are rejected
     per user, and concurrent same-user clients can share one session.
@@ -96,7 +96,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Ignore OSC 52 writes and safely discard unsupported or oversized sequences.
   - Keep the embedded terminfo capabilities aligned with focused parser and
     renderer checks.
-  - Requirements: Terminal Architecture; Inner Terminal Behaviour; Resource
+  - Requirement: Terminal Architecture; Inner Terminal Behaviour; Resource
     Limits.
   - Depends on: T01.
   - Done when: the advertised `termfold-256color` subset is represented correctly
@@ -105,7 +105,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T09 — Implement client terminal safety**
   - Manage terminal modes, alternate screen, resize signals, disconnects, normal
     exit, panic, and catchable termination signals with deterministic restoration.
-  - Requirements: First-Release Scope; Terminal Behaviour; Mouse and Scrollback.
+  - Requirement: First-Release Scope; Terminal Behaviour; Mouse and Scrollback.
   - Depends on: T05, T08.
   - Done when: every supported exit path restores the outer terminal.
 
@@ -113,7 +113,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Render pane content, box-drawing borders with an ASCII fallback,
     active-pane state, and the one-row status bar with required truncation
     priorities and clock-only redraws.
-  - Requirements: Tabs and Panes; Status Bar.
+  - Requirement: Tabs and Panes; Status Bar.
   - Depends on: T03, T08, T09.
   - Done when: normal and narrow layouts preserve the specified visibility order.
 
@@ -121,7 +121,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Add the required data-only terminal profiles, deterministic profile selection,
     per-client capability handling, safe colour and attribute downgrade, and
     rejection of terminals that cannot support the full-screen interface.
-  - Requirements: Terminal Architecture; Outer Terminal Capabilities and Profiles;
+  - Requirement: Terminal Architecture; Outer Terminal Capabilities and Profiles;
     Colour and Attribute Adaptation; Terminal Diagnostics.
   - Depends on: T02, T04A, T06, T08, T09, T10.
   - Done when: each supported client renders and restores according to its selected
@@ -131,7 +131,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Forward bytes unchanged outside prefix mode and implement every required prefix
     command, resize mode, unsupported-command message, close confirmation, and
     the filename prompt and cancellation path for `Ctrl-b S` scrollback export.
-  - Requirements: Default Keys.
+  - Requirement: Default Keys.
   - Depends on: T03, T06, T09.
   - Done when: keyboard-only operation covers all first-release actions.
 
@@ -140,7 +140,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     implement the read-only scroll view, and save the active pane's retained
     scrollback as UTF-8 plain text without terminal control sequences or styling.
     Cancelling the filename prompt must not create or modify a file.
-  - Requirements: Mouse and Scrollback; Configuration; Resource Limits.
+  - Requirement: Mouse and Scrollback; Configuration; Resource Limits.
   - Depends on: T00, T08, T11.
   - Done when: history remains bounded and navigable without corrupting pane output,
     and explicit export writes only the requested plain-text scrollback.
@@ -148,21 +148,21 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T13 — Implement optional mouse input**
   - Keep mouse disabled by default; add SGR click, drag, wheel, tab selection, pane
     selection, border resize, application forwarding, and cleanup.
-  - Requirements: Mouse and Scrollback.
+  - Requirement: Mouse and Scrollback.
   - Depends on: T03, T09, T10, T12.
   - Done when: mouse behaviour is complete without reducing keyboard functionality.
 
 - [*] **T14 — Complete lifecycle and compatibility integration**
   - Verify attach/detach persistence, pane-exit cascading, resize propagation,
     bounded queues, SSH behaviour, WSL behaviour, and narrow-terminal handling.
-  - Requirements: all first-release behavioural sections.
+  - Requirement: all first-release behavioural sections.
   - Depends on: T07 through T13; T10A.
   - Done when: all components operate together without terminal or process leaks.
 
 - [*] **T14A — Add required project acknowledgements**
   - Document the required prior art accurately without implying endorsement,
     affiliation, code reuse, or compatibility certification.
-  - Requirements: Prior Art and Acknowledgements.
+  - Requirement: Prior Art and Acknowledgements.
   - Depends on: none.
   - Done when: project documentation credits zmx, tmux, xterm, and ncurses terminfo
     documentation as specified.
@@ -170,7 +170,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - [*] **T15 — Perform release validation**
   - Run the approved formatting, lint, test, security, musl build, static-linkage,
     checksum, compatibility, and resource-measurement checks.
-  - Requirements: Implementation and Acceptance; release checklist in `AGENTS.md`.
+  - Requirement: Implementation and Acceptance; release checklist in `AGENTS.md`.
   - Depends on: T00 through T14; T10A; T14A.
   - Done when: every approved budget and release-checklist item passes or has a
     documented blocker.
@@ -185,7 +185,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Add active-pane scrollback clearing, a validated status template with right
     alignment, configurable labels and colours, and dependency-free Linux CPU,
     memory, and temperature indicators.
-  - Requirements: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
+  - Requirement: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
   - Depends on: T10, T11, T12.
   - Done when: focused input, terminal, configuration, rendering, integration,
     lint, and static release checks pass.
@@ -194,7 +194,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Add ten embedded light/dark status themes, a paginated key-reminder help
     view, adaptive scroll-mode reminders, ends navigation, and bounded literal
     scrollback search.
-  - Requirements: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
+  - Requirement: Default Keys; Mouse and Scrollback; Status Bar; Configuration.
   - Depends on: T10, T11, T12, T16.
   - Done when: focused input, terminal, configuration, rendering, integration,
     lint, and static release checks pass.
@@ -204,28 +204,28 @@ This file tracks implementation work. Product behaviour remains authoritative in
     through normal and application cursor-key modes.
   - Preserve escape-prefixed navigation keys when terminal input splits the
     escape byte from the rest of the sequence.
-  - Requirements: Inner Terminal Behaviour; Outer Terminal Capabilities and Profiles.
+  - Requirement: Inner Terminal Behaviour; Outer Terminal Capabilities and Profiles.
   - Depends on: T08, T09, T10A, T11.
   - Done when: the compiled terminfo entry and focused cursor-mode checks agree.
 
 - [*] **T19 — Refresh stale private terminfo**
   - Atomically replace a secure private terminfo entry when the embedded entry
     changes between Termfold builds.
-  - Requirements: Inner Terminal Behaviour; IPC and Filesystem Security.
+  - Requirement: Inner Terminal Behaviour; IPC and Filesystem Security.
   - Depends on: T10A.
   - Done when: upgrades refresh stale entries while unsafe paths remain rejected.
 
 - [*] **T20 — Preserve navigation in modal views**
   - Keep fragmented escape-prefixed navigation keys intact in scroll, help,
     search, and resize modes while standalone Escape still exits the mode.
-  - Requirements: Default Keys; Mouse and Scrollback.
+  - Requirement: Default Keys; Mouse and Scrollback.
   - Depends on: T11, T12, T17, T18.
   - Done when: focused modal-input checks cover fragmented keys and Escape.
 
 - [ ] **T21 — Add native x86-64 Windows backend**
   - Use ConPTY for panes, current-user named pipes for IPC, job objects for
     child cleanup, and Win32 console-mode restoration and system metrics.
-  - Requirements: Distribution and Dependency Contract; IPC and Filesystem
+  - Requirement: Distribution and Dependency Contract; IPC and Filesystem
     Security; Implementation and Acceptance.
   - Depends on: T04 through T14.
   - Native Windows release build passes at 433,664 bytes.
@@ -242,14 +242,28 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Keep PTY ingestion independent of attachment and client-render backpressure so
     inactive and detached panes continue updating bounded terminal history.
   - Depends on: T06, T07, T08.
+  - Implemented with a bounded central event queue: client readers and one
+    blocking reader per PTY enqueue events, and the server processes bounded
+    batches before flushing input and rendering. The listener remains a short
+    periodic nonblocking check; input and PTY output no longer wait for the old
+    50 ms server-loop sleep.
   - Done when: a continuously noisy pane cannot delay another pane's screen or
     history updates, including across tab switches and detach/reattach.
 
 - [*] **T23 — Fix immediate Windows session-server exit**
   - Diagnose and fix native Windows startup immediately reporting
     `termfold: session server exited with exit code: 0`.
-  - Root-cause evidence and the constrained correction are recorded in
-    [`WINDOWS_STARTUP_ANALYSIS.md`](WINDOWS_STARTUP_ANALYSIS.md).
+  - Root causes:
+    - inherited standard handles bypassed ConPTY during child startup;
+    - a cloned synchronous duplex control pipe allowed a blocked reader to stall
+      the response writer.
+  - Implemented correction:
+    - pass the direct `HPCON` value, use `STARTF_USESTDHANDLES` with non-console
+      handles, and keep ConPTY-side pipe handles alive through `CreateProcessW`;
+    - create control named-pipe endpoints with `FILE_FLAG_OVERLAPPED` and give
+      every read and write independent event-backed `OVERLAPPED` state;
+    - preserve the existing protocol, frame limits, SID checks, DACL, and
+      dependency policy.
   - Depends on: T21.
   - Done when: creating a Windows session leaves its server running and attaches
     the client successfully without the early-exit message.
@@ -261,7 +275,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     default, only `yes` confirms, and `no`, `Esc`, EOF, or invalid input cancel.
   - Added the documented explicit non-interactive override
     `termfold kill --yes [NAME]` for scripts.
-  - Requirements: Approved Post-First-Release Scope; Session termination
+  - Requirement: Approved Post-First-Release Scope; Session termination
     confirmation.
   - Depends on: T02, T07.
   - Done when: confirmation, cancellation, invalid input, and the approved
@@ -274,7 +288,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     SGR changes, and retain full redraws for layout, resize, and buffer changes.
   - Measure renderer CPU, IPC transfer, and outer-terminal output before adding
     any platform-specific renderer path.
-  - Requirements: Approved Post-First-Release Scope; Shared renderer optimization.
+  - Requirement: Approved Post-First-Release Scope; Shared renderer optimization.
   - Depends on: T10, T21, T23.
   - Done when: approved focused checks pass and native Windows latency measurements
     show whether the shared renderer meets the target.
@@ -294,118 +308,20 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Add creation-only `config.toml` profiles with validated directories, direct
     launch targets, tabs, and nested horizontal and vertical split trees.
   - Roll back every started target if validation or launch fails.
-  - Requirements: Approved Post-First-Release Scope; Startup profiles.
+  - Requirement: Approved Post-First-Release Scope; Startup profiles.
   - Depends on: T02, T03, T06, T07.
   - Done when: profiles create the specified session atomically and attaching never
     reruns them.
 
 - [*] **T27 — Add bounded large-file viewer**
-  - Add `Ctrl-b v` for a dedicated viewer tab, `termfold view FILE`, OSC 7
-    working-directory tracking, the current-directory path prompt, bounded block
-    reading, navigation, and literal forward/reverse search.
-  - Requirements: Approved Post-First-Release Scope; Large-file viewer.
+  - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the
+    current-directory path prompt, bounded block reading, navigation, and literal
+    forward/reverse search.
+  - Requirement: Approved Post-First-Release Scope; Large-file viewer.
   - Depends on: T02, T03, T08, T10, T11.
   - Done when: large files remain bounded in memory, navigation and search work in
     both directions, and path fallback is deterministic without external commands.
-  - Implemented with a bounded virtual viewer in a dedicated tab, session-scoped
-    IPC requests, OSC 7 file-URL parsing, editable directory completion, and
-    fixed-block search.
+  - Implemented with a bounded virtual viewer pane, session-scoped IPC requests,
+    OSC 7 file-URL parsing, editable directory completion, and fixed-block search.
     Linux and Windows targets type-check and Clippy passes; runtime tests are
     blocked in this host by the missing `cc` linker and inaccessible WSL service.
-
-- [*] **T28 — Make viewer page loading and eviction transactional**
-  - Keep file offsets as the source of truth and retain only the visible page,
-    the existing bounded fixed-size block cache, and bounded search offsets.
-    Never load the complete file or create a second page-sized file buffer.
-  - Page Down must load every missing block needed to build the next visible page
-    and must continue across block boundaries. Page Up must reuse cached blocks
-    when present and reload evicted blocks when necessary.
-  - Keep blocks used by the current display valid until the replacement page has
-    been built successfully. Commit the new cursor, viewport, and visible page
-    together; an I/O failure must preserve the previous display and report an
-    actionable error instead of leaving the viewer blank or unresponsive.
-  - After a successful page commit, evict least-recently-used blocks until the
-    cache is within its configured block-count limit. Dropping an evicted block
-    must release its byte allocation; paging repeatedly must not grow retained
-    memory with the number of visited pages.
-  - On navigation at the known end of file, refresh file metadata. If the file
-    grew, invalidate and reload a cached partial tail block before reading the
-    appended data. If it shrank, discard blocks beyond the new length, clamp the
-    cursor and viewport to valid line boundaries, and discard invalid search
-    offsets.
-  - Add focused checks using files larger than the cache for forward paging,
-    backward paging after eviction, bounded cache size, released page data,
-    growth within a cached tail block, truncation, and I/O-error state rollback.
-  - Requirements: Approved Post-First-Release Scope; Large-file viewer; Resource
-    Limits; Error Handling.
-  - Depends on: T27.
-  - Done when: paging crosses block boundaries in both directions, cache and page
-    memory remain bounded, file changes cannot leave stale offsets or blocks, and
-    failed loads leave the last complete page usable.
-  - Validated with focused viewer paging, eviction, growth, truncation, and
-    rollback checks; Clippy, musl checking, and the full test suite pass.
-
-- [*] **T29 — Optimize and measure viewer paging responsiveness**
-  - Replace byte-at-a-time cache lookup and promotion during page navigation with
-    forward and reverse scans over contiguous cached block slices. Promote or
-    load a cache entry once per block crossing, not once per byte.
-  - Read only blocks required to locate the target cursor and render the visible
-    page. Keep warm Page Up/Page Down cache-only and keep cold paging sequential;
-    do not prefetch the complete file.
-  - Route Page Up, Page Down, and half-page navigation through the shared
-    fixed-block reader. Align each required file offset to a block boundary,
-    reuse a cached block when present, and otherwise seek and read only that
-    block. Scan forward or backward and load another adjacent block only when
-    the requested movement crosses a boundary. Build the replacement page
-    provisionally, commit its cursor and viewport only after every read succeeds,
-    then trim the least-recently-used cache.
-  - Page Up must reload an evicted previous block. Page Down must continue through
-    every adjacent block required for the next visible page. Ctrl-d must not
-    prefetch independently, but may demand-load a block when its half-page
-    movement crosses an unloaded boundary.
-  - Bound displayed-line storage as today and scan long physical lines blockwise
-    so a missing newline does not cause per-byte cache churn. Preserve logical
-    file-line navigation and existing cursor/viewport behaviour.
-  - Measure warm-cache and cold-cache Page Up/Page Down on a file larger than the
-    cache, including block-boundary newlines and a long physical line. Record
-    elapsed time, blocks read, peak cache bytes, and retained page bytes before
-    and after the optimization.
-  - Verify that paging never reads the complete file, warm paging performs no
-    file I/O, cold paging reads only required blocks, cache size remains bounded
-    after commit, and an I/O failure preserves the previous page.
-  - Do not add memory mapping, a background reader, speculative prefetch, or a new
-    dependency unless the measurements show synchronous block scanning still
-    causes visible stalls and a separate architectural change is approved.
-  - Requirements: Approved Post-First-Release Scope; Large-file viewer; Resource
-    Limits; Implementation and Acceptance.
-  - Depends on: T28.
-  - Done when: measured paging performs work proportional to crossed blocks rather
-    than bytes, repeated navigation remains within the memory bound, and results
-    establish whether any asynchronous reader is necessary.
-  - Implemented blockwise forward/reverse scans and retained bounded page/cache
-    storage. Release measurement recorded initial 278 us/3 blocks, cold Page Down
-    1.46 ms/1 block, warm Page Up 1.15 ms/0 blocks, long-line scanning 1.70 ms/
-    7 blocks/32 cache accesses, 524,305-byte peak cache, and 0/48/48/16 retained
-    page bytes; synchronous paging remains sufficient.
-  - Full unit and lifecycle tests, Clippy, Linux musl and Windows target checks,
-    and the static musl release build passed.
-
-- [*] **T30 — Eliminate repeated viewer-navigation starvation**
-  - Reproduce the remaining unresponsive state while holding or repeatedly
-    pressing Page Up/Page Down in the large-file viewer.
-  - Trace input framing, event batching, synchronous page construction, output
-    queues, and terminal rendering together; identify the first unbounded or
-    blocking stage rather than adding another viewer cache.
-  - Preserve bounded memory, transactional page rollback, terminal restoration,
-    and correct ordering of navigation and status messages.
-  - Requirements: Large-file viewer; Resource Limits; Error Handling.
-  - Depends on: T29.
-  - Done when sustained Page Up/Page Down input remains responsive, unrelated
-    pane output continues to flow, and a regression check covers the reproduced
-    workload.
-  - Implemented bounded long-line scan windows and continuation segments so one
-    viewer render or page movement cannot scan an entire unterminated file.
-    Existing event-batch redraw coalescing remains in place.
-  - Validated with bounded unterminated-line rendering and repeated forward and
-    reverse paging checks; full unit and lifecycle tests, Clippy, Windows target
-    checking, and the static musl release validation pass.

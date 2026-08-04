@@ -1,4 +1,4 @@
-# Termfold Requirements
+# Termfold Requirement
 
 ## Authority
 
@@ -104,7 +104,7 @@ The first release MUST provide:
 Restoration after `SIGKILL`, kernel failure, power loss, or terminal failure cannot
 be guaranteed and MUST NOT be claimed.
 
-The non-goals in `AGENTS.md` remain out of scope.
+The exclusions in Product Positioning remain out of scope.
 
 ## Approved Post-First-Release Scope
 
@@ -141,9 +141,10 @@ block first-release acceptance.
 ### Large-file viewer
 
 - `Ctrl-b v` MUST prompt for a path relative to the active pane's reported
-  working directory and open a read-only viewer in a new tab. It MUST also accept Linux
+  working directory and open a read-only viewer pane. It MUST also accept Linux
   absolute paths and Windows drive-root paths such as `C:\` and `C:/`.
-- `Ctrl-b V` MAY remain as an alias for the same new-tab viewer action.
+- `Ctrl-b V` MUST prompt for the same path and open the read-only viewer in a
+  new tab.
 - `termfold view FILE` MUST target the caller's current Termfold session. Outside
   Termfold, the command MUST require an explicit session.
 - The viewer MUST use standard-library seek/read operations over fixed-size
@@ -162,12 +163,11 @@ block first-release acceptance.
   and Ctrl-d MUST move the cursor by half a page. Ctrl-e and Ctrl-y MUST scroll
   the viewport by one line without moving the logical file cursor.
 - `/` and `?` MUST search forward and backward; `n` and `N` MUST repeat searches
-  in either direction. `Ctrl-b x` MUST close the viewer tab after confirmation;
+  in either direction. `Ctrl-b x` MUST close the viewer pane after confirmation;
   `q` and Esc MUST NOT close it.
 - The path prompt MUST list only the current directory, filter as the user types,
-  select matches with the arrow keys or `C-n`/`C-p`, cycle or complete matches
-  with `Tab`, enter directories or accept a file with `Right` or `Enter`, and
-  support parent navigation with `Left` or `Backspace` on an empty filter.
+  cycle or complete matches with `Tab`, enter directories or accept a file with
+  `Enter`, and support parent navigation with `Backspace`.
 - The active directory MUST come from OSC 7 when available. Otherwise the prompt
   MUST fall back to the server startup directory and remain user-editable.
 - The viewer MUST NOT invoke external search commands or build a full-file index.
@@ -223,6 +223,19 @@ session, tab, pane, and focus changes are shared by all attached clients.
   up to 2 seconds, then send `SIGKILL`. On Windows, close the ConPTY, wait up to
   2 seconds, then terminate the pane job object.
 - The server MUST never listen on a network socket.
+
+
+### Executable updates and active sessions
+
+- A running session server owns its PTYs or ConPTY instances and MUST NOT be
+  described as live-upgradable.
+- Replacing or restarting the client executable MUST NOT imply that an existing
+  session server has been upgraded.
+- A newer client MAY attach to an older running server only when their IPC
+  protocol versions are compatible.
+- On Windows, an executable held open by an active process cannot be replaced in
+  place; users MUST end the affected Termfold processes before replacing it.
+- PTY/session handover between server processes is outside the approved scope.
 
 ## Shell Launch and Inner Terminal Identity
 
@@ -284,8 +297,8 @@ unchanged to the active application. After a prefix:
 | `d` | Detach |
 | `?` | Show the key-reminder help view |
 | `[` | Enter read-only scroll view |
-| `v` | Prompt for and open a bounded read-only file viewer in a new tab |
-| `V` | Alias for `v` |
+| `v` | Prompt for and open a bounded read-only file viewer pane |
+| `V` | Prompt for and open a bounded read-only file viewer in a new tab |
 | `C` | Clear the active pane's entire retained scrollback |
 | `S` | Save the active pane's retained scrollback as plain text after prompting for a filename |
 
