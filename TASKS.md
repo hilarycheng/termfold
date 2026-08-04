@@ -415,7 +415,7 @@ perform file I/O or file scanning.
     tests passed with 13 tests. Windows linker temporary-file access required
     escalated execution. The two-test count difference is from Unix-only tests.
 
-- [ ] **T28D — Implement one universal, resumable line scanner**
+- [*] **T28D — Implement one universal, resumable line scanner**
   - Create `viewer/line.rs` with the only line-boundary implementation used by
     Text mode.
   - Recognize each encountered `CRLF`, `LF`, and lone `CR`; treat `CRLF` as one
@@ -431,10 +431,11 @@ perform file I/O or file scanning.
   - Depends on: T28C.
   - Done when: all line start/end/next/previous results come from one scanner and
     no cursor-visible boundary contains EOL bytes.
-  - Evidence: Ubuntu-24.04 WSL `cargo test --locked` passed with 71 unit tests and
-    8 integration tests; the WSL musl release build passed without warnings.
-    Dedicated CRLF, lone-CR, mixed-EOL, and post-fix native Windows checks remain
-    pending.
+  - Evidence: Ubuntu-24.04 WSL `cargo test --locked` passed with 78 unit tests and
+    8 integration tests; the musl release build passed. The focused viewer EOL
+    tests passed with 12 tests in WSL and 11 tests on native Windows MSVC; the
+    native Windows MSVC release build passed. Windows test execution required
+    elevated access for temporary-file creation because the sandbox denied it.
 
 - [*] **T28E — Implement safe text-token decoding**
   - Create `viewer/text.rs`.

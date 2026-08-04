@@ -209,7 +209,9 @@ and otherwise starts from the session's startup directory.
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
 stay with the preceding token, tabs expand to the next eight-cell stop, ASCII
 controls use caret notation (`NUL` as `^@`, `ESC` as `^[`, and `DEL` as `^?`),
-and invalid or other non-printable bytes render as uppercase `<XX>` values.
+and invalid or other non-printable bytes render as uppercase `<XX>` values. Line
+boundaries recognize LF, CRLF, and lone CR from the file contents, including
+mixed line endings; EOL bytes are not displayed as line content.
 
 ### Save scrollback
 

@@ -859,6 +859,84 @@ mod tests {
     }
 
     #[test]
+    fn line_boundaries_handle_all_eol_forms_and_empty_lines() {
+        let path = temp_path("termfold-viewer-eol-forms");
+        fs::write(&path, b"lf\ncrlf\r\ncr\rmixed\r\n\nend").unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+
+        for (start, content_end, next) in [
+            (0, 2, 3),
+            (3, 7, 9),
+            (9, 11, 12),
+            (12, 17, 19),
+            (19, 19, 20),
+            (20, 23, 23),
+        ] {
+            let line = viewer.line_boundary(start).unwrap();
+            assert_eq!(
+                (line.start, line.content_end, line.next),
+                (start, content_end, next)
+            );
+            assert_eq!(viewer.next_line(start).unwrap(), next);
+        }
+        assert_eq!(viewer.line_start_at(19).unwrap(), 19);
+        assert_eq!(viewer.previous_line(20).unwrap(), 19);
+        assert_eq!(viewer.previous_line(19).unwrap(), 12);
+
+        let empty_path = temp_path("termfold-viewer-empty");
+        fs::write(&empty_path, b"").unwrap();
+        let mut empty = Viewer::open(empty_path.clone()).unwrap();
+        let line = empty.line_boundary(0).unwrap();
+        assert_eq!((line.start, line.content_end, line.next), (0, 0, 0));
+        assert_eq!(empty.previous_line(0).unwrap(), 0);
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(empty_path).unwrap();
+    }
+
+    #[test]
+    fn reverse_discovery_handles_crlf_split_at_a_block_boundary() {
+        let path = temp_path("termfold-viewer-eol-boundary");
+        let mut data = vec![b'x'; BLOCK_SIZE as usize - 1];
+        data.extend_from_slice(b"\r\ntail\nlast");
+        fs::write(&path, data).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+
+        let first = viewer.line_boundary(0).unwrap();
+        assert_eq!(
+            (first.content_end, first.next),
+            (BLOCK_SIZE - 1, BLOCK_SIZE + 1)
+        );
+        assert_eq!(viewer.previous_line(BLOCK_SIZE + 6).unwrap(), BLOCK_SIZE + 1);
+        assert_eq!(viewer.previous_line(BLOCK_SIZE + 1).unwrap(), 0);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn long_line_scanning_resumes_one_block_at_a_time() {
+        let path = temp_path("termfold-viewer-long-eol");
+        let mut data = vec![b'x'; BLOCK_SIZE as usize * 9];
+        data.extend_from_slice(b"\nend");
+        fs::write(&path, data).unwrap();
+        let mut viewer = Viewer::open(path.clone()).unwrap();
+
+        let mut start = 0;
+        for _ in 0..9 {
+            let line = viewer.line_boundary(start).unwrap();
+            assert!(!line.complete);
+            assert_eq!(line.content_end, start + BLOCK_SIZE);
+            assert_eq!(line.next, start + BLOCK_SIZE);
+            start = line.next;
+        }
+        let line = viewer.line_boundary(start).unwrap();
+        assert!(line.complete);
+        assert_eq!((line.content_end, line.next), (start, start + 1));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn paging_and_literal_search_keep_line_offsets_bounded() {
         let path = std::env::temp_dir().join(format!(
             "termfold-viewer-{}-{}",
