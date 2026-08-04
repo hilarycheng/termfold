@@ -281,6 +281,7 @@ The default configuration is:
 prefix = "C-b"
 mouse = false
 scrollback_lines = 2000
+viewer_tab_width = 8
 date_format = "%Y-%m-%d"
 time_format = "%H:%M"
 status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
@@ -306,6 +307,7 @@ inner_term = "termfold-256color"
 | `prefix` | One control key from `"C-a"` through `"C-z"` |
 | `mouse` | `true` or `false` |
 | `scrollback_lines` | `0` through `10000` |
+| `viewer_tab_width` | `1` through `16` display cells |
 | `date_format` | Up to 64 characters using supported time directives |
 | `time_format` | Up to 64 characters using supported time directives |
 | `status_format` | Up to 512 UTF-8 characters using supported placeholders |

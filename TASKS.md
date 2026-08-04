@@ -464,7 +464,7 @@ perform file I/O or file scanning.
     `cargo audit` and `cargo deny check` were unavailable because the commands
     are not installed in WSL.
 
-- [ ] **T28F — Add and validate `viewer_tab_width`**
+- [*] **T28F — Add and validate `viewer_tab_width`**
   - Add `viewer_tab_width = 8` to configuration defaults.
   - Accept only integer values 1 through 16 and identify the field on error.
   - Pass the validated value into viewer creation without changing existing
@@ -476,6 +476,9 @@ perform file I/O or file scanning.
   - Depends on: T28E.
   - Done when: Text mode uses one validated tab width and no viewer-local default
     remains duplicated.
+  - Evidence: Ubuntu 24.04 x86_64 `cargo fmt -- --check`, `cargo test --locked`
+    (83 unit tests and 8 integration tests), and the x86_64 musl release build
+    passed. The full test run required elevated temporary Unix-socket access.
 
 - [ ] **T28G — Build source-byte to display-cell spans**
   - Extend `viewer/text.rs` with one mapping representation shared by cursor,

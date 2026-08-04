@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
+#[cfg(test)]
 pub(super) const DEFAULT_TAB_WIDTH: usize = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

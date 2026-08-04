@@ -151,6 +151,7 @@ struct InputContext<'a> {
     size: &'a mut Size,
     launch: &'a LaunchContext,
     scrollback_limit: usize,
+    viewer_tab_width: u8,
     mouse: bool,
     status_line: StatusLine<'a>,
     full_dirty: &'a mut bool,
@@ -237,6 +238,7 @@ pub fn run(
                             size: &mut authoritative_size,
                             launch: &context,
                             scrollback_limit: usize::from(config.scrollback_lines),
+                            viewer_tab_width: config.viewer_tab_width,
                             mouse: config.mouse,
                             status_line: status_line(&config, &metrics),
                             full_dirty: &mut full_dirty,
@@ -277,6 +279,7 @@ pub fn run(
                 size: &mut authoritative_size,
                 launch: &context,
                 scrollback_limit: usize::from(config.scrollback_lines),
+                viewer_tab_width: config.viewer_tab_width,
                 mouse: config.mouse,
                 status_line: status_line(&config, &metrics),
                 full_dirty: &mut full_dirty,
@@ -296,6 +299,7 @@ pub fn run(
                 size: &mut authoritative_size,
                 launch: &context,
                 scrollback_limit: usize::from(config.scrollback_lines),
+                viewer_tab_width: config.viewer_tab_width,
                 mouse: config.mouse,
                 status_line: status_line(&config, &metrics),
                 full_dirty: &mut full_dirty,
@@ -1736,7 +1740,7 @@ fn open_viewer(input: &mut InputContext<'_>, requested: &str) -> Result<(), Stri
 }
 
 fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), String> {
-    let mut viewer = Viewer::open(path.clone())
+    let mut viewer = Viewer::open(path.clone(), usize::from(input.viewer_tab_width))
         .map_err(|error| format!("cannot open viewer file {}: {error}", path.display()))?;
     let content_size = pane_area(*input.size);
     let pane = input

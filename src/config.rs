@@ -7,6 +7,7 @@ pub struct Config {
     pub prefix: u8,
     pub mouse: bool,
     pub scrollback_lines: u16,
+    pub viewer_tab_width: u8,
     pub date_format: String,
     pub time_format: String,
     pub status_format: String,
@@ -31,6 +32,7 @@ impl Default for Config {
             prefix: 2,
             mouse: false,
             scrollback_lines: 2_000,
+            viewer_tab_width: 8,
             date_format: "%Y-%m-%d".into(),
             time_format: "%H:%M".into(),
             status_format: "[{session}]  {tabs}{fill}|  {date} {time}".into(),
@@ -105,6 +107,7 @@ impl Config {
                 "active_tab_background" => 65536,
                 "status_theme" => 131072,
                 "windows_shell" => 262144,
+                "viewer_tab_width" => 524288,
                 _ => return Err(field_error(field, "unknown field")),
             };
             if seen & bit != 0 {
@@ -116,6 +119,7 @@ impl Config {
                 "prefix" => config.prefix = parse_prefix(field, value)?,
                 "mouse" => config.mouse = parse_bool(field, value)?,
                 "scrollback_lines" => config.scrollback_lines = parse_scrollback(field, value)?,
+                "viewer_tab_width" => config.viewer_tab_width = parse_tab_width(field, value)?,
                 "date_format" => config.date_format = parse_format(field, value)?,
                 "time_format" => config.time_format = parse_format(field, value)?,
                 "terminal_profile" => config.terminal_profile = parse_profile(field, value)?,
@@ -343,6 +347,17 @@ fn parse_scrollback(field: &str, value: &str) -> Result<u16, String> {
     }
 }
 
+fn parse_tab_width(field: &str, value: &str) -> Result<u8, String> {
+    let value = value
+        .parse::<u8>()
+        .map_err(|_| field_error(field, "expected an integer from 1 through 16"))?;
+    if (1..=16).contains(&value) {
+        Ok(value)
+    } else {
+        Err(field_error(field, "expected an integer from 1 through 16"))
+    }
+}
+
 fn parse_format(field: &str, value: &str) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value.chars().count() > 64 {
@@ -566,6 +581,33 @@ mod tests {
         assert_eq!(
             Config::parse("inner_term = \"screen-256color\"").unwrap_err(),
             "configuration field 'inner_term': unsupported inner terminal value"
+        );
+    }
+
+    #[test]
+    fn validates_viewer_tab_width() {
+        assert_eq!(Config::parse("").unwrap().viewer_tab_width, 8);
+        assert_eq!(
+            Config::parse("viewer_tab_width = 1")
+                .unwrap()
+                .viewer_tab_width,
+            1
+        );
+        assert_eq!(
+            Config::parse("viewer_tab_width = 16")
+                .unwrap()
+                .viewer_tab_width,
+            16
+        );
+        for value in ["0", "17"] {
+            assert_eq!(
+                Config::parse(&format!("viewer_tab_width = {value}")).unwrap_err(),
+                "configuration field 'viewer_tab_width': expected an integer from 1 through 16"
+            );
+        }
+        assert_eq!(
+            Config::parse("viewer_tab_width = 1\nviewer_tab_width = 2").unwrap_err(),
+            "configuration field 'viewer_tab_width': duplicate field"
         );
     }
 

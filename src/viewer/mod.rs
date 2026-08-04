@@ -13,7 +13,7 @@ use line::{LineBoundary, LineScanner, ScanStep};
 use source::FileSource;
 #[cfg(test)]
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
-use text::{DEFAULT_TAB_WIDTH, decode};
+use text::decode;
 
 const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
@@ -39,6 +39,7 @@ struct ViewState {
 #[derive(Debug)]
 pub struct Viewer {
     source: FileSource,
+    tab_width: usize,
     position: u64,
     viewport: u64,
     horizontal: u64,
@@ -53,7 +54,7 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn open(path: PathBuf) -> io::Result<Self> {
+    pub fn open(path: PathBuf, tab_width: usize) -> io::Result<Self> {
         let committed = ViewState {
             visible_rows: 1,
             visible_columns: 1,
@@ -61,6 +62,7 @@ impl Viewer {
         };
         Ok(Self {
             source: FileSource::open(path)?,
+            tab_width,
             position: 0,
             viewport: 0,
             horizontal: 0,
@@ -583,7 +585,7 @@ impl Viewer {
         }
         Ok((
             line.next,
-            decode(&bytes, DEFAULT_TAB_WIDTH).render(columns),
+            decode(&bytes, self.tab_width).render(columns),
             line.complete,
         ))
     }
@@ -859,10 +861,23 @@ mod tests {
     }
 
     #[test]
+    fn uses_configured_tab_width_for_text() {
+        let path = temp_path("termfold-viewer-tab-width");
+        fs::write(&path, b"a\t\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 4).unwrap();
+
+        let (_, line, complete) = viewer.read_line(0, 20, MAX_LINE_BYTES).unwrap();
+        assert_eq!(line, "a   ");
+        assert!(complete);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn line_boundaries_handle_all_eol_forms_and_empty_lines() {
         let path = temp_path("termfold-viewer-eol-forms");
         fs::write(&path, b"lf\ncrlf\r\ncr\rmixed\r\n\nend").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         for (start, content_end, next) in [
             (0, 2, 3),
@@ -885,7 +900,7 @@ mod tests {
 
         let empty_path = temp_path("termfold-viewer-empty");
         fs::write(&empty_path, b"").unwrap();
-        let mut empty = Viewer::open(empty_path.clone()).unwrap();
+        let mut empty = Viewer::open(empty_path.clone(), 8).unwrap();
         let line = empty.line_boundary(0).unwrap();
         assert_eq!((line.start, line.content_end, line.next), (0, 0, 0));
         assert_eq!(empty.previous_line(0).unwrap(), 0);
@@ -900,14 +915,17 @@ mod tests {
         let mut data = vec![b'x'; BLOCK_SIZE as usize - 1];
         data.extend_from_slice(b"\r\ntail\nlast");
         fs::write(&path, data).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         let first = viewer.line_boundary(0).unwrap();
         assert_eq!(
             (first.content_end, first.next),
             (BLOCK_SIZE - 1, BLOCK_SIZE + 1)
         );
-        assert_eq!(viewer.previous_line(BLOCK_SIZE + 6).unwrap(), BLOCK_SIZE + 1);
+        assert_eq!(
+            viewer.previous_line(BLOCK_SIZE + 6).unwrap(),
+            BLOCK_SIZE + 1
+        );
         assert_eq!(viewer.previous_line(BLOCK_SIZE + 1).unwrap(), 0);
 
         fs::remove_file(path).unwrap();
@@ -919,7 +937,7 @@ mod tests {
         let mut data = vec![b'x'; BLOCK_SIZE as usize * 9];
         data.extend_from_slice(b"\nend");
         fs::write(&path, data).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         let mut start = 0;
         for _ in 0..9 {
@@ -947,7 +965,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::write(&path, b"zero\nhit one\nhit two\nlast\n").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         viewer.line_end(3).unwrap();
         assert_eq!(viewer.horizontal, 1);
@@ -976,7 +994,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::write(&path, b"0123456789\nshort\nabcdefghij\nlast\n").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         let mut terminal = Terminal::new(Size {
             columns: 8,
             rows: 3,
@@ -1022,7 +1040,7 @@ mod tests {
     fn paging_crosses_evicted_blocks_in_both_directions() {
         let path = temp_path("termfold-viewer-pages");
         fs::write(&path, large_viewer_data()).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         let size = Size {
             columns: 16,
             rows: 3,
@@ -1064,7 +1082,7 @@ mod tests {
             rows: 64,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         viewer.render(&mut terminal, size).unwrap();
         viewer.source.reset_metrics();
 
@@ -1105,7 +1123,7 @@ mod tests {
             rows: 3,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         viewer.render(&mut terminal, size).unwrap();
         assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
         assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
@@ -1146,7 +1164,7 @@ mod tests {
             rows: 3,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         viewer.render(&mut terminal, size).unwrap();
         assert!(
             viewer
@@ -1187,7 +1205,7 @@ mod tests {
             rows: 3,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         viewer.render(&mut terminal, size).unwrap();
 
         assert!(
@@ -1234,7 +1252,7 @@ mod tests {
             rows: 3,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         let page_before = page_bytes(&viewer);
         let started = std::time::Instant::now();
@@ -1310,7 +1328,7 @@ mod tests {
     fn failed_page_load_restores_the_last_committed_display() {
         let path = temp_path("termfold-viewer-rollback");
         fs::write(&path, b"stable page\nnext page\n").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         let size = Size {
             columns: 32,
             rows: 3,
