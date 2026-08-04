@@ -76,6 +76,57 @@ impl DecodedText {
             .map(|span| span.cells.start)
     }
 
+    pub(super) fn cursor_cell_at_source(&self, source: usize) -> Option<usize> {
+        self.cursor_stop_at_source(source)
+            .or_else(|| {
+                let cell = self.source_to_cell(source)?;
+                let span = self.cell_to_token(cell)?;
+                span.cursor_stop.then_some(span.cells.start)
+            })
+            .or_else(|| {
+                (source == self.tokens.last().map_or(0, |span| span.source.end))
+                    .then(|| self.last_cursor_stop().map(|span| span.cells.start))
+                    .flatten()
+            })
+    }
+
+    pub(super) fn cursor_source_at_source(&self, source: usize) -> Option<usize> {
+        if self.cursor_stop_at_source(source).is_some() {
+            return Some(source);
+        }
+        self.source_to_cell(source)
+            .and_then(|cell| self.cursor_stop_at_cell(cell))
+            .map(|span| span.source.start)
+            .or_else(|| {
+                (source == self.tokens.last().map_or(0, |span| span.source.end))
+                    .then(|| self.last_cursor_stop().map(|span| span.source.start))
+                    .flatten()
+            })
+    }
+
+    pub(super) fn cursor_source_at_cell(&self, cell: usize) -> Option<usize> {
+        self.cursor_stop_at_cell(cell)
+            .map(|span| span.source.start)
+            .or_else(|| {
+                self.cell_to_source(cell).and_then(|source| {
+                    self.span_for_source(source)
+                        .filter(|span| span.cursor_stop)
+                        .map(|span| span.source.start)
+                })
+            })
+            .or_else(|| {
+                self.tokens
+                    .iter()
+                    .rev()
+                    .find(|span| span.cursor_stop && span.cells.start <= cell)
+                    .map(|span| span.source.start)
+            })
+    }
+
+    pub(super) fn last_cursor_stop(&self) -> Option<&TextToken> {
+        self.tokens.iter().rev().find(|span| span.cursor_stop)
+    }
+
     pub(super) fn cursor_stop_at_cell(&self, cell: usize) -> Option<&TextToken> {
         self.cell_to_token(cell).filter(|span| {
             span.cursor_stop && span.cells.start == cell

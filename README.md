@@ -198,7 +198,8 @@ file is reopened. It has an editor-style cursor separate from
 the viewport. `Up`/`Down` and `j`/`k` move the cursor by file line, preserve its
 preferred column when possible, and scroll the viewport only when the cursor
 approaches an edge. Home/End or `0`/`$` move within the current line; `gg`/`G`
-or Ctrl-Home/Ctrl-End move to the file start/end. Page Up/Page Down and
+or Ctrl-Home/Ctrl-End move to the file start/end. End and `$` stop at the start
+of the last visible token; empty lines use column zero. Page Up/Page Down and
 Ctrl-f/Ctrl-b move by one page; Ctrl-u/Ctrl-d move by half a page; Ctrl-e/Ctrl-y
 scroll the viewport by one line without moving the cursor. A page is the visible
 viewer height minus two rows. Use `/` for forward search, `?` for reverse search,

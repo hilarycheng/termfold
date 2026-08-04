@@ -13,7 +13,7 @@ use line::{LineBoundary, LineScanner, ScanStep};
 use source::FileSource;
 #[cfg(test)]
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
-use text::decode;
+use text::{decode, DecodedText};
 
 const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
@@ -175,7 +175,7 @@ impl Viewer {
         let current_line = self.line_start_at(self.position)?;
         let preferred = self
             .preferred_column
-            .max(self.position.saturating_sub(current_line));
+            .max(self.cursor_cell(current_line, self.position)? as u64);
         let mut target = current_line;
         let steps = amount.unsigned_abs() as usize;
         let continued_long_line = self
@@ -226,14 +226,10 @@ impl Viewer {
                 }
             }
         }
-        let target_length = if preferred == 0 {
-            0
-        } else {
-            self.line_length(target)?
-        };
-        self.position = target.saturating_add(preferred.min(target_length));
+        let (position, _) = self.cursor_at_cell(target, preferred)?;
+        self.position = position;
         self.preferred_column = preferred;
-        self.adjust_horizontal();
+        self.adjust_horizontal()?;
         self.ensure_cursor_visible()?;
         Ok(())
     }
@@ -266,16 +262,18 @@ impl Viewer {
     pub fn bottom(&mut self) -> io::Result<()> {
         self.navigation(|viewer| {
             let line = viewer.last_line()?;
-            viewer.position = line.saturating_add(viewer.line_length(line)?);
-            viewer.preferred_column = viewer.position.saturating_sub(line);
-            viewer.adjust_horizontal();
+            let (position, cell) = viewer.cursor_at_cell(line, usize::MAX as u64)?;
+            viewer.position = position;
+            viewer.preferred_column = cell;
+            viewer.adjust_horizontal()?;
             viewer.ensure_cursor_visible()
         })
     }
 
     pub fn line_start(&mut self) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.position = viewer.line_start_at(viewer.position)?;
+            let line = viewer.line_start_at(viewer.position)?;
+            viewer.position = viewer.cursor_at_cell(line, 0)?.0;
             viewer.preferred_column = 0;
             viewer.horizontal = 0;
             viewer.ensure_cursor_visible()
@@ -285,10 +283,10 @@ impl Viewer {
     pub fn line_end(&mut self, columns: usize) -> io::Result<()> {
         self.navigation(|viewer| {
             let start = viewer.line_start_at(viewer.position)?;
-            let length = viewer.line_length(start)?;
-            viewer.position = start.saturating_add(length);
-            viewer.preferred_column = length;
-            viewer.horizontal = length.saturating_sub(columns.max(1) as u64);
+            let (position, cell) = viewer.cursor_at_cell(start, usize::MAX as u64)?;
+            viewer.position = position;
+            viewer.preferred_column = cell;
+            viewer.horizontal = cell.saturating_sub(columns.max(1) as u64 - 1);
             viewer.ensure_cursor_visible()
         })
     }
@@ -574,46 +572,39 @@ impl Viewer {
         columns: usize,
         budget: usize,
     ) -> io::Result<(u64, String, bool)> {
-        let limit = MAX_LINE_BYTES.min(columns.saturating_mul(4).saturating_add(4));
         let line = self.line_boundary(start)?;
-        let line_length = line.content_end.saturating_sub(start);
-        if self.horizontal >= line_length || budget == 0 {
+        if budget == 0 {
             return Ok((line.next, String::new(), line.complete));
         }
-        let read_start = start.saturating_add(self.horizontal).min(line.content_end);
-        let read_end = read_start
-            .saturating_add(limit.min(budget) as u64)
-            .min(line.content_end);
-        if read_end - start <= MAX_LINE_BYTES as u64 {
-            let bytes = self.source.read_range(start..read_end)?;
-            if bytes.len() != (read_end - start) as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer source range is shorter than the snapshot",
-                ));
-            }
-            let decoded = decode(&bytes, self.tab_width);
-            let first_cell = decoded
-                .source_to_cell((read_start - start) as usize)
-                .unwrap_or(decoded.width);
-            return Ok((
-                line.next,
-                decoded.render_cells(first_cell..first_cell.saturating_add(columns)),
-                line.complete,
+        let decoded = self.decode_line(&line)?;
+        let first_cell = self.horizontal.min(decoded.width as u64) as usize;
+        let rendered = if first_cell == 0 {
+            decoded.render(columns)
+        } else {
+            decoded.render_cells(first_cell..first_cell.saturating_add(columns))
+        };
+        Ok((
+            line.next,
+            rendered,
+            line.complete,
+        ))
+    }
+
+    fn decode_line(&mut self, line: &LineBoundary) -> io::Result<DecodedText> {
+        if line.content_end.saturating_sub(line.start) > MAX_LINE_BYTES as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "viewer line segment is too large",
             ));
         }
-        let bytes = self.source.read_range(read_start..read_end)?;
-        if bytes.len() != (read_end - read_start) as usize {
+        let bytes = self.source.read_range(line.start..line.content_end)?;
+        if bytes.len() != (line.content_end - line.start) as usize {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "viewer source range is shorter than the snapshot",
             ));
         }
-        Ok((
-            line.next,
-            decode(&bytes, self.tab_width).render(columns),
-            line.complete,
-        ))
+        Ok(decode(&bytes, self.tab_width))
     }
 
     fn line_boundary(&mut self, start: u64) -> io::Result<LineBoundary> {
@@ -655,72 +646,67 @@ impl Viewer {
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
-        self.position = position.min(self.length());
-        let line = self.line_start_at(self.position)?;
-        self.preferred_column = self.position.saturating_sub(line);
-        self.adjust_horizontal();
+        let requested = position.min(self.length());
+        let line = self.line_start_at(requested)?;
+        let boundary = self.line_boundary(line)?;
+        let decoded = self.decode_line(&boundary)?;
+        let source = requested
+            .saturating_sub(line)
+            .min(boundary.content_end.saturating_sub(line)) as usize;
+        let source = decoded
+            .cursor_source_at_source(source)
+            .or_else(|| decoded.cursor_source_at_cell(0))
+            .unwrap_or(0);
+        self.position = line.saturating_add(source as u64);
+        self.preferred_column = decoded
+            .cursor_cell_at_source(source)
+            .unwrap_or(0) as u64;
+        self.adjust_horizontal()?;
         self.ensure_cursor_visible()
+    }
+
+    fn cursor_at_cell(&mut self, line: u64, cell: u64) -> io::Result<(u64, u64)> {
+        let boundary = self.line_boundary(line)?;
+        let decoded = self.decode_line(&boundary)?;
+        let cell = cell.min(usize::MAX as u64) as usize;
+        let source = decoded.cursor_source_at_cell(cell).unwrap_or(0);
+        let actual_cell = decoded.cursor_cell_at_source(source).unwrap_or(0);
+        Ok((line.saturating_add(source as u64), actual_cell as u64))
+    }
+
+    fn cursor_cell(&mut self, line: u64, position: u64) -> io::Result<usize> {
+        let boundary = self.line_boundary(line)?;
+        let decoded = self.decode_line(&boundary)?;
+        let source = position
+            .saturating_sub(line)
+            .min(boundary.content_end.saturating_sub(line)) as usize;
+        Ok(decoded.cursor_cell_at_source(source).unwrap_or(0))
     }
 
     fn cursor_column(&mut self, line: u64, columns: usize) -> io::Result<usize> {
         let boundary = self.line_boundary(line)?;
-        let line_length = boundary.content_end.saturating_sub(line);
-        let position = self.position.saturating_sub(line).min(line_length);
-        let horizontal = self.horizontal.min(line_length);
-        let end = position.max(horizontal);
-        if end <= MAX_LINE_BYTES as u64 {
-            let bytes = self.source.read_range(line..line.saturating_add(end))?;
-            if bytes.len() != end as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer source range is shorter than the snapshot",
-                ));
-            }
-            let decoded = decode(&bytes, self.tab_width);
-            let cursor = decoded
-                .cursor_stop_at_source(position as usize)
-                .or_else(|| {
-                    let cell = decoded.source_to_cell(position as usize)?;
-                    Some(
-                        decoded
-                            .cursor_stop_at_cell(cell)
-                            .map_or(cell, |span| span.cells.start),
-                    )
-                })
-                .unwrap_or(decoded.width);
-            let horizontal_source = decoded
-                .source_to_cell(horizontal as usize)
-                .and_then(|cell| decoded.cell_to_source(cell))
-                .unwrap_or(horizontal as usize);
-            let left = decoded
-                .source_to_cell(horizontal_source)
-                .unwrap_or(decoded.width);
-            return Ok(cursor
-                .saturating_sub(left)
-                .min(columns.saturating_sub(1)));
-        }
-
-        // ponytail: keep the existing bounded fallback until T28H stores display columns.
-        Ok(self
+        let decoded = self.decode_line(&boundary)?;
+        let position = self
             .position
             .saturating_sub(line)
-            .saturating_sub(self.horizontal)
-            .try_into()
-            .unwrap_or(usize::MAX)
+            .min(boundary.content_end.saturating_sub(line)) as usize;
+        let cursor = decoded.cursor_cell_at_source(position).unwrap_or(0);
+        let horizontal = self.horizontal.min(decoded.width as u64) as usize;
+        Ok(cursor
+            .saturating_sub(horizontal)
             .min(columns.saturating_sub(1)))
     }
 
-    fn adjust_horizontal(&mut self) {
-        let Ok(line) = self.line_start_at(self.position) else {
-            return;
-        };
-        let column = self.position.saturating_sub(line);
+    fn adjust_horizontal(&mut self) -> io::Result<()> {
+        let line = self.line_start_at(self.position)?;
+        let column = self.cursor_cell(line, self.position)? as u64;
         let width = self.visible_columns.max(1) as u64;
         if column < self.horizontal {
             self.horizontal = column;
         } else if column >= self.horizontal.saturating_add(width) {
             self.horizontal = column.saturating_sub(width.saturating_sub(1));
         }
+        Ok(())
     }
 
     fn ensure_cursor_visible(&mut self) -> io::Result<()> {
@@ -766,12 +752,6 @@ impl Viewer {
 
     fn next_line(&mut self, start: u64) -> io::Result<u64> {
         Ok(self.line_boundary(start)?.next)
-    }
-
-    fn line_length(&mut self, start: u64) -> io::Result<u64> {
-        let line = self.line_boundary(start)?;
-        let length = line.content_end.saturating_sub(start);
-        Ok(length)
     }
 
     fn previous_line(&mut self, start: u64) -> io::Result<u64> {
@@ -975,6 +955,62 @@ mod tests {
     }
 
     #[test]
+    fn line_end_stops_at_the_last_token_for_every_line_ending() {
+        let path = temp_path("termfold-viewer-cursor-eol");
+        fs::write(&path, b"lf\ncrlf\r\ncr\rempty\nlast").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        for (start, expected) in [(0, 1), (3, 6), (9, 10), (12, 16), (18, 21)] {
+            viewer.position = start;
+            viewer.line_end(80).unwrap();
+            assert_eq!(viewer.position, expected);
+            assert_eq!(
+                viewer.cursor_cell(start, viewer.position).unwrap(),
+                (expected - start) as usize
+            );
+        }
+
+        let empty_path = temp_path("termfold-viewer-cursor-empty-line");
+        fs::write(&empty_path, b"a\n\nb").unwrap();
+        let mut empty = Viewer::open(empty_path.clone(), 8).unwrap();
+        empty.line_end(80).unwrap();
+        empty.move_lines(1).unwrap();
+        assert_eq!((empty.position, empty.preferred_column), (2, 0));
+        empty.move_lines(1).unwrap();
+        assert_eq!(empty.position, 3);
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(empty_path).unwrap();
+    }
+
+    #[test]
+    fn vertical_movement_preserves_display_cells_and_valid_cursor_stops() {
+        let path = temp_path("termfold-viewer-cursor-cells");
+        let mut data = b"abcX\na\tZ\n".to_vec();
+        data.extend_from_slice("界e\u{301}z\n".as_bytes());
+        data.extend_from_slice(&[0xff, b'x']);
+        fs::write(&path, data).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 4).unwrap();
+
+        viewer.line_end(80).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (3, 3));
+
+        viewer.move_lines(1).unwrap();
+        assert_eq!(viewer.position, 6);
+        assert_eq!(viewer.cursor_cell(5, viewer.position).unwrap(), 1);
+
+        viewer.move_lines(1).unwrap();
+        assert_eq!(viewer.position, 15);
+        assert_eq!(viewer.cursor_cell(9, viewer.position).unwrap(), 3);
+
+        viewer.move_lines(1).unwrap();
+        assert_eq!(viewer.position, 17);
+        assert_eq!(viewer.cursor_cell(17, viewer.position).unwrap(), 0);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn reverse_discovery_handles_crlf_split_at_a_block_boundary() {
         let path = temp_path("termfold-viewer-eol-boundary");
         let mut data = vec![b'x'; BLOCK_SIZE as usize - 1];
@@ -1043,7 +1079,7 @@ mod tests {
         assert!(viewer.repeat_search(false).unwrap());
         assert_eq!(viewer.position, 5);
         viewer.bottom().unwrap();
-        assert_eq!(viewer.position, 25);
+        assert_eq!(viewer.position, 24);
 
         fs::remove_file(path).unwrap();
     }
@@ -1077,9 +1113,9 @@ mod tests {
 
         viewer.line_end(8).unwrap();
         viewer.move_lines(1).unwrap();
-        assert_eq!(viewer.position, 16);
+        assert_eq!(viewer.position, 15);
         viewer.move_lines(1).unwrap();
-        assert_eq!(viewer.position, 27);
+        assert_eq!(viewer.position, 26);
 
         let position = viewer.position;
         let viewport = viewer.viewport;

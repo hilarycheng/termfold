@@ -498,7 +498,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 28 viewer tests; the
     x86_64 musl release build passed.
 
-- [ ] **T28H — Correct Text-mode cursor semantics**
+- [*] **T28H — Correct Text-mode cursor semantics**
   - Replace byte-column cursor movement with source offset plus preferred
     display-cell column.
   - Implement line start/end, Up/Down preferred-cell movement, top/bottom, and
@@ -514,6 +514,12 @@ perform file I/O or file scanning.
   - Depends on: T28G.
   - Done when: the reported cursor source offset and terminal cell are valid for
     every focused case.
+  - Implementation: stores horizontal and preferred columns as display-cell
+    offsets, resolves source positions through valid decoded token stops, and
+    uses the same mapping for line end, vertical movement, clipping, and cursor
+    rendering.
+  - Evidence: `cargo test --locked viewer::` passed with 30 viewer tests; the
+    x86_64 musl release build passed.
 
 - [ ] **T28I — Introduce the Current PageFrame builder**
   - Create `viewer/frame.rs` with the approved PageFrame fields: source range,
