@@ -192,7 +192,9 @@ Windows drive-root path. `Esc` or `Ctrl-c` cancels invalid paths without
 closing the prompt.
 
 The viewer reads fixed-size blocks and keeps only the visible page, a small block
-cache, and bounded search offsets. It has an editor-style cursor separate from
+cache, and bounded search offsets. Each open uses a fixed file snapshot; later
+appends, truncation, replacement, or log rotation are not followed until the
+file is reopened. It has an editor-style cursor separate from
 the viewport. `Up`/`Down` and `j`/`k` move the cursor by file line, preserve its
 preferred column when possible, and scroll the viewport only when the cursor
 approaches an edge. Home/End or `0`/`$` move within the current line; `gg`/`G`

@@ -1,26 +1,20 @@
 use std::{
     collections::VecDeque,
-    fs::File,
-    io::{self, Read, Seek, SeekFrom},
+    io,
     path::{Path, PathBuf},
 };
 
 use unicode_width::UnicodeWidthChar;
 
 use crate::{session::Size, terminal::Terminal};
+mod source;
 
-const BLOCK_SIZE: u64 = 64 * 1024;
-const BLOCK_CACHE_SIZE: usize = 8;
+use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE, FileSource};
+
 const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const MAX_LINE_SCAN_BYTES: u64 = BLOCK_SIZE * (BLOCK_CACHE_SIZE as u64 * 2);
-
-#[derive(Debug)]
-struct Block {
-    offset: u64,
-    bytes: Vec<u8>,
-}
 
 #[derive(Clone, Copy, Debug)]
 struct LineBoundary {
@@ -47,95 +41,56 @@ struct ViewState {
     visible_columns: usize,
 }
 
-impl ViewState {
-    fn clamped(self, length: u64) -> Self {
-        Self {
-            position: self.position.min(length),
-            viewport: self.viewport.min(length),
-            ..self
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Viewer {
-    path: PathBuf,
-    file: File,
-    length: u64,
+    source: FileSource,
     position: u64,
     viewport: u64,
     horizontal: u64,
     preferred_column: u64,
     visible_rows: usize,
     visible_columns: usize,
-    blocks: VecDeque<Block>,
     matches: Vec<u64>,
     search: Option<SearchState>,
     page: Vec<String>,
     committed: ViewState,
-    protected_blocks: Vec<u64>,
     lines: VecDeque<LineBoundary>,
-    #[cfg(test)]
-    block_reads: usize,
-    #[cfg(test)]
-    block_accesses: usize,
-    #[cfg(test)]
-    peak_cache_bytes: usize,
 }
 
 impl Viewer {
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let file = File::open(&path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "viewer target is not a regular file",
-            ));
-        }
         let committed = ViewState {
             visible_rows: 1,
             visible_columns: 1,
             ..ViewState::default()
         };
         Ok(Self {
-            path,
-            file,
-            length: metadata.len(),
+            source: FileSource::open(path)?,
             position: 0,
             viewport: 0,
             horizontal: 0,
             preferred_column: 0,
             visible_rows: 1,
             visible_columns: 1,
-            blocks: VecDeque::new(),
             matches: Vec::new(),
             search: None,
             page: Vec::new(),
             committed,
-            protected_blocks: Vec::new(),
             lines: VecDeque::new(),
-            #[cfg(test)]
-            block_reads: 0,
-            #[cfg(test)]
-            block_accesses: 0,
-            #[cfg(test)]
-            peak_cache_bytes: 0,
         })
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.source.path()
+    }
+
+    fn length(&self) -> u64 {
+        self.source.len()
     }
 
     pub fn render(&mut self, terminal: &mut Terminal, size: Size) -> io::Result<()> {
-        self.refresh_metadata()?;
-        self.committed = self.committed.clamped(self.length);
-
         let committed = self.committed;
         let previous_page = std::mem::take(&mut self.page);
-        let previous_blocks = self.cache_offsets();
-        self.protected_blocks = previous_blocks.clone();
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
         let columns = usize::from(size.columns);
@@ -145,8 +100,6 @@ impl Viewer {
             Err(error) => {
                 self.restore_state(committed);
                 self.page = previous_page;
-                self.restore_cache(&previous_blocks);
-                self.protected_blocks.clear();
                 return Err(error);
             }
         };
@@ -154,14 +107,10 @@ impl Viewer {
         if let Err(error) = terminal.resize(size).map_err(io::Error::other) {
             self.restore_state(committed);
             self.page = previous_page;
-            self.restore_cache(&previous_blocks);
-            self.protected_blocks.clear();
             return Err(error);
         }
 
         self.committed = self.state();
-        self.protected_blocks.clear();
-        self.trim_cache();
         drop(previous_page);
 
         terminal.advance(b"\x1b[2J\x1b[H");
@@ -181,8 +130,8 @@ impl Viewer {
     }
 
     fn build_page(&mut self, size: Size) -> io::Result<(Option<usize>, u64)> {
-        self.position = self.position.min(self.length);
-        self.viewport = self.viewport.min(self.length);
+        self.position = self.position.min(self.length());
+        self.viewport = self.viewport.min(self.length());
         self.viewport = self.line_start_at(self.viewport)?;
         let cursor_line = self.line_start_at(self.position)?;
         let mut position = self.viewport;
@@ -192,7 +141,7 @@ impl Viewer {
         let mut budget = columns.saturating_mul(rows).saturating_mul(4);
         self.page = Vec::with_capacity(rows);
         for row in 0..rows {
-            if position >= self.length || budget == 0 {
+            if position >= self.length() || budget == 0 {
                 break;
             }
             if position == cursor_line {
@@ -214,10 +163,7 @@ impl Viewer {
     }
 
     pub fn move_lines(&mut self, amount: i32) -> io::Result<()> {
-        self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
-            viewer.move_lines_inner(amount)
-        })
+        self.navigation(|viewer| viewer.move_lines_inner(amount))
     }
 
     fn move_lines_inner(&mut self, amount: i32) -> io::Result<()> {
@@ -234,7 +180,7 @@ impl Viewer {
         if amount > 0 && steps > 0 {
             let mut remaining = steps;
             if let Some(line) = self.cached_line(current_line) {
-                if line.next < self.length {
+                if line.next < self.length() {
                     target = line.next;
                     remaining -= 1;
                     if !line.complete {
@@ -245,7 +191,7 @@ impl Viewer {
                 }
             } else if continued_long_line {
                 let next = self.next_line(target)?;
-                if next > target && next < self.length {
+                if next > target && next < self.length() {
                     target = next;
                 }
                 remaining = 0;
@@ -253,7 +199,7 @@ impl Viewer {
             if remaining > 0 {
                 for _ in 0..remaining {
                     let next = self.next_line(target)?;
-                    if next <= target || next >= self.length {
+                    if next <= target || next >= self.length() {
                         break;
                     }
                     target = next;
@@ -289,7 +235,6 @@ impl Viewer {
 
     pub fn page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1));
             let amount = i32::try_from(lines).unwrap_or(i32::MAX);
@@ -299,7 +244,6 @@ impl Viewer {
 
     pub fn half_page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1)) / 2;
             let amount = i32::try_from(lines.max(1)).unwrap_or(i32::MAX);
@@ -316,7 +260,6 @@ impl Viewer {
 
     pub fn bottom(&mut self) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             let line = viewer.last_line()?;
             viewer.position = line.saturating_add(viewer.line_length(line)?);
             viewer.preferred_column = viewer.position.saturating_sub(line);
@@ -327,7 +270,6 @@ impl Viewer {
 
     pub fn line_start(&mut self) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             viewer.position = viewer.line_start_at(viewer.position)?;
             viewer.preferred_column = 0;
             viewer.horizontal = 0;
@@ -337,7 +279,6 @@ impl Viewer {
 
     pub fn line_end(&mut self, columns: usize) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             let start = viewer.line_start_at(viewer.position)?;
             let length = viewer.line_length(start)?;
             viewer.position = start.saturating_add(length);
@@ -349,12 +290,11 @@ impl Viewer {
 
     pub fn scroll_viewport(&mut self, amount: i32) -> io::Result<()> {
         self.navigation(|viewer| {
-            viewer.refresh_metadata()?;
             let mut viewport = viewer.line_start_at(viewer.viewport)?;
             if amount > 0 {
                 for _ in 0..amount.unsigned_abs() {
                     let next = viewer.next_line(viewport)?;
-                    if next >= viewer.length {
+                    if next >= viewer.length() {
                         break;
                     }
                     viewport = next;
@@ -375,7 +315,6 @@ impl Viewer {
         let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| {
-            self.refresh_metadata()?;
             if query.is_empty() {
                 return Ok(false);
             }
@@ -400,7 +339,6 @@ impl Viewer {
         let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| {
-            self.refresh_metadata()?;
             let Some(previous) = self.search.clone() else {
                 return Ok(false);
             };
@@ -464,60 +402,12 @@ impl Viewer {
     }
 
     fn restore_state(&mut self, state: ViewState) {
-        self.position = state.position.min(self.length);
-        self.viewport = state.viewport.min(self.length);
+        self.position = state.position.min(self.length());
+        self.viewport = state.viewport.min(self.length());
         self.horizontal = state.horizontal;
         self.preferred_column = state.preferred_column;
         self.visible_rows = state.visible_rows;
         self.visible_columns = state.visible_columns;
-    }
-
-    fn refresh_metadata(&mut self) -> io::Result<()> {
-        let length = self.file.metadata()?.len();
-        if length == self.length {
-            return Ok(());
-        }
-
-        let previous_length = self.length;
-        self.length = length;
-        self.lines.clear();
-        if length > previous_length {
-            if !previous_length.is_multiple_of(BLOCK_SIZE) {
-                let tail = previous_length / BLOCK_SIZE * BLOCK_SIZE;
-                self.blocks.retain(|block| block.offset != tail);
-            }
-            return Ok(());
-        }
-
-        for block in &mut self.blocks {
-            if block.offset < length {
-                block
-                    .bytes
-                    .truncate((length - block.offset).min(BLOCK_SIZE) as usize);
-            }
-        }
-        self.blocks
-            .retain(|block| block.offset < length && !block.bytes.is_empty());
-        let query_length = self
-            .search
-            .as_ref()
-            .map_or(0, |search| search.query.len() as u64);
-        self.matches
-            .retain(|offset| *offset < length && query_length <= length.saturating_sub(*offset));
-        if self.search.as_ref().is_some_and(|search| {
-            search.offset >= length || query_length > length.saturating_sub(search.offset)
-        }) {
-            self.search = None;
-            self.matches.clear();
-        }
-        self.position = self.position.min(length);
-        self.viewport = self.viewport.min(length);
-        self.committed = self.committed.clamped(length);
-        Ok(())
-    }
-
-    fn cache_offsets(&self) -> Vec<u64> {
-        self.blocks.iter().map(|block| block.offset).collect()
     }
 
     fn cached_line(&mut self, start: u64) -> Option<LineBoundary> {
@@ -557,35 +447,9 @@ impl Viewer {
         self.lines.truncate(LINE_CACHE_SIZE);
     }
 
-    fn restore_cache(&mut self, offsets: &[u64]) {
-        let mut restored = VecDeque::with_capacity(offsets.len());
-        for offset in offsets {
-            if let Some(index) = self.blocks.iter().position(|block| block.offset == *offset) {
-                restored.push_back(
-                    self.blocks
-                        .remove(index)
-                        .expect("block index came from cache"),
-                );
-            }
-        }
-        self.blocks = restored;
-    }
-
-    fn trim_cache(&mut self) {
-        while self.blocks.len() > BLOCK_CACHE_SIZE {
-            let Some(index) = (1..self.blocks.len())
-                .rev()
-                .find(|index| !self.protected_blocks.contains(&self.blocks[*index].offset))
-            else {
-                break;
-            };
-            self.blocks.remove(index);
-        }
-    }
-
     fn search_from(&mut self, query: &[u8], forward: bool, start: u64) -> io::Result<Option<u64>> {
         self.matches.clear();
-        let maximum = self.length.checked_sub(query.len() as u64);
+        let maximum = self.length().checked_sub(query.len() as u64);
         let Some(maximum) = maximum else {
             return Ok(None);
         };
@@ -661,7 +525,7 @@ impl Viewer {
 
     fn matches_at(&mut self, offset: u64, query: &[u8]) -> io::Result<bool> {
         for (index, byte) in query.iter().enumerate() {
-            if self.byte(offset + index as u64)? != Some(*byte) {
+            if self.source.read_byte(offset + index as u64)? != Some(*byte) {
                 return Ok(false);
             }
         }
@@ -718,7 +582,7 @@ impl Viewer {
                 start,
                 content_end: scan_end,
                 next: scan_end,
-                complete: scan_end == self.length,
+                complete: scan_end == self.length(),
             },
             |offset| LineBoundary {
                 start,
@@ -738,7 +602,7 @@ impl Viewer {
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
-        self.position = position.min(self.length);
+        self.position = position.min(self.length());
         let line = self.line_start_at(self.position)?;
         self.preferred_column = self.position.saturating_sub(line);
         self.adjust_horizontal();
@@ -819,7 +683,7 @@ impl Viewer {
                 start,
                 content_end: scan_end,
                 next: scan_end,
-                complete: scan_end == self.length,
+                complete: scan_end == self.length(),
             },
             |offset| LineBoundary {
                 start,
@@ -844,7 +708,7 @@ impl Viewer {
                 start,
                 content_end: scan_end,
                 next: scan_end,
-                complete: scan_end == self.length,
+                complete: scan_end == self.length(),
             },
             |offset| LineBoundary {
                 start,
@@ -879,10 +743,10 @@ impl Viewer {
     }
 
     fn last_line(&mut self) -> io::Result<u64> {
-        if self.length == 0 {
+        if self.length() == 0 {
             return Ok(0);
         }
-        if let Some(index) = self.lines.iter().position(|line| line.next == self.length) {
+        if let Some(index) = self.lines.iter().position(|line| line.next == self.length()) {
             let line = self
                 .lines
                 .remove(index)
@@ -891,10 +755,10 @@ impl Viewer {
             self.lines.push_front(line);
             return Ok(start);
         }
-        let scan_start = self.length.saturating_sub(MAX_LINE_SCAN_BYTES);
-        let boundary = self.length - 1;
+        let scan_start = self.length().saturating_sub(MAX_LINE_SCAN_BYTES);
+        let boundary = self.length() - 1;
         let mut skip_boundary = true;
-        let previous = self.scan_reverse(self.length, scan_start, |offset, byte| {
+        let previous = self.scan_reverse(self.length(), scan_start, |offset, byte| {
             if skip_boundary && offset == boundary && byte == b'\n' {
                 skip_boundary = false;
                 return false;
@@ -905,7 +769,7 @@ impl Viewer {
     }
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
-        let position = position.min(self.length);
+        let position = position.min(self.length());
         if self
             .lines
             .iter()
@@ -923,63 +787,33 @@ impl Viewer {
     }
 
     fn line_scan_end(&self, start: u64) -> u64 {
-        start.saturating_add(MAX_LINE_SCAN_BYTES).min(self.length)
-    }
-
-    fn byte(&mut self, offset: u64) -> io::Result<Option<u8>> {
-        if offset >= self.length {
-            return Ok(None);
-        }
-        let block_offset = offset / BLOCK_SIZE * BLOCK_SIZE;
-        let bytes = self.block(block_offset)?;
-        bytes
-            .get((offset - block_offset) as usize)
-            .copied()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "viewer cache block is shorter than the file",
-                )
-            })
-            .map(Some)
+        start.saturating_add(MAX_LINE_SCAN_BYTES).min(self.length())
     }
 
     fn scan_forward<F>(&mut self, start: u64, end: u64, mut visit: F) -> io::Result<Option<u64>>
     where
         F: FnMut(u64, u8) -> bool,
     {
-        let end = end.min(self.length);
+        let end = end.min(self.length());
         let mut position = start.min(end);
         while position < end {
             let block_offset = position / BLOCK_SIZE * BLOCK_SIZE;
-            let expected = (self.length - block_offset).min(BLOCK_SIZE) as usize;
-            let found = {
-                let bytes = self.block(block_offset)?;
-                if bytes.len() < expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "viewer cache block is shorter than the file",
-                    ));
-                }
-                let first = (position - block_offset) as usize;
-                let last = (end - block_offset).min(expected as u64) as usize;
-                if last <= first {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "viewer cache block does not cover the requested range",
-                    ));
-                }
-                (first..last)
-                    .find(|index| {
-                        let offset = block_offset + *index as u64;
-                        visit(offset, bytes[*index])
-                    })
-                    .map(|index| block_offset + index as u64)
-            };
-            if found.is_some() {
-                return Ok(found);
+            let block_end = block_offset.saturating_add(BLOCK_SIZE).min(end);
+            let bytes = self.source.read_range(position..block_end)?;
+            if bytes.len() != (block_end - position) as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "viewer source range is shorter than the snapshot",
+                ));
             }
-            position = block_offset + (end - block_offset).min(expected as u64);
+            if let Some((index, _)) = bytes
+                .iter()
+                .enumerate()
+                .find(|(index, byte)| visit(position + *index as u64, **byte))
+            {
+                return Ok(Some(position + index as u64));
+            }
+            position = block_end;
         }
         Ok(None)
     }
@@ -988,76 +822,28 @@ impl Viewer {
     where
         F: FnMut(u64, u8) -> bool,
     {
-        let mut position = start.min(self.length);
+        let mut position = start.min(self.length());
         let end = end.min(position);
         while position > end {
             let block_offset = (position - 1) / BLOCK_SIZE * BLOCK_SIZE;
-            let expected = (self.length - block_offset).min(BLOCK_SIZE) as usize;
-            let found = {
-                let bytes = self.block(block_offset)?;
-                if bytes.len() < expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "viewer cache block is shorter than the file",
-                    ));
-                }
-                let first = end.max(block_offset);
-                let last = position.min(block_offset + expected as u64);
-                if last <= first {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "viewer cache block does not cover the requested range",
-                    ));
-                }
-                (first..last)
-                    .rev()
-                    .find(|offset| visit(*offset, bytes[(*offset - block_offset) as usize]))
-            };
-            if found.is_some() {
-                return Ok(found);
+            let first = end.max(block_offset);
+            let last = position.min(block_offset.saturating_add(BLOCK_SIZE));
+            let bytes = self.source.read_range(first..last)?;
+            if bytes.len() != (last - first) as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "viewer source range is shorter than the snapshot",
+                ));
             }
-            position = end.max(block_offset);
+            for index in (0..bytes.len()).rev() {
+                let offset = first + index as u64;
+                if visit(offset, bytes[index]) {
+                    return Ok(Some(offset));
+                }
+            }
+            position = first;
         }
         Ok(None)
-    }
-
-    fn block(&mut self, block_offset: u64) -> io::Result<&[u8]> {
-        #[cfg(test)]
-        {
-            self.block_accesses += 1;
-        }
-        if let Some(index) = self
-            .blocks
-            .iter()
-            .position(|block| block.offset == block_offset)
-        {
-            if index != 0 {
-                let block = self
-                    .blocks
-                    .remove(index)
-                    .expect("block index came from cache");
-                self.blocks.push_front(block);
-            }
-            return Ok(&self.blocks.front().expect("cache block exists").bytes);
-        }
-
-        self.file.seek(SeekFrom::Start(block_offset))?;
-        let length = (self.length - block_offset).min(BLOCK_SIZE) as usize;
-        let mut bytes = vec![0; length];
-        self.file.read_exact(&mut bytes)?;
-        self.blocks.push_front(Block {
-            offset: block_offset,
-            bytes,
-        });
-        #[cfg(test)]
-        {
-            self.block_reads += 1;
-            self.peak_cache_bytes = self
-                .peak_cache_bytes
-                .max(self.blocks.iter().map(|block| block.bytes.len()).sum());
-        }
-        self.trim_cache();
-        Ok(&self.blocks.front().expect("cache block exists").bytes)
     }
 }
 
@@ -1086,9 +872,11 @@ mod tests {
     use super::*;
     use std::{
         fs::{self, OpenOptions},
-        io::Write,
         time::SystemTime,
     };
+
+    #[cfg(unix)]
+    use std::fs::File;
 
     fn temp_path(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1114,7 +902,7 @@ mod tests {
     }
 
     fn cache_bytes(viewer: &Viewer) -> usize {
-        viewer.blocks.iter().map(|block| block.bytes.len()).sum()
+        viewer.source.cache_bytes()
     }
 
     fn page_bytes(viewer: &Viewer) -> usize {
@@ -1219,7 +1007,7 @@ mod tests {
         for _ in 0..(BLOCK_CACHE_SIZE * 3 / 2) {
             viewer.page(size.rows, true).unwrap();
             viewer.render(&mut terminal, size).unwrap();
-            assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+            assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
             assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         }
         assert_ne!(viewer.page[0], first_line);
@@ -1228,7 +1016,7 @@ mod tests {
         for _ in 0..(BLOCK_CACHE_SIZE * 3 / 2) {
             viewer.page(size.rows, false).unwrap();
             viewer.render(&mut terminal, size).unwrap();
-            assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+            assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
         }
         assert_eq!(viewer.page[0], first_line);
 
@@ -1251,24 +1039,23 @@ mod tests {
         let mut terminal = Terminal::new(size).unwrap();
         let mut viewer = Viewer::open(path.clone()).unwrap();
         viewer.render(&mut terminal, size).unwrap();
-        viewer.block_accesses = 0;
-        viewer.block_reads = 0;
+        viewer.source.reset_metrics();
 
         viewer.page(size.rows, true).unwrap();
-        assert!(viewer.block_reads <= 1);
+        assert!(viewer.source.block_reads() <= 1);
         assert!(
-            viewer.block_accesses <= 8,
+            viewer.source.block_accesses() <= 8,
             "block accesses: {}",
-            viewer.block_accesses
+            viewer.source.block_accesses()
         );
 
-        viewer.block_accesses = 0;
+        viewer.source.reset_metrics();
         viewer.page(size.rows, false).unwrap();
-        assert!(viewer.block_reads <= 1);
+        assert!(viewer.source.block_reads() <= 1);
         assert!(
-            viewer.block_accesses <= 8,
+            viewer.source.block_accesses() <= 8,
             "block accesses: {}",
-            viewer.block_accesses
+            viewer.source.block_accesses()
         );
 
         fs::remove_file(path).unwrap();
@@ -1293,25 +1080,27 @@ mod tests {
         let mut terminal = Terminal::new(size).unwrap();
         let mut viewer = Viewer::open(path.clone()).unwrap();
         viewer.render(&mut terminal, size).unwrap();
-        assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+        assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
         assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         assert!(viewer.lines.iter().any(|line| {
-            line.start == 0 && line.content_end == viewer.length && line.next == viewer.length
+            line.start == 0
+                && line.content_end == viewer.length()
+                && line.next == viewer.length()
         }));
 
-        viewer.block_reads = 0;
+        viewer.source.reset_metrics();
         for _ in 0..4 {
             viewer.page(size.rows, true).unwrap();
             viewer.render(&mut terminal, size).unwrap();
             viewer.page(size.rows, false).unwrap();
             viewer.render(&mut terminal, size).unwrap();
-            assert!(viewer.blocks.len() <= BLOCK_CACHE_SIZE);
+            assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
             assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         }
         assert!(
-            viewer.block_reads <= 1,
+            viewer.source.block_reads() <= 1,
             "repeated EOF reads: {}",
-            viewer.block_reads
+            viewer.source.block_reads()
         );
 
         fs::remove_file(path).unwrap();
@@ -1338,7 +1127,7 @@ mod tests {
                 .any(|line| line.start == 0 && line.next > line.start)
         );
 
-        viewer.block_reads = 0;
+        viewer.source.reset_metrics();
         for _ in 0..4 {
             viewer.page(size.rows, true).unwrap();
             viewer.render(&mut terminal, size).unwrap();
@@ -1346,9 +1135,9 @@ mod tests {
             viewer.render(&mut terminal, size).unwrap();
         }
         assert!(
-            viewer.block_reads <= 1,
+            viewer.source.block_reads() <= 1,
             "repeated long-line reads: {}",
-            viewer.block_reads
+            viewer.source.block_reads()
         );
 
         fs::remove_file(path).unwrap();
@@ -1374,26 +1163,26 @@ mod tests {
         viewer.render(&mut terminal, size).unwrap();
 
         assert!(
-            viewer.block_reads <= BLOCK_CACHE_SIZE * 2,
+            viewer.source.block_reads() <= BLOCK_CACHE_SIZE * 2,
             "render read the complete unterminated line: {} blocks",
-            viewer.block_reads
+            viewer.source.block_reads()
         );
 
-        viewer.block_reads = 0;
+        viewer.source.reset_metrics();
         let mut position = viewer.position;
         for _ in 0..4 {
-            let reads = viewer.block_reads;
+            let reads = viewer.source.block_reads();
             viewer.page(size.rows, true).unwrap();
             viewer.render(&mut terminal, size).unwrap();
-            assert!(viewer.block_reads - reads <= BLOCK_CACHE_SIZE * 2);
+            assert!(viewer.source.block_reads() - reads <= BLOCK_CACHE_SIZE * 2);
             assert!(viewer.position > position);
             position = viewer.position;
         }
         for _ in 0..4 {
-            let reads = viewer.block_reads;
+            let reads = viewer.source.block_reads();
             viewer.page(size.rows, false).unwrap();
             viewer.render(&mut terminal, size).unwrap();
-            assert!(viewer.block_reads - reads <= BLOCK_CACHE_SIZE * 2);
+            assert!(viewer.source.block_reads() - reads <= BLOCK_CACHE_SIZE * 2);
         }
         assert_eq!(viewer.position, 0);
 
@@ -1423,9 +1212,9 @@ mod tests {
         let started = std::time::Instant::now();
         viewer.render(&mut terminal, size).unwrap();
         let initial_elapsed = started.elapsed();
-        assert_eq!(viewer.block_reads, 3);
-        assert!(viewer.block_accesses < 20);
-        let initial_reads = viewer.block_reads;
+        assert_eq!(viewer.source.block_reads(), 3);
+        assert!(viewer.source.block_accesses() < 20);
+        let initial_reads = viewer.source.block_reads();
         let initial_page = page_bytes(&viewer);
 
         let started = std::time::Instant::now();
@@ -1434,26 +1223,26 @@ mod tests {
             viewer.render(&mut terminal, size).unwrap();
         }
         let cold_elapsed = started.elapsed();
-        let cold_reads = viewer.block_reads - initial_reads;
+        let cold_reads = viewer.source.block_reads() - initial_reads;
         assert_eq!(cold_reads, 1);
         let cold_page = page_bytes(&viewer);
 
         let started = std::time::Instant::now();
-        let warm_reads = viewer.block_reads;
+        let warm_reads = viewer.source.block_reads();
         for _ in 0..3 {
             viewer.page(size.rows, false).unwrap();
             viewer.render(&mut terminal, size).unwrap();
         }
         let warm_elapsed = started.elapsed();
-        assert_eq!(viewer.block_reads, warm_reads);
+        assert_eq!(viewer.source.block_reads(), warm_reads);
 
         let started = std::time::Instant::now();
-        let long_accesses_before = viewer.block_accesses;
+        let long_accesses_before = viewer.source.block_accesses();
         viewer.bottom().unwrap();
         viewer.render(&mut terminal, size).unwrap();
         let long_line_elapsed = started.elapsed();
-        let long_line_reads = viewer.block_reads - warm_reads;
-        let long_line_accesses = viewer.block_accesses - long_accesses_before;
+        let long_line_reads = viewer.source.block_reads() - warm_reads;
+        let long_line_accesses = viewer.source.block_accesses() - long_accesses_before;
         assert!(
             long_line_reads <= BLOCK_CACHE_SIZE,
             "long-line block reads: {long_line_reads}"
@@ -1478,64 +1267,13 @@ mod tests {
             long_line_elapsed,
             long_line_reads,
             long_line_accesses,
-            viewer.peak_cache_bytes,
+            viewer.source.peak_cache_bytes(),
             page_before,
             initial_page,
             cold_page,
             final_page
         );
 
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn growth_reloads_a_cached_partial_tail() {
-        let path = temp_path("termfold-viewer-growth");
-        fs::write(&path, b"tail").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
-        let size = Size {
-            columns: 32,
-            rows: 2,
-        };
-        let mut terminal = Terminal::new(size).unwrap();
-        viewer.render(&mut terminal, size).unwrap();
-
-        let mut append = OpenOptions::new().append(true).open(&path).unwrap();
-        append.write_all(b"-grown").unwrap();
-        drop(append);
-        viewer.bottom().unwrap();
-        viewer.render(&mut terminal, size).unwrap();
-
-        assert_eq!(viewer.page[0], "tail-grown");
-        assert_eq!(viewer.length, 10);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn truncation_clamps_state_and_discards_search_offsets() {
-        let path = temp_path("termfold-viewer-truncate");
-        fs::write(&path, b"first\nsecond\nthird\n").unwrap();
-        let mut viewer = Viewer::open(path.clone()).unwrap();
-        let size = Size {
-            columns: 32,
-            rows: 3,
-        };
-        let mut terminal = Terminal::new(size).unwrap();
-        viewer.render(&mut terminal, size).unwrap();
-        assert!(viewer.search("third", true).unwrap());
-
-        let truncate = OpenOptions::new().write(true).open(&path).unwrap();
-        truncate.set_len(6).unwrap();
-        drop(truncate);
-        viewer.bottom().unwrap();
-        viewer.render(&mut terminal, size).unwrap();
-
-        assert_eq!(viewer.length, 6);
-        assert!(viewer.position <= viewer.length);
-        assert!(viewer.viewport <= viewer.length);
-        assert!(viewer.search.is_none());
-        assert!(viewer.matches.is_empty());
-        assert_eq!(viewer.page[0], "first");
         fs::remove_file(path).unwrap();
     }
 
@@ -1556,7 +1294,7 @@ mod tests {
 
         let directory = File::open(std::env::temp_dir()).unwrap();
         assert!(directory.metadata().unwrap().len() > 0);
-        viewer.file = directory;
+        viewer.source.replace_file(directory);
         let error = viewer.render(&mut terminal, size).unwrap_err();
 
         assert!(!error.to_string().is_empty());

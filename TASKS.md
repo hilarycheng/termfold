@@ -396,7 +396,7 @@ perform file I/O or file scanning.
     with 16 tests; Ubuntu-24.04 WSL musl release build passed; native Windows
     MSVC viewer tests passed with 15 tests; native Windows MSVC build passed.
 
-- [ ] **T28C — Extract snapshot FileSource and the raw-block cache**
+- [*] **T28C — Extract snapshot FileSource and the raw-block cache**
   - Create `viewer/source.rs`.
   - Move file ownership, snapshot length, aligned block reads, cache lookup, and
     cache eviction out of `viewer/mod.rs`.
@@ -410,6 +410,10 @@ perform file I/O or file scanning.
   - Depends on: T28B.
   - Done when: no file read or cache implementation remains duplicated in
     `viewer/mod.rs` and cache bytes never exceed 512 KiB.
+  - Evidence: WSL musl release build passed; WSL viewer tests passed with 15
+    tests; native Windows MSVC release build passed; native Windows MSVC viewer
+    tests passed with 13 tests. Windows linker temporary-file access required
+    escalated execution. The two-test count difference is from Unix-only tests.
 
 - [ ] **T28D — Implement one universal, resumable line scanner**
   - Create `viewer/line.rs` with the only line-boundary implementation used by
@@ -709,4 +713,3 @@ perform file I/O or file scanning.
   - Done when: the complete T28 contract passes on authoritative Linux/WSL and
     native Windows environments, or each unavailable acceptance environment is
     recorded as a blocker and T28 remains incomplete.
-
