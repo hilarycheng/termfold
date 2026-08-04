@@ -381,7 +381,7 @@ perform file I/O or file scanning.
   - Evidence: completed as a documentation-only approved change; no Rust source,
     build, test, or README behaviour was changed.
 
-- [ ] **T28B — Mechanically establish the viewer module tree**
+- [*] **T28B — Mechanically establish the viewer module tree**
   - Move the complete existing `viewer.rs` implementation and its tests to
     `viewer/mod.rs` without changing logic, constants, signatures, or test
     expectations.
@@ -392,6 +392,9 @@ perform file I/O or file scanning.
   - Depends on: T28A.
   - Done when: the move is recognized as a rename where possible and every
     existing viewer test has unchanged behaviour.
+  - Evidence: `cargo check --locked` passed; Ubuntu-24.04 WSL viewer tests passed
+    with 16 tests; Ubuntu-24.04 WSL musl release build passed; native Windows
+    MSVC viewer tests passed with 15 tests; native Windows MSVC build passed.
 
 - [ ] **T28C — Extract snapshot FileSource and the raw-block cache**
   - Create `viewer/source.rs`.
