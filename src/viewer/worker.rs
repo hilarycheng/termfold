@@ -1,0 +1,555 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    io,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+};
+
+use crate::{session::Size, terminal::Terminal};
+
+use super::{SearchStart, SearchStep, SearchWork, Viewer};
+
+pub(super) const VIEWER_COMMAND_CAPACITY: usize = 8;
+type ViewerId = u64;
+
+pub(super) enum ViewerCommand {
+    Open { id: ViewerId, generation: u64, path: PathBuf, tab_width: usize, reply: SyncSender<ViewerResult> },
+    Close { id: ViewerId, generation: u64, reply: SyncSender<ViewerResult> },
+    Run { id: ViewerId, generation: u64, operation: ViewerOperation, reply: SyncSender<ViewerResult> },
+    Shutdown,
+}
+
+pub(super) enum ViewerOperation {
+    MoveLines(i32),
+    ScrollViewport(i32),
+    Page { rows: u16, forward: bool },
+    HalfPage { rows: u16, forward: bool },
+    LineStart,
+    LineEnd { columns: usize },
+    Top,
+    Bottom,
+    Search { query: Vec<u8>, forward: bool },
+    RepeatSearch { same_direction: bool },
+    Render { terminal: Terminal, size: Size },
+}
+
+pub(super) enum ViewerResult {
+    Opened { id: ViewerId, generation: u64, path: PathBuf },
+    Closed { id: ViewerId, generation: u64 },
+    Done { id: ViewerId, generation: u64, value: Option<bool>, terminal: Option<Terminal> },
+    Stale { id: ViewerId, generation: u64, terminal: Option<Terminal> },
+    Error { id: ViewerId, generation: u64, message: String, terminal: Option<Terminal> },
+}
+
+#[derive(Clone)]
+pub(crate) struct ViewerWorkerHandle {
+    sender: SyncSender<ViewerCommand>,
+    next_id: Arc<AtomicU64>,
+}
+
+pub(crate) struct ViewerHandle {
+    worker: ViewerWorkerHandle,
+    id: ViewerId,
+    generation: u64,
+    path: PathBuf,
+    closed: bool,
+}
+
+pub(crate) struct ViewerWorker {
+    handle: ViewerWorkerHandle,
+    join: Option<JoinHandle<()>>,
+}
+
+struct WorkerViewer {
+    viewer: Viewer,
+    generation: u64,
+}
+
+enum Work {
+    Run { id: ViewerId, generation: u64, operation: ViewerOperation, reply: SyncSender<ViewerResult> },
+    Search { id: ViewerId, generation: u64, work: SearchWork, reply: SyncSender<ViewerResult> },
+}
+
+impl ViewerWorker {
+    pub(crate) fn spawn() -> io::Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(VIEWER_COMMAND_CAPACITY);
+        let join = thread::Builder::new()
+            .name("termfold-viewer".into())
+            .spawn(move || run(receiver))
+            .map_err(io::Error::other)?;
+        Ok(Self {
+            handle: ViewerWorkerHandle { sender, next_id: Arc::new(AtomicU64::new(1)) },
+            join: Some(join),
+        })
+    }
+
+    pub(crate) fn handle(&self) -> ViewerWorkerHandle {
+        self.handle.clone()
+    }
+
+    pub(crate) fn shutdown(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = self.handle.sender.send(ViewerCommand::Shutdown);
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for ViewerWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl ViewerWorkerHandle {
+    pub(crate) fn open(&self, path: PathBuf, tab_width: usize) -> io::Result<ViewerHandle> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let generation = 0;
+        match self.ask(|reply| ViewerCommand::Open { id, generation, path, tab_width, reply })? {
+            ViewerResult::Opened { id: result_id, generation: result_generation, path }
+                if id == result_id && generation == result_generation => Ok(ViewerHandle {
+                    worker: self.clone(), id, generation, path, closed: false,
+                }),
+            ViewerResult::Error { message, .. } => Err(io::Error::other(message)),
+            _ => Err(io::Error::other("invalid viewer open result")),
+        }
+    }
+
+    fn ask<F>(&self, build: F) -> io::Result<ViewerResult>
+    where
+        F: FnOnce(SyncSender<ViewerResult>) -> ViewerCommand,
+    {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        match self.sender.try_send(build(reply)) {
+            Ok(()) => receiver.recv().map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "viewer worker stopped")),
+            Err(TrySendError::Full(_)) => Err(io::Error::new(io::ErrorKind::WouldBlock, "viewer worker command queue is full")),
+            Err(TrySendError::Disconnected(_)) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "viewer worker stopped")),
+        }
+    }
+}
+
+impl ViewerHandle {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn close(&mut self) -> io::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let generation = self.generation.wrapping_add(1);
+        match self.worker.ask(|reply| ViewerCommand::Close { id: self.id, generation, reply })? {
+            ViewerResult::Closed { id, generation: result_generation }
+                if id == self.id && result_generation == generation => {
+                    self.generation = generation;
+                    self.closed = true;
+                    Ok(())
+                }
+            ViewerResult::Error { message, .. } => Err(io::Error::other(message)),
+            _ => Err(io::Error::other("invalid viewer close result")),
+        }
+    }
+
+    fn run(&mut self, operation: ViewerOperation, invalidate: bool) -> io::Result<ViewerResult> {
+        let generation = if invalidate { self.generation.wrapping_add(1) } else { self.generation };
+        let result = self.worker.ask(|reply| ViewerCommand::Run {
+            id: self.id, generation, operation, reply,
+        }).and_then(|result| self.check(result, generation));
+        if result.is_ok() && invalidate {
+            self.generation = generation;
+        }
+        result
+    }
+
+    fn check(&self, result: ViewerResult, generation: u64) -> io::Result<ViewerResult> {
+        match &result {
+            ViewerResult::Done { id, generation: result_generation, .. }
+            | ViewerResult::Stale { id, generation: result_generation, .. }
+            | ViewerResult::Error { id, generation: result_generation, .. }
+                if *id == self.id && *result_generation == generation => Ok(result),
+            _ => Err(io::Error::other("invalid viewer operation result")),
+        }
+    }
+
+    fn unit(&mut self, operation: ViewerOperation) -> io::Result<()> {
+        match self.run(operation, true)? {
+            ViewerResult::Done { value: None, .. } => Ok(()),
+            ViewerResult::Error { message, .. } => Err(io::Error::other(message)),
+            _ => Err(io::Error::other("invalid viewer operation result")),
+        }
+    }
+
+    fn boolean(&mut self, operation: ViewerOperation) -> io::Result<bool> {
+        match self.run(operation, true)? {
+            ViewerResult::Done { value: Some(value), .. } => Ok(value),
+            ViewerResult::Error { message, .. } => Err(io::Error::other(message)),
+            _ => Err(io::Error::other("invalid viewer operation result")),
+        }
+    }
+
+    pub(crate) fn render(&mut self, terminal: &mut Terminal, size: Size) -> io::Result<()> {
+        let replacement = Terminal::new(terminal.screen().size()).map_err(io::Error::other)?;
+        let old = std::mem::replace(terminal, replacement);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let command = ViewerCommand::Run {
+            id: self.id,
+            generation: self.generation,
+            operation: ViewerOperation::Render { terminal: old, size },
+            reply,
+        };
+        let result = match self.worker.sender.try_send(command) {
+            Ok(()) => receiver.recv().map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "viewer worker stopped"))?,
+            Err(TrySendError::Full(command)) => {
+                *terminal = take_terminal(command).expect("render command owns terminal");
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "viewer worker command queue is full"));
+            }
+            Err(TrySendError::Disconnected(command)) => {
+                *terminal = take_terminal(command).expect("render command owns terminal");
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "viewer worker stopped"));
+            }
+        };
+        match result {
+            ViewerResult::Done { terminal: Some(rendered), .. } => {
+                *terminal = rendered;
+                Ok(())
+            }
+            ViewerResult::Error { terminal: Some(rendered), message, .. } => {
+                *terminal = rendered;
+                Err(io::Error::other(message))
+            }
+            ViewerResult::Stale { terminal: Some(rendered), .. } => {
+                *terminal = rendered;
+                Err(io::Error::other("stale viewer result"))
+            }
+            _ => Err(io::Error::other("invalid viewer render result")),
+        }
+    }
+
+    pub(crate) fn move_lines(&mut self, amount: i32) -> io::Result<()> { self.unit(ViewerOperation::MoveLines(amount)) }
+    pub(crate) fn scroll_viewport(&mut self, amount: i32) -> io::Result<()> { self.unit(ViewerOperation::ScrollViewport(amount)) }
+    pub(crate) fn page(&mut self, rows: u16, forward: bool) -> io::Result<()> { self.unit(ViewerOperation::Page { rows, forward }) }
+    pub(crate) fn half_page(&mut self, rows: u16, forward: bool) -> io::Result<()> { self.unit(ViewerOperation::HalfPage { rows, forward }) }
+    pub(crate) fn line_start(&mut self) -> io::Result<()> { self.unit(ViewerOperation::LineStart) }
+    pub(crate) fn line_end(&mut self, columns: usize) -> io::Result<()> { self.unit(ViewerOperation::LineEnd { columns }) }
+    pub(crate) fn top(&mut self) -> io::Result<()> { self.unit(ViewerOperation::Top) }
+    pub(crate) fn bottom(&mut self) -> io::Result<()> { self.unit(ViewerOperation::Bottom) }
+    pub(crate) fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
+        self.boolean(ViewerOperation::Search { query: query.as_bytes().to_vec(), forward })
+    }
+    pub(crate) fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
+        self.boolean(ViewerOperation::RepeatSearch { same_direction })
+    }
+}
+
+fn run(receiver: Receiver<ViewerCommand>) {
+    let mut viewers = HashMap::<ViewerId, WorkerViewer>::new();
+    let mut queue = VecDeque::new();
+    let mut active = None;
+    loop {
+        let command = if active.is_none() && queue.is_empty() {
+            match receiver.recv() {
+                Ok(command) => Some(command),
+                Err(_) => return,
+            }
+        } else {
+            match receiver.try_recv() {
+                Ok(command) => Some(command),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        };
+        if let Some(command) = command {
+            let mut controls = Vec::new();
+            let mut operations = Vec::new();
+            split(command, &mut controls, &mut operations);
+            for _ in 1..VIEWER_COMMAND_CAPACITY {
+                let Ok(command) = receiver.try_recv() else { break };
+                split(command, &mut controls, &mut operations);
+            }
+            for command in controls {
+                if control(command, &mut viewers, &mut active, &mut queue) { return; }
+            }
+            for command in operations {
+                enqueue(command, &mut viewers, &active, &mut queue);
+            }
+        }
+        if active.is_none() { active = queue.pop_front(); }
+        if let Some(work) = active.take() { active = step(work, &mut viewers); }
+    }
+}
+
+fn split(command: ViewerCommand, controls: &mut Vec<ViewerCommand>, operations: &mut Vec<ViewerCommand>) {
+    if matches!(command, ViewerCommand::Run { .. }) { operations.push(command) } else { controls.push(command) }
+}
+
+fn control(command: ViewerCommand, viewers: &mut HashMap<ViewerId, WorkerViewer>, active: &mut Option<Work>, queue: &mut VecDeque<Work>) -> bool {
+    match command {
+        ViewerCommand::Open { id, generation, path, tab_width, reply } => match Viewer::open(path, tab_width) {
+            Ok(viewer) => {
+                let path = viewer.path().to_owned();
+                viewers.insert(id, WorkerViewer { viewer, generation });
+                send(&reply, ViewerResult::Opened { id, generation, path });
+            }
+            Err(error) => send(&reply, ViewerResult::Error { id, generation, message: error.to_string(), terminal: None }),
+        },
+        ViewerCommand::Close { id, generation, reply } => {
+            cancel(id, active, queue);
+            let result = match viewers.get(&id) {
+                Some(viewer) if generation >= viewer.generation => {
+                    viewers.remove(&id);
+                    ViewerResult::Closed { id, generation }
+                }
+                _ => ViewerResult::Stale { id, generation, terminal: None },
+            };
+            send(&reply, result);
+        }
+        ViewerCommand::Shutdown => {
+            cancel_all(active, queue);
+            return true;
+        }
+        ViewerCommand::Run { .. } => {}
+    }
+    false
+}
+
+fn enqueue(command: ViewerCommand, viewers: &mut HashMap<ViewerId, WorkerViewer>, active: &Option<Work>, queue: &mut VecDeque<Work>) {
+    let ViewerCommand::Run { id, generation, operation, reply } = command else { return };
+    let Some(viewer) = viewers.get_mut(&id) else {
+        send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) });
+        return;
+    };
+    if viewer.generation != generation {
+        send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) });
+        return;
+    }
+    if queue.len() + usize::from(active.is_some()) >= VIEWER_COMMAND_CAPACITY {
+        send(&reply, ViewerResult::Error { id, generation, message: "viewer worker work queue is full".into(), terminal: take_terminal_from(operation) });
+        return;
+    }
+    viewer.generation = generation;
+    match operation {
+        ViewerOperation::Search { query, forward } => match viewer.viewer.begin_search_work(query, forward) {
+            SearchStart::Complete(value) => send(&reply, ViewerResult::Done { id, generation, value: Some(value), terminal: None }),
+            SearchStart::Work(work) => queue.push_back(Work::Search { id, generation, work, reply }),
+        },
+        ViewerOperation::RepeatSearch { same_direction } => match viewer.viewer.begin_repeat_search_work(same_direction) {
+            Ok(SearchStart::Complete(value)) => send(&reply, ViewerResult::Done { id, generation, value: Some(value), terminal: None }),
+            Ok(SearchStart::Work(work)) => queue.push_back(Work::Search { id, generation, work, reply }),
+            Err(error) => send(&reply, ViewerResult::Error { id, generation, message: error.to_string(), terminal: None }),
+        },
+        operation => queue.push_back(Work::Run { id, generation, operation, reply }),
+    }
+}
+
+fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Work> {
+    match work {
+        Work::Search { id, generation, mut work, reply } => {
+            let Some(viewer) = viewers.get_mut(&id) else {
+                send(&reply, ViewerResult::Stale { id, generation, terminal: None });
+                return None;
+            };
+            if viewer.generation != generation {
+                send(&reply, ViewerResult::Stale { id, generation, terminal: None });
+                return None;
+            }
+            match viewer.viewer.step_search_work(&mut work) {
+                Ok(SearchStep::Continue) => Some(Work::Search { id, generation, work, reply }),
+                Ok(SearchStep::Complete(value)) => {
+                    send(&reply, ViewerResult::Done { id, generation, value: Some(value), terminal: None });
+                    None
+                }
+                Err(error) => {
+                    send(&reply, ViewerResult::Error { id, generation, message: error.to_string(), terminal: None });
+                    None
+                }
+            }
+        }
+        Work::Run { id, generation, operation, reply } => {
+            let Some(viewer) = viewers.get_mut(&id) else {
+                send(&reply, ViewerResult::Error { id, generation, message: "viewer is closed".into(), terminal: take_terminal_from(operation) });
+                return None;
+            };
+            if viewer.generation != generation {
+                send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) });
+                return None;
+            }
+            match execute(&mut viewer.viewer, operation) {
+                Ok((value, terminal)) => send(&reply, ViewerResult::Done { id, generation, value, terminal }),
+                Err((message, terminal)) => send(&reply, ViewerResult::Error { id, generation, message, terminal }),
+            }
+            None
+        }
+    }
+}
+
+type ExecResult = Result<(Option<bool>, Option<Terminal>), (String, Option<Terminal>)>;
+
+fn no_value(result: io::Result<()>) -> ExecResult {
+    result.map(|_| (None, None)).map_err(|error| (error.to_string(), None))
+}
+
+fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
+    let result = match operation {
+        ViewerOperation::MoveLines(amount) => no_value(viewer.move_lines(amount)),
+        ViewerOperation::ScrollViewport(amount) => no_value(viewer.scroll_viewport(amount)),
+        ViewerOperation::Page { rows, forward } => no_value(viewer.page(rows, forward)),
+        ViewerOperation::HalfPage { rows, forward } => no_value(viewer.half_page(rows, forward)),
+        ViewerOperation::LineStart => no_value(viewer.line_start()),
+        ViewerOperation::LineEnd { columns } => no_value(viewer.line_end(columns)),
+        ViewerOperation::Top => { viewer.top(); Ok((None, None)) }
+        ViewerOperation::Bottom => no_value(viewer.bottom()),
+        ViewerOperation::Render { mut terminal, size } => match viewer.render(&mut terminal, size) {
+            Ok(()) => Ok((None, Some(terminal))),
+            Err(error) => Err((error.to_string(), Some(terminal))),
+        },
+        ViewerOperation::Search { .. } | ViewerOperation::RepeatSearch { .. } => Err(("search was not scheduled".into(), None)),
+    };
+    result
+}
+
+fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
+    if active.as_ref().is_some_and(|work| work_id(work) == id) {
+        send_stale(active.take().unwrap());
+    }
+    let mut keep = VecDeque::new();
+    while let Some(work) = queue.pop_front() {
+        if work_id(&work) == id { send_stale(work) } else { keep.push_back(work) }
+    }
+    *queue = keep;
+}
+
+fn cancel_all(active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
+    if let Some(work) = active.take() { send_stale(work); }
+    while let Some(work) = queue.pop_front() { send_stale(work); }
+}
+
+fn work_id(work: &Work) -> ViewerId {
+    match work { Work::Run { id, .. } | Work::Search { id, .. } => *id }
+}
+
+fn send_stale(work: Work) {
+    match work {
+        Work::Run { id, generation, operation, reply } => send(&reply, ViewerResult::Stale { id, generation, terminal: take_terminal_from(operation) }),
+        Work::Search { id, generation, reply, .. } => send(&reply, ViewerResult::Stale { id, generation, terminal: None }),
+    }
+}
+
+fn take_terminal_from(operation: ViewerOperation) -> Option<Terminal> {
+    match operation { ViewerOperation::Render { terminal, .. } => Some(terminal), _ => None }
+}
+
+fn take_terminal(command: ViewerCommand) -> Option<Terminal> {
+    match command { ViewerCommand::Run { operation, .. } => take_terminal_from(operation), _ => None }
+}
+
+fn send(reply: &SyncSender<ViewerResult>, result: ViewerResult) {
+    let _ = reply.send(result);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, time::{Duration, SystemTime}};
+
+    fn path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("termfold-worker-{label}-{}-{}", std::process::id(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()))
+    }
+
+    fn open(label: &str, bytes: &[u8]) -> (PathBuf, ViewerWorker, ViewerHandle) {
+        let path = path(label);
+        fs::write(&path, bytes).unwrap();
+        let worker = ViewerWorker::spawn().unwrap();
+        let viewer = worker.handle().open(path.clone(), 8).unwrap();
+        (path, worker, viewer)
+    }
+
+    #[test]
+    fn open_close_and_shutdown() {
+        let (path, mut worker, mut viewer) = open("lifecycle", b"text");
+        assert_eq!(viewer.path(), path);
+        viewer.close().unwrap();
+        worker.shutdown();
+        assert!(worker.join.is_none());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn command_channel_is_bounded() {
+        let (path, mut worker, viewer) = open("bounded", &vec![b'a'; 2 * 1024 * 1024]);
+        let sender = worker.handle().sender;
+        let (reply, _) = mpsc::sync_channel(1);
+        sender.send(ViewerCommand::Run {
+            id: viewer.id,
+            generation: viewer.generation,
+            operation: ViewerOperation::Search { query: vec![b'z'; 256], forward: true },
+            reply,
+        }).unwrap();
+        let mut full = false;
+        for _ in 0..VIEWER_COMMAND_CAPACITY * 4 {
+            let (reply, _) = mpsc::sync_channel(1);
+            if matches!(sender.try_send(ViewerCommand::Run {
+                id: viewer.id, generation: viewer.generation, operation: ViewerOperation::Top, reply,
+            }), Err(TrySendError::Full(_))) {
+                full = true;
+                break;
+            }
+        }
+        assert!(full);
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stale_generation_is_rejected() {
+        let (path, mut worker, viewer) = open("stale", b"text");
+        let (reply, result) = mpsc::sync_channel(1);
+        worker.handle().sender.send(ViewerCommand::Run {
+            id: viewer.id, generation: viewer.generation + 1, operation: ViewerOperation::Top, reply,
+        }).unwrap();
+        assert!(matches!(result.recv().unwrap(), ViewerResult::Stale { .. }));
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn two_viewers_have_independent_ids() {
+        let first_path = path("first");
+        let second_path = path("second");
+        fs::write(&first_path, b"first").unwrap();
+        fs::write(&second_path, b"second").unwrap();
+        let mut worker = ViewerWorker::spawn().unwrap();
+        let handle = worker.handle();
+        let first = handle.open(first_path.clone(), 8).unwrap();
+        let second = handle.open(second_path.clone(), 8).unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.path(), second.path());
+        worker.shutdown();
+        fs::remove_file(first_path).unwrap();
+        fs::remove_file(second_path).unwrap();
+    }
+
+    #[test]
+    fn close_precedes_the_next_search_step() {
+        let (path, mut worker, viewer) = open("cooperative", &vec![b'a'; 4 * 1024 * 1024]);
+        let sender = worker.handle().sender;
+        let (search_reply, search_result) = mpsc::sync_channel(1);
+        sender.send(ViewerCommand::Run {
+            id: viewer.id, generation: viewer.generation,
+            operation: ViewerOperation::Search { query: vec![b'z'; 256], forward: true },
+            reply: search_reply,
+        }).unwrap();
+        let _ = search_result.recv_timeout(Duration::from_millis(1));
+        let (close_reply, close_result) = mpsc::sync_channel(1);
+        sender.send(ViewerCommand::Close {
+            id: viewer.id, generation: viewer.generation + 1, reply: close_reply,
+        }).unwrap();
+        assert!(matches!(close_result.recv_timeout(Duration::from_millis(500)).unwrap(), ViewerResult::Closed { .. }));
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+}

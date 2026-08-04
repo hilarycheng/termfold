@@ -567,7 +567,7 @@ perform file I/O or file scanning.
     elevated `cargo test --locked` passed with 94 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28K — Add the session-scoped Viewer Worker foundation**
+- [*] **T28K — Add the session-scoped Viewer Worker foundation**
   - Create `viewer/worker.rs` and one worker per Session Server, not one thread per
     viewer.
   - Define bounded `ViewerCommand` and `ViewerResult` messages containing viewer
@@ -587,6 +587,13 @@ perform file I/O or file scanning.
   - Review gate: inspect ownership, thread lifecycle, channel bounds, and stale
     result handling before T28L.
   - Done when: a mocked slow FileSource never blocks the Session Server thread.
+  - Implementation: added one session-scoped bounded standard-library worker;
+    it owns viewer cores/FileSource instances, routes pane viewers through
+    generation-tagged commands/results, prioritizes control commands, and yields
+    search work after each 64 KiB step.
+  - Evidence: focused `cargo test --locked viewer::worker::` passed with 5 tests;
+    full elevated `cargo test --locked` passed with 99 unit tests and 8 lifecycle
+    tests; the x86_64 musl release build passed.
 
 - [ ] **T28L — Move page and line navigation behind the Viewer Worker**
   - Convert line, page, half-page, viewport, start/end, and top/bottom actions into

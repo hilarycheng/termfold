@@ -18,7 +18,7 @@ use crate::{
     runtime::{ClientStream, RuntimeDir, SessionSocket},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
-    viewer::Viewer,
+    viewer::worker::{ViewerHandle, ViewerWorker, ViewerWorkerHandle},
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
@@ -66,7 +66,7 @@ enum MouseCapture {
 struct PaneProcess {
     id: PaneId,
     child: Option<PtyChild>,
-    viewer: Option<Viewer>,
+    viewer: Option<ViewerHandle>,
     terminal: Terminal,
     pending_input: PendingInput,
     working_directory: PathBuf,
@@ -157,6 +157,7 @@ struct InputContext<'a> {
     full_dirty: &'a mut bool,
     viewer_dirty: &'a mut Option<u64>,
     events: &'a SyncSender<ServerEvent>,
+    viewer_worker: &'a ViewerWorkerHandle,
 }
 
 pub fn run(
@@ -194,6 +195,9 @@ pub fn run(
         working_directory: context.working_directory().to_owned(),
     }];
     spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
+    let mut viewer_worker = ViewerWorker::spawn()
+        .map_err(|error| format!("cannot start viewer worker: {error}"))?;
+    let viewer_worker_handle = viewer_worker.handle();
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
     let mut authoritative_size = initial_size;
@@ -244,6 +248,7 @@ pub fn run(
                             full_dirty: &mut full_dirty,
                             viewer_dirty: &mut viewer_dirty,
                             events: &event_sender,
+                            viewer_worker: &viewer_worker_handle,
                         };
                         if handle_message(&mut clients, client_id, message, &mut input) {
                             terminate = true;
@@ -285,6 +290,7 @@ pub fn run(
                 full_dirty: &mut full_dirty,
                 viewer_dirty: &mut viewer_dirty,
                 events: &event_sender,
+                viewer_worker: &viewer_worker_handle,
             };
             if handle_actions(&mut clients, client_id, actions, &mut input) {
                 terminate = true;
@@ -305,6 +311,7 @@ pub fn run(
                 full_dirty: &mut full_dirty,
                 viewer_dirty: &mut viewer_dirty,
                 events: &event_sender,
+                viewer_worker: &viewer_worker_handle,
             };
             if let Err(error) = render_active_viewer(&mut input) {
                 set_status(&mut clients, client_id, Some(error), input.full_dirty);
@@ -468,8 +475,10 @@ pub fn run(
         .iter_mut()
         .filter_map(|pane| pane.child.as_mut())
         .collect::<Vec<_>>();
-    pty::terminate_all(&mut children)
-        .map_err(|error| format!("cannot terminate session children: {error}"))
+    let result = pty::terminate_all(&mut children)
+        .map_err(|error| format!("cannot terminate session children: {error}"));
+    viewer_worker.shutdown();
+    result
 }
 
 fn accept_clients(
@@ -870,6 +879,9 @@ fn handle_action(
             let close = input.session.close_active_pane(content_size);
             if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
                 let mut pane = input.panes.swap_remove(index);
+                if let Some(viewer) = pane.viewer.as_mut() {
+                    let _ = viewer.close();
+                }
                 if let Some(child) = pane.child.as_mut() {
                     let _ = pty::terminate_all(&mut [child]);
                 }
@@ -1230,7 +1242,7 @@ fn handle_action(
             return false;
         }
         Action::ViewerLineStart => {
-            let result = active_viewer(input).map(Viewer::line_start);
+            let result = active_viewer(input).map(ViewerHandle::line_start);
             if let Some(Err(error)) = result {
                 set_status(
                     clients,
@@ -1261,15 +1273,22 @@ fn handle_action(
             return false;
         }
         Action::ViewerTop => {
-            if let Some(viewer) = active_viewer(input) {
-                viewer.top();
+            let result = active_viewer(input).map(ViewerHandle::top);
+            if let Some(Err(error)) = result {
+                set_status(
+                    clients,
+                    client_id,
+                    Some(format!("viewer navigation failed: {error}")),
+                    input.full_dirty,
+                );
+            } else {
+                defer_viewer_refresh(clients, client_id, input);
             }
-            defer_viewer_refresh(clients, client_id, input);
             *input.full_dirty = true;
             return false;
         }
         Action::ViewerBottom => {
-            let result = active_viewer(input).map(Viewer::bottom);
+            let result = active_viewer(input).map(ViewerHandle::bottom);
             if let Some(Err(error)) = result {
                 set_status(
                     clients,
@@ -1454,7 +1473,7 @@ fn active_scrollback_maximum(input: &InputContext<'_>) -> usize {
         .map_or(0, |pane| pane.terminal.max_scroll_offset())
 }
 
-fn active_viewer<'a>(input: &'a mut InputContext<'_>) -> Option<&'a mut Viewer> {
+fn active_viewer<'a>(input: &'a mut InputContext<'_>) -> Option<&'a mut ViewerHandle> {
     let active = input.session.active_pane()?;
     input
         .panes
@@ -1740,7 +1759,9 @@ fn open_viewer(input: &mut InputContext<'_>, requested: &str) -> Result<(), Stri
 }
 
 fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), String> {
-    let mut viewer = Viewer::open(path.clone(), usize::from(input.viewer_tab_width))
+    let mut viewer = input
+        .viewer_worker
+        .open(path.clone(), usize::from(input.viewer_tab_width))
         .map_err(|error| format!("cannot open viewer file {}: {error}", path.display()))?;
     let content_size = pane_area(*input.size);
     let pane = input
@@ -1757,17 +1778,20 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
             rows: rect.height,
         })
     else {
+        let _ = viewer.close();
         let _ = input.session.close_pane(pane, content_size);
         return Err("viewer tab has no size".into());
     };
     let mut terminal = match Terminal::new(pane_size) {
         Ok(terminal) => terminal,
         Err(error) => {
+            let _ = viewer.close();
             let _ = input.session.close_pane(pane, content_size);
             return Err(error.to_string());
         }
     };
     if let Err(error) = viewer.render(&mut terminal, pane_size) {
+        let _ = viewer.close();
         let _ = input.session.close_pane(pane, content_size);
         return Err(format!("cannot render viewer: {error}"));
     }
@@ -1784,6 +1808,14 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
         working_directory,
     });
     if let Err(error) = resize_all(input.session, input.panes, *input.size, *input.size) {
+        if let Some(viewer) = input
+            .panes
+            .iter_mut()
+            .find(|candidate| candidate.id == pane)
+            .and_then(|candidate| candidate.viewer.as_mut())
+        {
+            let _ = viewer.close();
+        }
         input.panes.retain(|candidate| candidate.id != pane);
         let _ = input.session.close_pane(pane, content_size);
         let _ = resize_all(input.session, input.panes, *input.size, *input.size);

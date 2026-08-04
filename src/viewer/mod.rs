@@ -9,6 +9,7 @@ mod line;
 mod frame;
 mod source;
 mod text;
+pub(super) mod worker;
 
 use frame::{FrameContext, FrameKey, FrameSlots, PageFrame};
 use line::{LineBoundary, LineScanner, ScanStep};
@@ -24,6 +25,22 @@ struct SearchState {
     query: Vec<u8>,
     forward: bool,
     offset: u64,
+}
+
+pub(super) struct SearchWork {
+    query: Vec<u8>,
+    forward: bool,
+    ranges: VecDeque<(u64, u64)>,
+}
+
+pub(super) enum SearchStart {
+    Complete(bool),
+    Work(SearchWork),
+}
+
+pub(super) enum SearchStep {
+    Complete(bool),
+    Continue,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,6 +122,7 @@ impl Viewer {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn invalidate_frames(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.frames.clear();
@@ -439,6 +457,7 @@ impl Viewer {
         })
     }
 
+    #[cfg(test)]
     pub fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
         let query = query.as_bytes().to_vec();
         let has_query = !query.is_empty();
@@ -467,6 +486,7 @@ impl Viewer {
         result
     }
 
+    #[cfg(test)]
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
         let had_search = self.search.is_some();
         let state = self.state();
@@ -512,6 +532,114 @@ impl Viewer {
             self.invalidate_frames();
         }
         result
+    }
+
+    pub(super) fn begin_search_work(&mut self, query: Vec<u8>, forward: bool) -> SearchStart {
+        self.matches.clear();
+        self.search_work_at(query, forward, self.position)
+    }
+
+    pub(super) fn begin_repeat_search_work(
+        &mut self,
+        same_direction: bool,
+    ) -> io::Result<SearchStart> {
+        let Some(previous) = self.search.clone() else {
+            return Ok(SearchStart::Complete(false));
+        };
+        let forward = if same_direction {
+            previous.forward
+        } else {
+            !previous.forward
+        };
+        let start = if forward {
+            previous.offset.saturating_add(1)
+        } else {
+            previous.offset.saturating_sub(1)
+        };
+        if let Some(offset) = self.cached_match(start, forward) {
+            self.set_position(offset)?;
+            self.search = Some(SearchState {
+                query: previous.query,
+                forward,
+                offset,
+            });
+            return Ok(SearchStart::Complete(true));
+        }
+        self.matches.clear();
+        Ok(self.search_work_at(previous.query, forward, start))
+    }
+
+    fn search_work_at(&mut self, query: Vec<u8>, forward: bool, start: u64) -> SearchStart {
+        if query.is_empty() {
+            return SearchStart::Complete(false);
+        }
+        let Some(maximum) = self.length().checked_sub(query.len() as u64) else {
+            self.search = None;
+            return SearchStart::Complete(false);
+        };
+        let start = start.min(maximum);
+        let mut ranges = VecDeque::with_capacity(2);
+        if forward {
+            ranges.push_back((start, maximum));
+            if start > 0 {
+                ranges.push_back((0, start - 1));
+            }
+        } else {
+            ranges.push_back((start, 0));
+            if start < maximum {
+                ranges.push_back((maximum, start + 1));
+            }
+        }
+        SearchStart::Work(SearchWork {
+            query,
+            forward,
+            ranges,
+        })
+    }
+
+    pub(super) fn step_search_work(&mut self, work: &mut SearchWork) -> io::Result<SearchStep> {
+        let Some((start, end)) = work.ranges.front_mut() else {
+            self.search = None;
+            return Ok(SearchStep::Complete(false));
+        };
+        let (scan_start, scan_end, exhausted) = if work.forward {
+            let scan_end = start
+                .saturating_add(source::BLOCK_SIZE.saturating_sub(1))
+                .min(*end);
+            let scan_start = *start;
+            *start = scan_end.saturating_add(1);
+            (scan_start, scan_end, scan_end == *end)
+        } else {
+            let scan_start = start
+                .saturating_sub(source::BLOCK_SIZE.saturating_sub(1))
+                .max(*end);
+            let scan_end = *start;
+            *start = scan_start.saturating_sub(1);
+            (scan_end, scan_start, scan_start == *end)
+        };
+        let found = if work.forward {
+            self.collect_forward(&work.query, scan_start, scan_end)?
+        } else {
+            self.collect_reverse(&work.query, scan_start, scan_end)?
+        };
+        if exhausted {
+            work.ranges.pop_front();
+        }
+        if let Some(offset) = found {
+            self.set_position(offset)?;
+            self.search = Some(SearchState {
+                query: work.query.clone(),
+                forward: work.forward,
+                offset,
+            });
+            return Ok(SearchStep::Complete(true));
+        }
+        if work.ranges.is_empty() {
+            self.search = None;
+            Ok(SearchStep::Complete(false))
+        } else {
+            Ok(SearchStep::Continue)
+        }
     }
 
     fn navigation<T, F>(&mut self, operation: F) -> io::Result<T>
@@ -595,6 +723,7 @@ impl Viewer {
         frame::cache_line(&mut self.lines, line);
     }
 
+    #[cfg(test)]
     fn search_from(&mut self, query: &[u8], forward: bool, start: u64) -> io::Result<Option<u64>> {
         self.matches.clear();
         let maximum = self.length().checked_sub(query.len() as u64);
