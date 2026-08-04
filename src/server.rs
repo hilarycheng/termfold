@@ -18,7 +18,7 @@ use crate::{
     runtime::{ClientStream, RuntimeDir, SessionSocket},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
-    viewer::worker::{ViewerHandle, ViewerWorker, ViewerWorkerHandle},
+    viewer::worker::{ViewerHandle, ViewerUpdate, ViewerWorker, ViewerWorkerHandle},
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
@@ -85,9 +85,10 @@ impl PaneProcess {
         if let Some(child) = &self.child {
             child.resize(size)?;
         }
+        let changed = self.terminal.screen().size() != size;
         self.terminal.resize(size).map_err(io::Error::other)?;
-        if let Some(viewer) = &mut self.viewer {
-            viewer.render(&mut self.terminal, size)?;
+        if changed && let Some(viewer) = &mut self.viewer {
+            viewer.request_render(size)?;
         }
         Ok(())
     }
@@ -298,25 +299,14 @@ pub fn run(
             }
         }
 
-        if let Some(client_id) = viewer_dirty.take() {
-            let mut input = InputContext {
-                session: &mut session,
-                panes: &mut panes,
-                size: &mut authoritative_size,
-                launch: &context,
-                scrollback_limit: usize::from(config.scrollback_lines),
-                viewer_tab_width: config.viewer_tab_width,
-                mouse: config.mouse,
-                status_line: status_line(&config, &metrics),
-                full_dirty: &mut full_dirty,
-                viewer_dirty: &mut viewer_dirty,
-                events: &event_sender,
-                viewer_worker: &viewer_worker_handle,
-            };
-            if let Err(error) = render_active_viewer(&mut input) {
-                set_status(&mut clients, client_id, Some(error), input.full_dirty);
-            }
-        }
+        apply_viewer_results(
+            &mut clients,
+            &session,
+            &mut panes,
+            authoritative_size,
+            &mut full_dirty,
+            &mut viewer_dirty,
+        );
 
         for pane in &mut panes {
             if let Some(child) = pane.child.as_mut()
@@ -890,6 +880,7 @@ fn handle_action(
                 && let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
             {
                 client.viewer_prompt = None;
+                *input.viewer_dirty = None;
             }
             match close {
                 Ok(CloseResult::SessionEmpty) => return true,
@@ -1509,32 +1500,82 @@ fn defer_viewer_refresh(clients: &mut [Client], client_id: u64, input: &mut Inpu
     set_viewer_status(clients, client_id, input);
 }
 
-fn render_active_viewer(input: &mut InputContext<'_>) -> Result<(), String> {
-    let active = input
-        .session
-        .active_pane()
-        .ok_or_else(|| "active pane does not exist".to_owned())?;
-    let size = input
-        .session
-        .pane_rects(pane_area(*input.size))
-        .into_iter()
-        .find(|(pane, _)| *pane == active)
-        .map(|(_, rect)| Size {
-            columns: rect.width,
-            rows: rect.height,
-        })
-        .ok_or_else(|| "active pane does not exist".to_owned())?;
-    let pane = input
-        .panes
-        .iter_mut()
-        .find(|pane| pane.id == active)
-        .ok_or_else(|| "active pane does not exist".to_owned())?;
-    pane.viewer
-        .as_mut()
-        .ok_or_else(|| "active pane is not a viewer".to_owned())?
-        .render(&mut pane.terminal, size)
-        .map_err(|error| format!("cannot render viewer: {error}"))?;
-    Ok(())
+fn apply_viewer_results(
+    clients: &mut [Client],
+    session: &Session,
+    panes: &mut [PaneProcess],
+    size: Size,
+    full_dirty: &mut bool,
+    viewer_dirty: &mut Option<u64>,
+) {
+    let rects = session.pane_rects(pane_area(size));
+    for pane in panes {
+        let Some(rect) = rects.iter().find(|(id, _)| *id == pane.id).map(|(_, rect)| rect) else {
+            continue;
+        };
+        let viewer_size = Size { columns: rect.width, rows: rect.height };
+        loop {
+            let update = match pane.viewer.as_mut() {
+                Some(viewer) => match viewer.poll(&mut pane.terminal) {
+                    Ok(update) => update,
+                    Err(error) => {
+                        report_viewer_error(
+                            clients,
+                            viewer_dirty,
+                            full_dirty,
+                            format!("viewer worker failed: {error}"),
+                        );
+                        break;
+                    }
+                },
+                None => break,
+            };
+            let Some(update) = update else { break };
+            match update {
+                ViewerUpdate::NavigationComplete => {
+                    if let Some(viewer) = pane.viewer.as_mut()
+                        && let Err(error) = viewer.request_render(viewer_size)
+                    {
+                        report_viewer_error(
+                            clients,
+                            viewer_dirty,
+                            full_dirty,
+                            format!("viewer render failed: {error}"),
+                        );
+                    }
+                }
+                ViewerUpdate::RenderComplete => {
+                    viewer_dirty.take();
+                    *full_dirty = true;
+                }
+                ViewerUpdate::Stale => {}
+                ViewerUpdate::NavigationError(error) => report_viewer_error(
+                    clients,
+                    viewer_dirty,
+                    full_dirty,
+                    format!("viewer navigation failed: {error}"),
+                ),
+                ViewerUpdate::RenderError(error) => report_viewer_error(
+                    clients,
+                    viewer_dirty,
+                    full_dirty,
+                    format!("viewer render failed: {error}"),
+                ),
+            }
+        }
+    }
+}
+
+fn report_viewer_error(
+    clients: &mut [Client],
+    viewer_dirty: &mut Option<u64>,
+    full_dirty: &mut bool,
+    message: String,
+) {
+    *full_dirty = true;
+    if let Some(client_id) = viewer_dirty.take() {
+        set_status(clients, client_id, Some(message), full_dirty);
+    }
 }
 
 fn set_viewer_status(clients: &mut [Client], client_id: u64, input: &mut InputContext<'_>) {
@@ -1782,7 +1823,7 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
         let _ = input.session.close_pane(pane, content_size);
         return Err("viewer tab has no size".into());
     };
-    let mut terminal = match Terminal::new(pane_size) {
+    let terminal = match Terminal::new(pane_size) {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = viewer.close();
@@ -1790,11 +1831,6 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
             return Err(error.to_string());
         }
     };
-    if let Err(error) = viewer.render(&mut terminal, pane_size) {
-        let _ = viewer.close();
-        let _ = input.session.close_pane(pane, content_size);
-        return Err(format!("cannot render viewer: {error}"));
-    }
     let working_directory = path
         .parent()
         .map(PathBuf::from)
@@ -1807,6 +1843,27 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
         pending_input: PendingInput::new(),
         working_directory,
     });
+    let render_result = input
+        .panes
+        .iter_mut()
+        .find(|candidate| candidate.id == pane)
+        .and_then(|candidate| candidate.viewer.as_mut())
+        .ok_or_else(|| "viewer pane disappeared".to_owned())
+        .and_then(|viewer| viewer.request_render(pane_size).map_err(|error| error.to_string()));
+    if let Err(error) = render_result {
+        if let Some(viewer) = input
+            .panes
+            .iter_mut()
+            .find(|candidate| candidate.id == pane)
+            .and_then(|candidate| candidate.viewer.as_mut())
+        {
+            let _ = viewer.close();
+        }
+        input.panes.retain(|candidate| candidate.id != pane);
+        let _ = input.session.close_pane(pane, content_size);
+        let _ = resize_all(input.session, input.panes, *input.size, *input.size);
+        return Err(format!("cannot render viewer: {error}"));
+    }
     if let Err(error) = resize_all(input.session, input.panes, *input.size, *input.size) {
         if let Some(viewer) = input
             .panes

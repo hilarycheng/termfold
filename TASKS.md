@@ -595,7 +595,7 @@ perform file I/O or file scanning.
     full elevated `cargo test --locked` passed with 99 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28L — Move page and line navigation behind the Viewer Worker**
+- [*] **T28L — Move page and line navigation behind the Viewer Worker**
   - Convert line, page, half-page, viewport, start/end, and top/bottom actions into
     ViewerCommand messages.
   - Apply ViewerResult only when viewer ID and generation still match.
@@ -611,6 +611,14 @@ perform file I/O or file scanning.
   - Review gate: verify the Session Server contains no viewer file I/O before
     T28M.
   - Done when: all viewer navigation file work occurs only in Viewer Worker.
+  - Implementation: navigation and render requests now use non-blocking worker
+    dispatch; the Session Server polls bounded generation-checked results, applies
+    rendered terminals, preserves stale/error pages, and closes by discarding late
+    results.
+  - Evidence: focused `cargo test --locked viewer::worker::` passed with 7 tests;
+    elevated `cargo test --locked` passed with 101 unit tests and 8 lifecycle
+    tests; the x86_64 musl release build passed and produced a stripped static PIE.
+    Native Windows/MSVC validation was not available in this Linux host.
 
 - [ ] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
   - Add a server-side ViewerGate containing generation, in-flight state, current
