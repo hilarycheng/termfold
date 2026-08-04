@@ -1,4 +1,4 @@
-# Termfold Requirement
+# Termfold Requirements
 
 ## Authority
 
@@ -140,38 +140,186 @@ block first-release acceptance.
 
 ### Large-file viewer
 
+#### Scope and entry points
+
 - `Ctrl-b v` MUST prompt for a path relative to the active pane's reported
-  working directory and open a read-only viewer pane. It MUST also accept Linux
-  absolute paths and Windows drive-root paths such as `C:\` and `C:/`.
-- `Ctrl-b V` MUST prompt for the same path and open the read-only viewer in a
-  new tab.
-- `termfold view FILE` MUST target the caller's current Termfold session. Outside
-  Termfold, the command MUST require an explicit session.
-- The viewer MUST use standard-library seek/read operations over fixed-size
-  blocks and retain only the displayed page, a small bounded block cache, and a
-  bounded cache of matching offsets.
-- The viewer MUST maintain a logical file cursor separately from the viewport.
-  Arrow Up/Down and `j`/`k` MUST move the cursor by file line, preserve its
-  preferred column when possible, and scroll the viewport only when the cursor
-  approaches an edge. The viewport SHOULD keep one line of context around the
-  cursor when the file has enough surrounding content.
-- `Home` and `End` (also `0` and `$`) MUST move the cursor to the current line's
-  start and end. `gg` and `G` (also Ctrl-Home and Ctrl-End) MUST move the cursor
-  to the file start and end.
-- Page Up/Page Down and Ctrl-f/Ctrl-b MUST move by one page, where a page is the
-  visible viewer height minus two rows, and MUST keep the cursor visible. Ctrl-u
-  and Ctrl-d MUST move the cursor by half a page. Ctrl-e and Ctrl-y MUST scroll
-  the viewport by one line without moving the logical file cursor.
-- `/` and `?` MUST search forward and backward; `n` and `N` MUST repeat searches
-  in either direction. `Ctrl-b x` MUST close the viewer pane after confirmation;
-  `q` and Esc MUST NOT close it.
+  working directory and open a read-only viewer pane.
+- `Ctrl-b V` MUST use the same prompt and open the viewer in a new tab.
+- `termfold view FILE` MUST target the caller's current Termfold session.
+  Outside Termfold, the command MUST require an explicit session.
+- Linux absolute paths and Windows drive-root paths such as `C:\` and `C:/`
+  MUST be accepted.
+- The viewer is a bounded local file reader. It MUST NOT invoke `grep`, `less`,
+  shell interpolation, or another external helper.
+- The T28 viewer is snapshot-oriented. It MUST retain the file identity and
+  length captured when the viewer opens. Appends, truncation, replacement, and
+  log rotation MUST NOT be followed automatically; reopening the file creates a
+  new snapshot.
+
+#### Responsiveness and ownership
+
+- The Session Server MUST NOT perform viewer `seek`, `read`, line scanning,
+  page construction, or file search operations.
+- Each session MUST own one bounded Viewer Worker responsible for all viewer
+  file I/O. It MUST service viewer operations cooperatively so one long search
+  cannot make Termfold input unresponsive.
+- Search and long line scans MUST advance in steps of at most one 64 KiB source
+  block before checking cancellation and newly available control work.
+- Every viewer operation MUST carry a generation number. Navigation, a new
+  search, mode switching, resize, and viewer close MUST invalidate obsolete
+  operations by increasing that generation.
+- Results with an obsolete generation MUST be discarded without changing the
+  committed page, cursor, status, or active search.
+- `Ctrl-b x` MUST remain responsive while viewer I/O is in progress. Closing a
+  viewer MUST invalidate its work, clear its pending replacement command, and
+  MUST NOT wait for an obsolete result before closing the pane.
+- A read or decode failure MUST preserve the last committed page and report a
+  short actionable error.
+
+#### Raw block cache and page frames
+
+- File access MUST use standard-library seek/read operations over 64 KiB aligned
+  blocks.
+- A viewer MUST retain at most eight raw blocks, for a maximum raw block cache of
+  512 KiB. Eviction MUST be deterministic and MUST NOT invalidate a committed
+  page.
+- A viewer MUST retain at most three logical page frames:
+  `Previous`, `Current`, and `Next`.
+- `Current` is the only displayed frame. `Previous` and `Next` are optional,
+  lazily populated neighbours. No fourth page frame or unbounded page history is
+  permitted.
+- Each page frame MUST contain only the source range needed for the visible page,
+  decoded display rows, line boundaries, source-byte-to-display-cell spans,
+  valid cursor stops, and visible search ranges. It MUST NOT duplicate a full
+  terminal screen grid.
+- Source bytes retained by one page frame MUST be capped at 256 KiB. The three
+  frames together MUST retain at most 768 KiB of source bytes. A long line MAY
+  use resumable scan state rather than retaining the complete line.
+- Resize, tab-width change, text/hex mode change, or snapshot change MUST
+  invalidate all three frames. Ordinary Page Up/Page Down MUST rotate the three
+  frame roles where a valid neighbour exists.
+- Prefetch MAY populate one missing neighbour only after `Current` has been
+  committed and only while no input command is waiting.
+
+#### Keyboard navigation and repeat control
+
+- Arrow Up/Down and `j`/`k` MUST move the logical cursor by one file line while
+  preserving its preferred display-cell column where possible.
+- Home/End and `0`/`$` MUST move to the start/end of the current file line.
+  `gg`/`G` and Ctrl-Home/Ctrl-End MUST move to the file start/end.
+- Page Up/Page Down and Ctrl-b/Ctrl-f MUST move by one page, where a page is the
+  visible viewer height minus two rows. Ctrl-u/Ctrl-d MUST move by half a page.
+  Ctrl-y/Ctrl-e MUST scroll the viewport by one line without moving the logical
+  cursor.
+- Every accepted Page Up/Page Down command MUST produce and commit exactly one
+  visible intermediate page. Page commands MUST NOT be coalesced into the latest
+  position and MUST NOT skip intermediate pages.
+- Terminal input does not provide a portable key-release event. The viewer MUST
+  therefore use a zero-repeat-backlog gate:
+  - at most one navigation command may be in flight;
+  - a repeated command with the same navigation intent received while that
+    command is in flight MUST be dropped rather than queued;
+  - releasing the key produces no new repeats, so navigation stops after the
+    current command commits;
+  - a changed intent MAY replace one pending command, but at most one replacement
+    command may exist;
+  - the newest changed intent replaces the older replacement;
+  - close, cancel, and mode-switch commands MUST not wait behind repeat input.
+- The server MUST commit and render the completed page before dispatching the one
+  permitted replacement command.
+
+#### Universal line endings
+
+- Line boundaries MUST be detected from the file contents, not from the host
+  operating system or filename.
+- Each encountered `CRLF`, `LF`, or lone `CR` sequence MUST terminate one line.
+  Mixed line-ending files MUST be handled line by line.
+- `CRLF` MUST be treated as one two-byte terminator, never as two empty lines.
+- EOL bytes MUST never be cursor positions, searchable text display cells, or
+  part of the `$` destination.
+- An unterminated final line MUST remain a valid line.
+- Line scanning MUST work when `CRLF`, UTF-8, or a search match crosses a raw
+  block boundary.
+
+#### Text decoding and cursor model
+
+- Raw file bytes MUST NOT be passed directly to the terminal parser.
+- Printable valid UTF-8 MUST be rendered as Unicode using terminal display-cell
+  width. A cursor position MUST reference both a source byte offset and a display
+  cell column.
+- The cursor MUST stop only at the start of a decoded display token. It MUST NOT
+  stop inside a UTF-8 sequence, on a combining continuation, on a wide-cell
+  continuation, or on an EOL byte.
+- Up/Down preferred-column movement and horizontal scrolling MUST use display
+  cells, not byte counts.
+- `$` MUST stop at the first byte of the final visible token on a non-empty line.
+  On an empty line it MUST stop at column zero.
+- Text mode MUST render non-printable data safely:
+  - NUL as `^@`;
+  - ESC as `^[`;
+  - DEL as `^?`;
+  - other ASCII C0 controls as their caret notation;
+  - every remaining invalid or non-printable source byte as uppercase `<XX>`.
+- Tab characters MUST expand to the next configured tab stop. The default tab
+  width is eight display cells.
+- Search highlighting, horizontal clipping, and cursor placement MUST use the
+  same source-byte-to-display-cell mapping produced by the text decoder.
+
+#### Text search
+
+- `/` MUST start forward search and `?` reverse search. `n` MUST repeat in the
+  same direction and `N` in the opposite direction.
+- Text search MUST be literal and simple case-insensitive: ASCII letters MUST
+  compare without case; non-ASCII UTF-8 and invalid bytes MUST compare exactly.
+  Regex, smart-case, locale-sensitive folding, and full Unicode case folding are
+  out of scope.
+- A search query MUST contain at most 256 bytes.
+- Search MUST examine the visible `Current` frame from the cursor first, then the
+  nearby frame in the requested direction, then continue through the snapshot.
+- Forward search reaching EOF and reverse search reaching BOF MUST wrap exactly
+  once. A search MUST stop after returning to its original start position.
+- Full-file indexing is prohibited. A search step MUST inspect at most 64 KiB
+  before checking its generation and yielding to control work.
+- Any navigation command, new search, text/hex mode change, resize, or viewer
+  close MUST cancel an unfinished search.
+- The last successful query MUST remain available to `n` and `N` until replaced.
+- All visible matches on `Current` MUST be highlighted. The active match MUST be
+  distinct from other matches using inverse plus underline. Highlighting MUST
+  not rely on colour alone and MUST not trigger a full-file scan.
+- A wrapped successful search SHOULD report `wrapped` in the temporary status.
+
+#### Hex mode
+
+- `H` MUST toggle the active viewer between Text and Hex mode without reopening
+  the file. Both modes MUST share the same FileSource and raw block cache.
+- Hex mode MUST display an absolute hexadecimal byte offset, hexadecimal byte
+  values, and printable ASCII side by side.
+- ASCII bytes `0x20` through `0x7e` MUST appear literally in the ASCII column;
+  all other bytes MUST appear as `.`.
+- The bytes per row MUST adapt to width:
+  - 16 bytes at 80 columns or wider;
+  - 8 bytes at 48 through 79 columns;
+  - 4 bytes at 28 through 47 columns;
+  - below 28 columns, display `terminal too narrow for hex view` without losing
+    the current byte position.
+- Hex-mode cursor movement MUST operate on source bytes. Page, line, start/end,
+  top/bottom, and horizontal movement MUST remain bounded and deterministic.
+- Normal search input in Hex mode MUST perform ASCII case-insensitive byte
+  search. A query beginning with `hex:` MUST parse space-separated two-digit
+  hexadecimal bytes, for example `hex:00 FF 1B`, and search those bytes exactly.
+- Empty hex input, odd nibbles, non-hex characters, or values wider than one byte
+  MUST be rejected without changing the previous successful query.
+- Hex matches MAY cross display rows and raw block boundaries.
+
+#### Path prompt and closing
+
 - The path prompt MUST list only the current directory, filter as the user types,
   cycle or complete matches with `Tab`, enter directories or accept a file with
   `Enter`, and support parent navigation with `Backspace`.
 - The active directory MUST come from OSC 7 when available. Otherwise the prompt
   MUST fall back to the server startup directory and remain user-editable.
-- The viewer MUST NOT invoke external search commands or build a full-file index.
-
+- `Ctrl-b x` MUST close the viewer pane after confirmation. `q` and Esc MUST NOT
+  close it.
 ## Command-Line Contract
 
 The initial CLI MUST support:
@@ -547,6 +695,7 @@ falling back to `$HOME/.config/termfold/config.toml`. On Windows, read
 prefix = "C-b"
 mouse = false
 scrollback_lines = 2000
+viewer_tab_width = 8
 date_format = "%Y-%m-%d"
 time_format = "%H:%M"
 status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
@@ -572,6 +721,7 @@ file automatically.
 
 - `prefix` MUST be one ASCII control key from `C-a` through `C-z`.
 - `scrollback_lines` MUST be between 0 and 10,000 inclusive.
+- `viewer_tab_width` MUST be between 1 and 16 inclusive and defaults to 8.
 - `date_format` and `time_format` MUST each contain at most 64 characters and
   support only `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`, `%p`, and `%%` directives.
 - `status_format` MUST contain at most 512 characters and follow the Status Bar
@@ -650,6 +800,14 @@ The first release MUST enforce these hard limits:
 | IPC frame | 1 MiB |
 | Control sequence | 4 KiB |
 | Default scrollback per pane | 2,000 lines |
+| Viewer raw block | 64 KiB |
+| Viewer raw block cache | 8 blocks / 512 KiB |
+| Viewer page frames | 3 |
+| Viewer source bytes per frame | 256 KiB |
+| Viewer search query | 256 bytes |
+| Viewer search/line-scan step | 64 KiB |
+| Viewer navigation in flight | 1 |
+| Viewer changed-intent replacement | 1 |
 
 Each queue MUST hold at most 256 items and 4 MiB of payload. Pending PTY output
 MUST be limited to 1 MiB per pane. Reaching a cap MUST pause reads to apply
@@ -672,6 +830,12 @@ The following distinctions MUST remain explicit during implementation and review
   cleanup, slow clients, and unsupported capability downgrade; and
 - AI-generated implementation MUST NOT invent terminal behaviour or broaden the
   embedded terminfo entry beyond approved and tested requirements.
+- file-byte decoding and terminal escape-sequence parsing are separate contracts;
+  raw viewer bytes MUST never be interpreted as terminal control sequences;
+- viewer byte offsets, decoded tokens, and terminal display cells MUST remain
+  distinct types or explicitly mapped values; and
+- key auto-repeat MUST be controlled by zero backlog rather than an assumed
+  portable key-release event.
 
 ## Prior Art and Acknowledgements
 
