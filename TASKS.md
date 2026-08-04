@@ -480,7 +480,7 @@ perform file I/O or file scanning.
     (83 unit tests and 8 integration tests), and the x86_64 musl release build
     passed. The full test run required elevated temporary Unix-socket access.
 
-- [ ] **T28G — Build source-byte to display-cell spans**
+- [*] **T28G — Build source-byte to display-cell spans**
   - Extend `viewer/text.rs` with one mapping representation shared by cursor,
     clipping, and highlight code.
   - Every span MUST contain a source byte range, display-cell start/end, rendered
@@ -491,8 +491,12 @@ perform file I/O or file scanning.
   - Focused tests: byte-to-cell and cell-to-token lookup for ASCII, tabs, CJK,
     combining marks, invalid bytes, and empty lines.
   - Depends on: T28D, T28E, T28F.
+  - Implementation: reused `TextToken` as the span map with source/cell/token
+    lookups and cell-range clipping.
   - Done when: viewer navigation and rendering no longer derive a terminal column
     by subtracting two byte offsets.
+  - Evidence: `cargo test --locked viewer::` passed with 28 viewer tests; the
+    x86_64 musl release build passed.
 
 - [ ] **T28H — Correct Text-mode cursor semantics**
   - Replace byte-column cursor movement with source offset plus preferred

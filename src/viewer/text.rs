@@ -21,14 +21,71 @@ pub(super) struct DecodedText {
 
 impl DecodedText {
     pub(super) fn render(&self, columns: usize) -> String {
+        self.render_cells(0..columns)
+    }
+
+    pub(super) fn render_cells(&self, cells: Range<usize>) -> String {
         let mut output = String::new();
         for token in &self.tokens {
-            if token.cells.end > columns {
+            if token.cells.end <= cells.start {
+                continue;
+            }
+            if token.cells.start < cells.start {
+                let end = token.cells.end.min(cells.end);
+                output.extend(std::iter::repeat(' ').take(end - cells.start));
+                if token.cells.end > cells.end {
+                    break;
+                }
+                continue;
+            }
+            if token.cells.end > cells.end {
                 break;
             }
             output.push_str(&token.rendered);
         }
         output
+    }
+
+    pub(super) fn source_to_cell(&self, source: usize) -> Option<usize> {
+        self.span_for_source(source)
+            .map(|span| span.cells.start)
+            .or_else(|| {
+                (source == self.tokens.last().map_or(0, |span| span.source.end))
+                    .then_some(self.width)
+            })
+    }
+
+    pub(super) fn cell_to_token(&self, cell: usize) -> Option<&TextToken> {
+        self.tokens
+            .iter()
+            .find(|span| span.cells.contains(&cell))
+    }
+
+    pub(super) fn cell_to_source(&self, cell: usize) -> Option<usize> {
+        self.cell_to_token(cell)
+            .map(|span| span.source.start)
+            .or_else(|| {
+                (cell == self.width)
+                    .then(|| self.tokens.last().map_or(0, |span| span.source.end))
+            })
+    }
+
+    pub(super) fn cursor_stop_at_source(&self, source: usize) -> Option<usize> {
+        self.span_for_source(source)
+            .filter(|span| span.cursor_stop && span.source.start == source)
+            .map(|span| span.cells.start)
+    }
+
+    pub(super) fn cursor_stop_at_cell(&self, cell: usize) -> Option<&TextToken> {
+        self.cell_to_token(cell).filter(|span| {
+            span.cursor_stop && span.cells.start == cell
+        })
+    }
+
+    fn span_for_source(&self, source: usize) -> Option<&TextToken> {
+        self.tokens
+            .iter()
+            .find(|span| span.source.contains(&source))
     }
 }
 
@@ -259,5 +316,48 @@ mod tests {
             assert_eq!(decoded.width, expected + 1);
             assert_eq!(decoded.render(32).chars().count(), expected + 1);
         }
+    }
+
+    #[test]
+    fn maps_source_bytes_and_display_cells_to_the_same_spans() {
+        let mut bytes = "a\t界e\u{301}x".as_bytes().to_vec();
+        bytes.push(0xff);
+        let decoded = decode(&bytes, 4);
+
+        assert_eq!(decoded.source_to_cell(0), Some(0));
+        assert_eq!(decoded.source_to_cell(1), Some(1));
+        assert_eq!(decoded.source_to_cell(2), Some(4));
+        assert_eq!(decoded.source_to_cell(5), Some(6));
+        assert_eq!(decoded.source_to_cell(8), Some(7));
+        assert_eq!(decoded.source_to_cell(9), Some(8));
+        assert_eq!(decoded.source_to_cell(10), Some(12));
+
+        assert_eq!(decoded.cell_to_source(0), Some(0));
+        assert_eq!(decoded.cell_to_source(2), Some(1));
+        assert_eq!(decoded.cell_to_source(4), Some(2));
+        assert_eq!(decoded.cell_to_source(5), Some(2));
+        assert_eq!(decoded.cell_to_source(6), Some(5));
+        assert_eq!(decoded.cell_to_source(7), Some(8));
+        assert_eq!(decoded.cell_to_source(11), Some(9));
+        assert_eq!(decoded.cell_to_source(decoded.width), Some(10));
+
+        assert_eq!(decoded.cell_to_token(2).unwrap().source, 1..2);
+        assert_eq!(decoded.cell_to_token(5).unwrap().source, 2..5);
+        assert!(decoded.cursor_stop_at_cell(2).is_none());
+        assert!(decoded.cursor_stop_at_source(6).is_none());
+        assert_eq!(decoded.cursor_stop_at_source(5), Some(6));
+        assert_eq!(decoded.render_cells(4..8), "界e\u{301}x");
+        assert_eq!(decoded.render_cells(5..8), " e\u{301}x");
+    }
+
+    #[test]
+    fn maps_empty_lines_to_cell_zero_without_a_token() {
+        let decoded = decode(&[], DEFAULT_TAB_WIDTH);
+
+        assert_eq!(decoded.width, 0);
+        assert_eq!(decoded.source_to_cell(0), Some(0));
+        assert_eq!(decoded.cell_to_source(0), Some(0));
+        assert!(decoded.cell_to_token(0).is_none());
+        assert!(decoded.cursor_stop_at_source(0).is_none());
     }
 }

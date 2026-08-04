@@ -100,6 +100,17 @@ impl Viewer {
                 return Err(error);
             }
         };
+        let cursor_column = match cursor_row {
+            Some(_) => match self.cursor_column(cursor_line, columns) {
+                Ok(column) => column,
+                Err(error) => {
+                    self.restore_state(committed);
+                    self.page = previous_page;
+                    return Err(error);
+                }
+            },
+            None => 0,
+        };
 
         if let Err(error) = terminal.resize(size).map_err(io::Error::other) {
             self.restore_state(committed);
@@ -116,10 +127,7 @@ impl Viewer {
             terminal.advance(b"\r\n");
         }
         let (row, column) = match cursor_row {
-            Some(row) => (
-                row.saturating_add(1),
-                self.cursor_column(cursor_line, columns).saturating_add(1),
-            ),
+            Some(row) => (row.saturating_add(1), cursor_column.saturating_add(1)),
             None => (1, 1),
         };
         terminal.advance(format!("\x1b[{row};{column}H").as_bytes());
@@ -576,6 +584,24 @@ impl Viewer {
         let read_end = read_start
             .saturating_add(limit.min(budget) as u64)
             .min(line.content_end);
+        if read_end - start <= MAX_LINE_BYTES as u64 {
+            let bytes = self.source.read_range(start..read_end)?;
+            if bytes.len() != (read_end - start) as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "viewer source range is shorter than the snapshot",
+                ));
+            }
+            let decoded = decode(&bytes, self.tab_width);
+            let first_cell = decoded
+                .source_to_cell((read_start - start) as usize)
+                .unwrap_or(decoded.width);
+            return Ok((
+                line.next,
+                decoded.render_cells(first_cell..first_cell.saturating_add(columns)),
+                line.complete,
+            ));
+        }
         let bytes = self.source.read_range(read_start..read_end)?;
         if bytes.len() != (read_end - read_start) as usize {
             return Err(io::Error::new(
@@ -636,13 +662,52 @@ impl Viewer {
         self.ensure_cursor_visible()
     }
 
-    fn cursor_column(&mut self, line: u64, columns: usize) -> usize {
-        self.position
+    fn cursor_column(&mut self, line: u64, columns: usize) -> io::Result<usize> {
+        let boundary = self.line_boundary(line)?;
+        let line_length = boundary.content_end.saturating_sub(line);
+        let position = self.position.saturating_sub(line).min(line_length);
+        let horizontal = self.horizontal.min(line_length);
+        let end = position.max(horizontal);
+        if end <= MAX_LINE_BYTES as u64 {
+            let bytes = self.source.read_range(line..line.saturating_add(end))?;
+            if bytes.len() != end as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "viewer source range is shorter than the snapshot",
+                ));
+            }
+            let decoded = decode(&bytes, self.tab_width);
+            let cursor = decoded
+                .cursor_stop_at_source(position as usize)
+                .or_else(|| {
+                    let cell = decoded.source_to_cell(position as usize)?;
+                    Some(
+                        decoded
+                            .cursor_stop_at_cell(cell)
+                            .map_or(cell, |span| span.cells.start),
+                    )
+                })
+                .unwrap_or(decoded.width);
+            let horizontal_source = decoded
+                .source_to_cell(horizontal as usize)
+                .and_then(|cell| decoded.cell_to_source(cell))
+                .unwrap_or(horizontal as usize);
+            let left = decoded
+                .source_to_cell(horizontal_source)
+                .unwrap_or(decoded.width);
+            return Ok(cursor
+                .saturating_sub(left)
+                .min(columns.saturating_sub(1)));
+        }
+
+        // ponytail: keep the existing bounded fallback until T28H stores display columns.
+        Ok(self
+            .position
             .saturating_sub(line)
             .saturating_sub(self.horizontal)
             .try_into()
             .unwrap_or(usize::MAX)
-            .min(columns.saturating_sub(1))
+            .min(columns.saturating_sub(1)))
     }
 
     fn adjust_horizontal(&mut self) {
