@@ -240,14 +240,15 @@ mod tests {
 
         let mut source = FileSource::open(path.clone()).unwrap();
         assert_eq!(
-            source
-                .read_range(BLOCK_SIZE - 1..BLOCK_SIZE + 1)
-                .unwrap(),
+            source.read_range(BLOCK_SIZE - 1..BLOCK_SIZE + 1).unwrap(),
             b"ab"
         );
-        assert!(source.cache_offsets().iter().all(|offset| {
-            offset.is_multiple_of(BLOCK_SIZE)
-        }));
+        assert!(
+            source
+                .cache_offsets()
+                .iter()
+                .all(|offset| { offset.is_multiple_of(BLOCK_SIZE) })
+        );
 
         fs::remove_file(path).unwrap();
     }

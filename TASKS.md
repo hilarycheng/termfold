@@ -436,7 +436,7 @@ perform file I/O or file scanning.
     Dedicated CRLF, lone-CR, mixed-EOL, and post-fix native Windows checks remain
     pending.
 
-- [ ] **T28E — Implement safe text-token decoding**
+- [*] **T28E — Implement safe text-token decoding**
   - Create `viewer/text.rs`.
   - Decode printable valid UTF-8 into display tokens with source byte ranges and
     Unicode display-cell widths.
@@ -451,6 +451,17 @@ perform file I/O or file scanning.
   - Depends on: T28C.
   - Done when: raw file bytes cannot reach `Terminal::advance` except through
     trusted generated display output.
+  - Evidence: Ubuntu-24.04 WSL `cargo fmt --check`, Clippy with `-D warnings`,
+    `cargo test --locked` (78 unit tests and 8 integration tests), and the
+    x86_64 musl release build passed; `file` and `ldd` confirmed a static
+    artifact. Native Windows MSVC `cargo test --locked --target
+    x86_64-pc-windows-msvc` (71 unit tests) and the release build passed.
+    SHA-256: Linux
+    `022a86c3ce8777e8857053d5ad0efe008029768fdab7e07328609ddfc602ac2c`;
+    Windows
+    `16E7CDC78E7C0EA973C1DFA54EE484B838E95A605A81746ED65A26F3C439A0EA`.
+    `cargo audit` and `cargo deny check` were unavailable because the commands
+    are not installed in WSL.
 
 - [ ] **T28F — Add and validate `viewer_tab_width`**
   - Add `viewer_tab_width = 8` to configuration defaults.

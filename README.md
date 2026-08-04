@@ -206,6 +206,11 @@ and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
 
+Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
+stay with the preceding token, tabs expand to the next eight-cell stop, ASCII
+controls use caret notation (`NUL` as `^@`, `ESC` as `^[`, and `DEL` as `^?`),
+and invalid or other non-printable bytes render as uppercase `<XX>` values.
+
 ### Save scrollback
 
 After `Ctrl-b S`, type a filename and press `Enter`. `Backspace` edits the name;
@@ -418,7 +423,7 @@ compatibility certification by any named project or its maintainers.
 
 ## Project documentation
 
-- [Product requirement](REQUIREMENT.md)
+- [Product requirements](REQUIREMENTS.md)
 - [AI and engineering workflow](AGENTS.md)
 - [Implementation tasks and validation](TASKS.md)
 - [License](LICENSE)

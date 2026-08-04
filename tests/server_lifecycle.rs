@@ -310,8 +310,12 @@ fn wait_for_screen_without(stream: &mut UnixStream, expected: &[u8], excluded: &
     loop {
         let (kind, payload) = read_frame(stream).expect("session disconnected");
         if kind == 6
-            && payload.windows(expected.len()).any(|window| window == expected)
-            && !payload.windows(excluded.len()).any(|window| window == excluded)
+            && payload
+                .windows(expected.len())
+                .any(|window| window == expected)
+            && !payload
+                .windows(excluded.len())
+                .any(|window| window == excluded)
         {
             return;
         }

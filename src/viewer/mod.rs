@@ -4,16 +4,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use unicode_width::UnicodeWidthChar;
-
 use crate::{session::Size, terminal::Terminal};
 mod line;
 mod source;
+mod text;
 
 use line::{LineBoundary, LineScanner, ScanStep};
 use source::FileSource;
 #[cfg(test)]
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
+use text::{DEFAULT_TAB_WIDTH, decode};
 
 const LINE_CACHE_SIZE: usize = 64;
 const MAX_MATCH_OFFSETS: usize = 4096;
@@ -407,7 +407,7 @@ impl Viewer {
 
     fn cached_line(&mut self, start: u64) -> Option<LineBoundary> {
         let index = self.lines.iter().position(|line| {
-            line.start == start && line.resume.map_or(true, |scanner| scanner.is_forward())
+            line.start == start && line.resume.is_none_or(|scanner| scanner.is_forward())
         })?;
         let line = self.lines.remove(index)?;
         self.lines.push_front(line);
@@ -416,7 +416,7 @@ impl Viewer {
 
     fn cached_line_containing(&mut self, position: u64) -> Option<LineBoundary> {
         let index = self.lines.iter().position(|line| {
-            line.resume.map_or(true, |scanner| scanner.is_forward())
+            line.resume.is_none_or(|scanner| scanner.is_forward())
                 && line.start <= position
                 && (position < line.next
                     || (line.complete && line.content_end == line.next && position == line.next))
@@ -431,8 +431,7 @@ impl Viewer {
             .lines
             .iter()
             .position(|line| {
-                line.next == start
-                    && line.resume.map_or(true, |scanner| scanner.is_forward())
+                line.next == start && line.resume.is_none_or(|scanner| scanner.is_forward())
             })
             .or_else(|| self.lines.iter().position(|line| line.next == start))?;
         let line = self.lines.remove(index)?;
@@ -463,15 +462,11 @@ impl Viewer {
     }
 
     fn cache_line(&mut self, line: LineBoundary) {
-        let forward = line.resume.map_or(true, |scanner| scanner.is_forward());
-        if let Some(index) = self
-            .lines
-            .iter()
-            .position(|cached| {
-                cached.start == line.start
-                    && cached.resume.map_or(true, |scanner| scanner.is_forward()) == forward
-            })
-        {
+        let forward = line.resume.is_none_or(|scanner| scanner.is_forward());
+        if let Some(index) = self.lines.iter().position(|cached| {
+            cached.start == line.start
+                && cached.resume.is_none_or(|scanner| scanner.is_forward()) == forward
+        }) {
             self.lines.remove(index);
         }
         self.lines.push_front(line);
@@ -575,9 +570,7 @@ impl Viewer {
         if self.horizontal >= line_length || budget == 0 {
             return Ok((line.next, String::new(), line.complete));
         }
-        let read_start = start
-            .saturating_add(self.horizontal)
-            .min(line.content_end);
+        let read_start = start.saturating_add(self.horizontal).min(line.content_end);
         let read_end = read_start
             .saturating_add(limit.min(budget) as u64)
             .min(line.content_end);
@@ -588,7 +581,11 @@ impl Viewer {
                 "viewer source range is shorter than the snapshot",
             ));
         }
-        Ok((line.next, display_line(&bytes, columns), line.complete))
+        Ok((
+            line.next,
+            decode(&bytes, DEFAULT_TAB_WIDTH).render(columns),
+            line.complete,
+        ))
     }
 
     fn line_boundary(&mut self, start: u64) -> io::Result<LineBoundary> {
@@ -747,10 +744,13 @@ impl Viewer {
             .lines
             .iter()
             .position(|line| {
-                line.next == self.length()
-                    && line.resume.map_or(true, |scanner| scanner.is_forward())
+                line.next == self.length() && line.resume.is_none_or(|scanner| scanner.is_forward())
             })
-            .or_else(|| self.lines.iter().position(|line| line.next == self.length()))
+            .or_else(|| {
+                self.lines
+                    .iter()
+                    .position(|line| line.next == self.length())
+            })
         {
             let line = self
                 .lines
@@ -785,15 +785,11 @@ impl Viewer {
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
         let position = position.min(self.length());
-        if self
-            .lines
-            .iter()
-            .any(|line| {
-                !line.complete
-                    && line.next == position
-                    && line.resume.is_some_and(|scanner| scanner.is_forward())
-            })
-        {
+        if self.lines.iter().any(|line| {
+            !line.complete
+                && line.next == position
+                && line.resume.is_some_and(|scanner| scanner.is_forward())
+        }) {
             return Ok(position);
         }
         if let Some(line) = self.cached_line_containing(position) {
@@ -818,26 +814,6 @@ impl Viewer {
             ScanStep::Done { position } => position,
         })
     }
-}
-
-fn display_line(bytes: &[u8], columns: usize) -> String {
-    let mut output = String::new();
-    let mut width = 0;
-    for character in String::from_utf8_lossy(bytes).chars() {
-        let (character, character_width) = if character == '\t' {
-            (' ', 8 - width % 8)
-        } else if character.is_control() {
-            ('�', 1)
-        } else {
-            (character, character.width().unwrap_or(0))
-        };
-        if width.saturating_add(character_width) > columns {
-            break;
-        }
-        output.push(character);
-        width += character_width;
-    }
-    output
 }
 
 #[cfg(test)]

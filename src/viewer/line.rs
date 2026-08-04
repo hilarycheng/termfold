@@ -85,10 +85,7 @@ impl LineScanner {
                 continue;
             };
             self.cursor = end;
-            return Ok(ScanStep::Boundary {
-                start: offset,
-                end,
-            });
+            return Ok(ScanStep::Boundary { start: offset, end });
         }
 
         self.cursor = last;
