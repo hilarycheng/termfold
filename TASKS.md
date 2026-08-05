@@ -1526,12 +1526,12 @@ Rules for every T30 implementation request:
     remain blocked because this environment has no native Windows runtime or
     `link.exe`.
 
-- [ ] **T30E — Anchor `n` and `N` at the current Viewer cursor**
+- [x] **T30E — Anchor `n` and `N` at the current Viewer cursor**
   - Recommended model: Luna xHigh.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Separate the last successful query and recorded direction from the active
     match and current cursor source offset.
@@ -1551,6 +1551,20 @@ Rules for every T30 implementation request:
   - Depends on: T30B.
   - Done when: direct Viewer calls never use the previous match as the repeat
     anchor after the logical cursor has moved.
+  - Evidence (2026-08-05): Viewer search now uses the committed cursor as the
+    strict repeat anchor, keeps the prior active offset for highlighting, and
+    selects the nearest cached match on either side. Focused Linux validation
+    (`cargo fmt --check`, `cargo test --locked viewer::tests::`, 35/35, and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`) passed;
+    `file` and `ldd` confirmed a static PIE executable. The Worker Hex search
+    regression passed 1/1, and
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
+    compile-only evidence. Native Windows runtime tests and the MSVC release
+    build remain blocked because this environment has no native Windows runtime
+    or `link.exe`. The full Linux suite passed 152/154 tests; the remaining
+    failures were the sandbox socket-permission error in
+    `runtime::tests::socket_is_private_and_only_a_stale_socket_is_replaced` and
+    one intermittent Worker timeout that passed when rerun in isolation.
 
 - [ ] **T30F — Preserve bounded worker search after cursor-anchor changes**
   - Recommended model: Luna Max.

@@ -754,7 +754,7 @@ impl Viewer {
         } else {
             !previous.forward
         };
-        if let Some(offset) = self.cached_match(previous.offset, forward) {
+        if let Some(offset) = self.cached_match(self.position, forward) {
             self.set_position(offset)?;
             self.search = Some(SearchState {
                 query: previous.query,
@@ -764,25 +764,10 @@ impl Viewer {
             self.invalidate_frames();
             return Ok(SearchStart::Complete(true));
         }
-        Ok(self.search_work_at_excluding(
-            previous.query,
-            forward,
-            previous.offset,
-            Some(previous.offset),
-        ))
+        Ok(self.search_work_at(previous.query, forward, self.position))
     }
 
     fn search_work_at(&mut self, query: SearchQuery, forward: bool, start: u64) -> SearchStart {
-        self.search_work_at_excluding(query, forward, start, None)
-    }
-
-    fn search_work_at_excluding(
-        &mut self,
-        query: SearchQuery,
-        forward: bool,
-        start: u64,
-        excluded: Option<u64>,
-    ) -> SearchStart {
         if query.as_bytes().is_empty() {
             return SearchStart::Complete(false);
         }
@@ -790,16 +775,12 @@ impl Viewer {
             return SearchStart::Complete(false);
         };
         let query_len = query.len() as u64;
-        let start = if forward {
-            start.min(maximum.saturating_add(1))
-        } else {
-            start.min(maximum)
-        };
+        let start = start.min(self.length());
         let limit = maximum.saturating_add(1);
         let primary = if forward {
-            start..limit
+            start.saturating_add(1).min(limit)..limit
         } else {
-            0..start.saturating_add(1)
+            0..start.min(limit)
         };
         let current = self
             .current_frame()
@@ -813,9 +794,6 @@ impl Viewer {
 
         let mut ranges = VecDeque::with_capacity(5);
         let mut selected = Vec::new();
-        if let Some(offset) = excluded.filter(|offset| *offset < limit) {
-            selected.push(offset..offset.saturating_add(1));
-        }
         for priority in [current, neighbour].into_iter().flatten() {
             let mut pieces = subtract_range(priority, &selected);
             order_ranges(&mut pieces, forward);
@@ -1006,7 +984,11 @@ impl Viewer {
 
     fn cached_match(&self, start: u64, forward: bool) -> Option<u64> {
         if forward {
-            self.matches.iter().copied().find(|offset| *offset > start)
+            self.matches
+                .iter()
+                .copied()
+                .filter(|offset| *offset > start)
+                .min()
         } else {
             self.matches
                 .iter()
@@ -1603,9 +1585,9 @@ mod tests {
         viewer.position = 15;
 
         assert!(viewer.search("hit", true).unwrap());
-        assert!(!viewer.search_wrapped());
-        assert!(viewer.repeat_search(true).unwrap());
         assert!(viewer.search_wrapped());
+        assert!(viewer.repeat_search(true).unwrap());
+        assert!(!viewer.search_wrapped());
 
         fs::remove_file(path).unwrap();
     }
@@ -1966,7 +1948,7 @@ mod tests {
     #[test]
     fn invalid_query_keeps_the_last_successful_query() {
         let path = temp_path("termfold-viewer-invalid-query");
-        fs::write(&path, b"hit\n").unwrap();
+        fs::write(&path, b"zero hit\n").unwrap();
         let mut viewer = Viewer::open(path.clone(), 8).unwrap();
         assert!(viewer.search("hit", true).unwrap());
         let previous = viewer.search.clone();
@@ -2029,19 +2011,62 @@ mod tests {
 
         viewer.position = second;
         assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, first);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, second);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, first);
+
+        viewer.position = first;
+        assert!(viewer.search("hit", false).unwrap());
         assert_eq!(viewer.position, second);
         assert!(viewer.repeat_search(true).unwrap());
         assert_eq!(viewer.position, first);
         assert!(viewer.repeat_search(true).unwrap());
         assert_eq!(viewer.position, second);
 
-        viewer.position = first;
-        assert!(viewer.search("hit", false).unwrap());
-        assert_eq!(viewer.position, first);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeat_search_uses_the_logical_cursor_after_navigation() {
+        let path = temp_path("termfold-viewer-search-cursor-anchor");
+        fs::write(&path, b"hit zero\nmiddle\nhit two\nlast\nhit four\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, 16);
+
+        viewer.top();
+        viewer.page(3, true).unwrap();
+        assert_eq!(viewer.position, 9);
         assert!(viewer.repeat_search(true).unwrap());
-        assert_eq!(viewer.position, second);
+        assert_eq!(viewer.position, 16);
+
+        viewer.top();
+        viewer.scroll_viewport(1).unwrap();
+        assert_eq!(viewer.position, 0);
         assert!(viewer.repeat_search(true).unwrap());
-        assert_eq!(viewer.position, first);
+        assert_eq!(viewer.position, 16);
+
+        viewer.top();
+        viewer.move_lines(4).unwrap();
+        assert_eq!(viewer.position, 29);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, 16);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cached_repeat_chooses_the_nearest_match_on_each_side() {
+        let path = temp_path("termfold-viewer-search-cache-order");
+        fs::write(&path, b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.matches = vec![30, 10, 20];
+
+        assert_eq!(viewer.cached_match(5, true), Some(10));
+        assert_eq!(viewer.cached_match(25, false), Some(20));
 
         fs::remove_file(path).unwrap();
     }

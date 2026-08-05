@@ -1647,6 +1647,11 @@ mod tests {
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::NavigationComplete
         ));
+        viewer.bottom().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
 
         assert_eq!(
             viewer
@@ -1655,7 +1660,7 @@ mod tests {
                     forward: true,
                 })
                 .unwrap(),
-            (true, false)
+            (true, true)
         );
         viewer.request_render(size).unwrap();
         assert!(matches!(

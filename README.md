@@ -216,6 +216,8 @@ In the viewer, plain `?` starts reverse search; the configured prefix followed
 by `?` opens Help. Exiting that Help with `q`, `Ctrl-c`, or `Esc` returns to the
 same viewer without changing its state. The configured prefix followed by `x`
 asks to close the viewer; confirm with `y`.
+Each new or repeated search starts strictly after or before the current cursor
+in its selected direction; viewport-only scrolling does not change that anchor.
 The viewer uses every pane-content row directly above the status bar, including
 when the final line fills the terminal width or ends with a newline.
 Visible matches use inverse attributes; the active match is additionally
