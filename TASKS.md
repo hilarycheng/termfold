@@ -12,14 +12,23 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - Run Linux-specific validation in Linux or WSL.
 - Keep modules and dependencies to the minimum required by implemented behaviour.
 - New implementation subtasks MAY include `Recommended model:` with one of
-  `Luna Medium`, `Luna High`, or `Luna Max`. This is advisory execution metadata,
-  not product behaviour, permission to broaden scope, or permission to combine
-  tasks. The owner may tune the level after observing results.
-- Add `Platform:` only when behaviour or implementation depends on an
-  operating-system-specific API or code path. Accepted values are `Linux`,
-  `Windows`, or `Linux and Windows; separate implementations`. Omit the field for
-  shared source and shared behaviour. Cross-platform validation targets belong
-  under focused checks or evidence, not under `Platform:`.
+  `Luna Medium`, `Luna High`, `Luna xHigh`, or `Luna Max`. This is advisory
+  execution metadata, not product behaviour, permission to broaden scope, or
+  permission to combine tasks. Use the lowest level that can safely complete the
+  bounded task; the owner may tune it after observing results.
+- T28 and every later task MUST declare `Required validation:` as
+  `Platform independent`, `Linux`, `Native Windows`, or `Linux and Native
+  Windows`.
+- T28 and every later task MUST record separate completion checkboxes for task
+  implementation and every required validation environment. Missing Windows
+  validation leaves only the Windows checkbox open; it does not undo completed
+  implementation or Linux validation.
+- From T28 onward, `[x]` in a task heading means implementation exists and `[ ]`
+  means it does not. Do not use `[*]` for new tasks. Platform completion is shown
+  only by the task's explicit completion checklist.
+- Shared source is not automatically platform independent. Compile-only target
+  checks do not complete native Windows validation. Follow `AGENTS.md` for the
+  authoritative platform and evidence rules.
 
 ## Tasks
 
@@ -378,7 +387,11 @@ perform file I/O or file scanning.
 
 ## T28 Tasks
 
-- [*] **T28A — Define the replacement viewer contract and implementation plan**
+- [x] **T28A — Define the replacement viewer contract and implementation plan**
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
   - Update `REQUIREMENTS.md` with snapshot behaviour, universal EOL handling,
     text decoding, cell-based cursor rules, three page frames, zero repeat
     backlog, cancellable search, highlighting, Hex mode, configuration, and hard
@@ -392,7 +405,12 @@ perform file I/O or file scanning.
   - Evidence: completed as a documentation-only approved change; no Rust source,
     build, test, or README behaviour was changed.
 
-- [*] **T28B — Mechanically establish the viewer module tree**
+- [x] **T28B — Mechanically establish the viewer module tree**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - Move the complete existing `viewer.rs` implementation and its tests to
     `viewer/mod.rs` without changing logic, constants, signatures, or test
     expectations.
@@ -407,7 +425,12 @@ perform file I/O or file scanning.
     with 16 tests; Ubuntu-24.04 WSL musl release build passed; native Windows
     MSVC viewer tests passed with 15 tests; native Windows MSVC build passed.
 
-- [*] **T28C — Extract snapshot FileSource and the raw-block cache**
+- [x] **T28C — Extract snapshot FileSource and the raw-block cache**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/source.rs`.
   - Move file ownership, snapshot length, aligned block reads, cache lookup, and
     cache eviction out of `viewer/mod.rs`.
@@ -426,7 +449,12 @@ perform file I/O or file scanning.
     tests passed with 13 tests. Windows linker temporary-file access required
     escalated execution. The two-test count difference is from Unix-only tests.
 
-- [*] **T28D — Implement one universal, resumable line scanner**
+- [x] **T28D — Implement one universal, resumable line scanner**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/line.rs` with the only line-boundary implementation used by
     Text mode.
   - Recognize each encountered `CRLF`, `LF`, and lone `CR`; treat `CRLF` as one
@@ -448,7 +476,12 @@ perform file I/O or file scanning.
     native Windows MSVC release build passed. Windows test execution required
     elevated access for temporary-file creation because the sandbox denied it.
 
-- [*] **T28E — Implement safe text-token decoding**
+- [x] **T28E — Implement safe text-token decoding**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/text.rs`.
   - Decode printable valid UTF-8 into display tokens with source byte ranges and
     Unicode display-cell widths.
@@ -475,7 +508,12 @@ perform file I/O or file scanning.
     `cargo audit` and `cargo deny check` were unavailable because the commands
     are not installed in WSL.
 
-- [ ] **T28F — Add and validate `viewer_tab_width`**
+- [x] **T28F — Add and validate `viewer_tab_width`**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Add `viewer_tab_width = 8` to configuration defaults.
   - Accept only integer values 1 through 16 and identify the field on error.
   - Pass the validated value into viewer creation without changing existing
@@ -491,7 +529,12 @@ perform file I/O or file scanning.
     (83 unit tests and 8 integration tests), and the x86_64 musl release build
     passed. The full test run required elevated temporary Unix-socket access.
 
-- [ ] **T28G — Build source-byte to display-cell spans**
+- [x] **T28G — Build source-byte to display-cell spans**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Extend `viewer/text.rs` with one mapping representation shared by cursor,
     clipping, and highlight code.
   - Every span MUST contain a source byte range, display-cell start/end, rendered
@@ -509,7 +552,12 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 28 viewer tests; the
     x86_64 musl release build passed.
 
-- [ ] **T28H — Correct Text-mode cursor semantics**
+- [x] **T28H — Correct Text-mode cursor semantics**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Replace byte-column cursor movement with source offset plus preferred
     display-cell column.
   - Implement line start/end, Up/Down preferred-cell movement, top/bottom, and
@@ -532,7 +580,12 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 30 viewer tests; the
     x86_64 musl release build passed.
 
-- [ ] **T28I — Introduce the Current PageFrame builder**
+- [x] **T28I — Introduce the Current PageFrame builder**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Create `viewer/frame.rs` with the approved PageFrame fields: source range,
     decoded rows, line boundaries, source/cell spans, valid cursor stops, and
     visible match ranges.
@@ -557,7 +610,12 @@ perform file I/O or file scanning.
     elevated full `cargo test --locked` passed with 90 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28J — Add Previous/Current/Next frame rotation**
+- [x] **T28J — Add Previous/Current/Next frame rotation**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Store exactly three optional frame slots in `viewer/frame.rs`.
   - Implement deterministic Page Up/Page Down rotation when the neighbour matches
     the current snapshot, mode, size, tab width, and expected source boundary.
@@ -578,7 +636,12 @@ perform file I/O or file scanning.
     elevated `cargo test --locked` passed with 94 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28K — Add the session-scoped Viewer Worker foundation**
+- [x] **T28K — Add the session-scoped Viewer Worker foundation**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Create `viewer/worker.rs` and one worker per Session Server, not one thread per
     viewer.
   - Define bounded `ViewerCommand` and `ViewerResult` messages containing viewer
@@ -606,7 +669,12 @@ perform file I/O or file scanning.
     full elevated `cargo test --locked` passed with 99 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [ ] **T28L — Move page and line navigation behind the Viewer Worker**
+- [x] **T28L — Move page and line navigation behind the Viewer Worker**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Convert line, page, half-page, viewport, start/end, and top/bottom actions into
     ViewerCommand messages.
   - Apply ViewerResult only when viewer ID and generation still match.
@@ -631,7 +699,12 @@ perform file I/O or file scanning.
     tests; the x86_64 musl release build passed and produced a stripped static PIE.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
+- [x] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Add a server-side ViewerGate containing generation, in-flight state, current
     intent, and at most one replacement command.
   - Dispatch one navigation when idle. Drop same-intent repeats while in flight.
@@ -659,7 +732,12 @@ perform file I/O or file scanning.
     and 8 lifecycle tests; the x86_64 musl release build passed. Native
     Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28N — Define text and hex search query types**
+- [x] **T28N — Define text and hex search query types**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Create `viewer/search.rs` query parsing without scanning the file.
   - Text queries MUST be literal, ASCII case-insensitive, non-ASCII exact, and
     limited to 256 bytes.
@@ -678,7 +756,12 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 51 viewer tests; the
     x86_64-unknown-linux-musl release build passed.
 
-- [ ] **T28O — Implement incremental cancellable forward/reverse search**
+- [x] **T28O — Implement incremental cancellable forward/reverse search**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Search Current from the cursor first, then the neighbour in the requested
     direction, then scan the snapshot in 64 KiB steps.
   - Support forward/reverse, `n`/`N`, matches crossing block boundaries, and one
@@ -700,7 +783,12 @@ perform file I/O or file scanning.
     x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
     validation was not available in this Linux host.
 
-- [ ] **T28P — Highlight visible search matches**
+- [x] **T28P — Highlight visible search matches**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Map every matching source range in Current to display-cell spans through the
     PageFrame mapping.
   - Render ordinary visible matches with an attribute-based highlight and the
@@ -727,7 +815,12 @@ perform file I/O or file scanning.
   - Verification note: repository-wide `cargo fmt` was applied and
     `cargo fmt --check` passed.
 
-- [ ] **T28Q — Implement Hex PageFrame rendering and navigation**
+- [x] **T28Q — Implement Hex PageFrame rendering and navigation**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Create `viewer/hex.rs` and add the `Text`/`Hex` mode enum to the viewer facade.
   - Render absolute offset, hex bytes, and printable ASCII side by side using
     16/8/4 bytes per row at the approved width thresholds.
@@ -752,7 +845,12 @@ perform file I/O or file scanning.
     67 viewer tests; the x86_64-unknown-linux-musl release build passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28R — Add Hex-mode ASCII and exact-byte search**
+- [x] **T28R — Add Hex-mode ASCII and exact-byte search**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Use normal parsed text queries for ASCII case-insensitive search in Hex mode
     and parsed `hex:` queries for exact bytes.
   - Permit matches across displayed rows and raw block boundaries.
@@ -774,7 +872,12 @@ perform file I/O or file scanning.
     cargo build --release --locked --target x86_64-unknown-linux-musl passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28S — Wire mode switching, cancellation, and input actions**
+- [x] **T28S — Wire mode switching, cancellation, and input actions**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Map `H` in Viewer mode to a semantic mode-toggle action.
   - Mode switch MUST increase generation, cancel search/navigation, clear the one
     replacement, invalidate all frames, preserve source byte position where
@@ -800,7 +903,12 @@ perform file I/O or file scanning.
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available.
 
-- [ ] **T28T — Remove superseded and duplicated viewer code**
+- [x] **T28T — Remove superseded and duplicated viewer code**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata
     refresh/truncation logic, duplicated newline scanners, byte-column helpers,
     `viewer_dirty` latest-input coalescing, and old page-string state.
@@ -827,7 +935,12 @@ perform file I/O or file scanning.
     (133 unit and 8 lifecycle tests), and the x86_64 musl release build passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28U — Run viewer acceptance, resource, and documentation checks**
+- [x] **T28U — Run viewer acceptance, resource, and documentation checks**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Add deterministic stress coverage for 1,000 Page Down and 1,000 Page Up
     operations, zero repeat backlog, immediate close, mixed EOL, huge lines,
     control bytes, UTF-8, highlighting, Text/Hex search, wrap, and cancellation.
@@ -862,11 +975,12 @@ perform file I/O or file scanning.
     were unavailable because `link.exe` is absent on this Linux host. Clippy
     with `-D warnings` passed after the warning fixes, and final-source
     `cargo fmt --check` passed. Runtime tests and release builds were not rerun
-    for this warning-only cleanup. T28U remains incomplete until those checks
-    and native Windows acceptance are rerun on the final source.
-  - Done when: the complete T28 contract passes on authoritative Linux/WSL and
-    native Windows environments, or each unavailable acceptance environment is
-    recorded as a blocker and T28 remains incomplete.
+    for this warning-only cleanup at that point. Later T29K full Linux validation
+    exercised the final source and retained the T28 bounds. Native Windows
+    validation remains unchecked.
+  - Done when: implementation is complete and each required platform checkbox
+    records authoritative execution evidence; unavailable native Windows
+    acceptance remains an explicit blocker to the cross-platform claim.
 
 ### T28 native Windows confirmation ledger
 
@@ -875,8 +989,9 @@ perform file I/O or file scanning.
 - Not confirmed: T28F through T28T have Linux/WSL implementation evidence but
   no recorded native Windows/MSVC focused test and build for their final code;
   their unchecked status is intentional until that validation is supplied.
-- T28A is documentation-only. T28U remains the acceptance gate for the missing
-  native Windows validation and the final cross-platform claim.
+- T28A is platform independent. T28U implementation and Linux validation are
+  complete; its Native Windows checkbox remains the acceptance gate for a final
+  cross-platform claim.
 
 ## T29 Execution Contract
 
@@ -904,7 +1019,11 @@ Rules for every T29 implementation request:
 
 ## T29 Tasks
 
-- [*] **T29A — Define the viewer-correction contract and Luna execution plan**
+- [x] **T29A — Define the viewer-correction contract and Luna execution plan**
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
   - Recommended model: Luna High.
   - Add the approved Vim-style horizontal movement, full Viewer Help, no-phantom-
     row rendering, prompt-editing, literal-tilde safety, and page-latency contracts
@@ -919,7 +1038,12 @@ Rules for every T29 implementation request:
   - Evidence: completed as a documentation-only change. `README.md`, Rust source,
     builds, tests, dependencies, and Git state were not changed.
 
-- [*] **T29B — Keep Tab-completed viewer paths editable**
+- [x] **T29B — Keep Tab-completed viewer paths editable**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - Keep the Input prompt buffer, server-side visible query, filter, and selected
     entry synchronized after `Tab` completion or keyboard entry selection.
@@ -941,7 +1065,12 @@ Rules for every T29 implementation request:
     Full `cargo test --locked` had 135 passing tests and one unrelated runtime
     socket test failed with sandbox `Operation not permitted`.
 
-- [*] **T29C — Prevent literal-tilde path-prompt crashes**
+- [x] **T29C — Prevent literal-tilde path-prompt crashes**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - First add a focused reproduction for entering literal `~` in an empty and a
     non-empty viewer path prompt; identify whether failure occurs in input,
@@ -967,7 +1096,12 @@ Rules for every T29 implementation request:
     had 137 passing tests and one unrelated runtime socket test failed with
     sandbox `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
-- [*] **T29D — Implement horizontal viewer cursor primitives**
+- [x] **T29D — Implement horizontal viewer cursor primitives**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - In Text mode, implement previous/next valid display-token movement within the
     current logical line. Stop at line boundaries and never wrap to another line.
@@ -995,7 +1129,12 @@ Rules for every T29 implementation request:
     socket test and eight lifecycle tests were blocked by sandbox
     `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
-- [*] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
+- [x] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Add semantic horizontal actions for `h`, `l`, Left Arrow, and Right Arrow.
   - Preserve fragmented escape-prefixed Left/Right sequences in Viewer mode.
@@ -1023,7 +1162,12 @@ Rules for every T29 implementation request:
     `server.rs` retains no viewer file I/O; horizontal navigation uses the
     existing search cancellation, generation, and stale-result paths.
 
-- [*] **T29F — Remove the phantom row above the status bar**
+- [x] **T29F — Remove the phantom row above the status bar**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - Render each viewer row without causing the virtual terminal to scroll after
     the final pane-content row.
@@ -1047,7 +1191,12 @@ Rules for every T29 implementation request:
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
 
-- [*] **T29G — Make Viewer Help complete and return-safe**
+- [x] **T29G — Make Viewer Help complete and return-safe**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - Make configured-prefix `?` open Help from Viewer mode without first executing
     the viewer prefix's Page Up fallback or the viewer's reverse-search action.
@@ -1075,7 +1224,12 @@ Rules for every T29 implementation request:
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
 
-- [*] **T29H — Wake the Session Server on Viewer Worker results**
+- [x] **T29H — Wake the Session Server on Viewer Worker results**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Add one bounded, non-blocking Viewer-ready notification into the existing
     central Server event path after a result is committed to the viewer result
@@ -1110,7 +1264,12 @@ Rules for every T29 implementation request:
     interval. The approved `cargo build --release --locked
     --target x86_64-unknown-linux-musl` passed.
 
-- [*] **T29I — Remove neighbour prefetch from the visible-frame critical path**
+- [x] **T29I — Remove neighbour prefetch from the visible-frame critical path**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Return and commit a completed `Current` frame before performing any optional
     Previous/Next prefetch work.
@@ -1141,7 +1300,12 @@ Rules for every T29 implementation request:
     cancellation, resize, and bounded-cache coverage. The approved
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
 
-- [*] **T29J — Combine page navigation and visible rendering safely**
+- [x] **T29J — Combine page navigation and visible rendering safely**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Replace the avoidable Page Up/Page Down and half-page
     `NavigationComplete -> server render request -> RenderComplete` round trip with
@@ -1179,7 +1343,12 @@ Rules for every T29 implementation request:
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [*] **T29K — Run viewer-correction acceptance and update documentation**
+- [x] **T29K — Run viewer-correction acceptance and update documentation**
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [ ] Native Windows validation complete.
   - Recommended model: Luna High.
   - Add deterministic acceptance coverage for completed-path Backspace, literal
     tilde safety, Vim-style horizontal movement, Viewer Help return state, no
@@ -1218,3 +1387,267 @@ Rules for every T29 implementation request:
     build are blocked here because `link.exe` is unavailable. No before/after
     page-latency harness is present in this checkout, so no comparative claim
     is made. README behaviour is limited to implemented and verified paths.
+
+## T30 Execution Contract
+
+T30 corrects Viewer path-prompt navigation, repeated-search anchoring, and Hex
+row geometry without changing unrelated PTY, ConPTY, session, pane, status,
+IPC-security, terminal-parser, snapshot, or resource-limit behaviour.
+
+Rules for every T30 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level. Tuning the
+  level does not broaden scope or combine tasks.
+- Preserve the T28/T29 Viewer Worker ownership, generation cancellation,
+  zero-repeat backlog, one changed-intent replacement, three-frame bound,
+  eight-block cache, 256 KiB frame-source cap, and 64 KiB work step.
+- Touch only the files named by the subtask, except for a required private type,
+  module declaration, or focused test fixture in the same module.
+- Do not add dependencies, invoke a shell helper, or create a second viewer cache.
+- Keep ordinary production changes below 300 changed lines per subtask.
+- Run only the focused checks named by the approved implementation request.
+- Stop after reporting changed files, focused results, risks, and blockers.
+- T30D, T30F, and T30H require review before the next dependent subtask.
+- Do not update `README.md` until T30I verifies user-visible behaviour.
+- Record task implementation, Linux validation, and Native Windows validation
+  independently according to `AGENTS.md`.
+
+## T30 Tasks
+
+- [x] **T30A — Normalize Luna levels and platform completion tracking**
+  - Recommended model: Luna Medium.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
+  - Add `Luna xHigh` and the T28-and-later implementation/platform status rules
+    to `AGENTS.md` and the `TASKS.md` workflow.
+  - Change T28 and T29 headings to implementation-complete where their recorded
+    implementation exists, then add explicit Platform-independent, Linux, and
+    Native Windows completion checkboxes from the existing evidence.
+  - Do not convert compile-only Windows checks into native Windows completion.
+  - Allowed files: `AGENTS.md`, `TASKS.md`.
+  - Production files: none.
+  - Depends on: T29K.
+  - Done when: missing Native Windows evidence is visible without hiding completed
+    implementation or Linux results.
+  - Evidence: documentation-only normalization completed from the existing T28
+    and T29 evidence; no Rust source, tests, builds, dependencies, or Git state
+    were changed.
+
+- [x] **T30B — Define Ido navigation, cursor-anchored search, and dynamic Hex layout**
+  - Recommended model: Luna High.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
+  - Define Ido-style `//` root navigation, `~/` Home navigation, first-separator
+    pending input, empty-prompt parent navigation, current-cursor `n`/`N`, and
+    width-derived Hex grouping in `REQUIREMENTS.md`.
+  - Define T30C through T30I with exact ownership, dependencies, platform checks,
+    review gates, and completion conditions.
+  - Allowed files: `REQUIREMENTS.md`, `TASKS.md`.
+  - Production files: none.
+  - Depends on: T30A.
+  - Done when: each implementation task can be executed without inventing Ido,
+    search-anchor, Hex-column, resize, or platform behaviour.
+  - Evidence: approved documentation-only contract added; `README.md`, Rust
+    source, tests, builds, dependencies, and Git state were not changed.
+
+- [ ] **T30C — Implement Ido prompt separator state**
+  - Recommended model: Luna High.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Keep the first separator entered with an empty prompt as editable pending
+    input instead of changing directory immediately.
+  - A second valid root separator MUST emit one semantic root-navigation action.
+    Backspace after the first separator MUST remove it; Backspace on an already
+    empty prompt MUST continue to emit parent navigation.
+  - `folder/` MUST continue to enter the selected folder, and separator handling
+    MUST keep the Input buffer, server query, filter, selection, and visible
+    status synchronized after every action.
+  - Invalid or fragmented input MUST not leak to the child PTY or leave a hidden
+    separator only on one side of the client/server state.
+  - Allowed production files: `src/input.rs`, `src/server.rs`.
+  - Focused tests: empty first `/`, second `/`, first `\\` on Windows, Backspace
+    after one separator, empty-prompt Backspace, `folder/`, completed folder then
+    separator, UTF-8 folder, cancellation, and input/server state equality.
+  - Depends on: T30B.
+  - Done when: the first empty-prompt separator never changes directory and every
+    accepted second/root or selected-directory separator produces one action.
+
+- [ ] **T30D — Resolve Ido root and Home paths atomically**
+  - Recommended model: Luna xHigh.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Resolve Linux `//` to `/` and portable `~/` to the current user's Home using
+    standard-library and platform environment data only.
+  - On native Windows, resolve `//` or `\\` to the current drive root and
+    `C:/`/`C:\\` to the named drive root. Do not add `~user/` lookup.
+  - Validate the complete destination before replacing prompt directory state.
+    On missing, non-directory, unavailable-Home, or invalid-drive input, retain
+    the prior directory and editable input and report one short actionable error.
+  - Successful root, drive, or Home entry MUST clear query/filter/selection and
+    leave Backspace ready to return to the logical parent where one exists.
+  - Allowed production files: `src/input.rs`, `src/server.rs`.
+  - Focused tests: Linux `//`, Linux `~/`, missing Home, literal `~`, `~text`,
+    Windows current-drive `//`, Windows `\\`, `C:/`, `C:\\`, invalid drive,
+    error rollback, and no filesystem modification.
+  - Depends on: T30C.
+  - Review gate: inspect path-state atomicity, environment handling, separator
+    normalization, root-parent behaviour, and absence of shell expansion.
+  - Done when: every approved Ido path form is deterministic on its native
+    platform and every rejected form preserves prompt state.
+
+- [ ] **T30E — Anchor `n` and `N` at the current Viewer cursor**
+  - Recommended model: Luna xHigh.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Separate the last successful query and recorded direction from the active
+    match and current cursor source offset.
+  - `n` MUST search from the current cursor in the recorded direction; `N` MUST
+    search from the current cursor in the opposite direction. Forward/reverse
+    repeats MUST exclude the cursor's current match position.
+  - Cached matches MUST choose the nearest valid offset strictly after or before
+    the current cursor, not after or before the previous match offset.
+  - Page, half-page, line, horizontal, line start/end, and file start/end movement
+    MUST affect the next repeat anchor. Viewport-only movement MUST not.
+  - Preserve the last successful query after navigation and preserve active-match
+    highlighting only when its source range remains the active result.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/search.rs`.
+  - Focused tests: `/` then `n`, `?` then `n`, `N`, cursor on a match, Page Down
+    then repeat, Page Up then repeat, line/horizontal/end movement, viewport-only
+    movement, cached nearest match, wrap once, and no match.
+  - Depends on: T30B.
+  - Done when: direct Viewer calls never use the previous match as the repeat
+    anchor after the logical cursor has moved.
+
+- [ ] **T30F — Preserve bounded worker search after cursor-anchor changes**
+  - Recommended model: Luna Max.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Route the corrected repeat anchor through the existing generation-bound
+    Viewer Worker and server dispatcher without adding synchronous server file
+    I/O or a second search path.
+  - Navigation accepted during unfinished search MUST cancel the obsolete search;
+    a later `n`/`N` MUST begin from the committed current cursor. Close, resize,
+    mode switch, and new search MUST retain existing priority and stale-result
+    rejection.
+  - Search may load required 64 KiB raw blocks and evict old blocks through the
+    existing eight-block cache. It MUST not retain an unloaded PageFrame, create
+    a fourth frame, or mistake cache eviction for loss of the last query.
+  - Preserve one-wrap search, 64 KiB cooperative steps, no full-file index, one
+    in-flight navigation, zero same-intent backlog, and one changed-intent
+    replacement.
+  - Allowed production files: `src/viewer/worker.rs`, `src/viewer/mod.rs`,
+    `src/server.rs`.
+  - Focused tests: search to another frame, Page Down then repeat, Page Up then
+    repeat, raw-block eviction then repeat, result in cached block, result in
+    reloaded block, cancellation after one step, stale generation, another viewer
+    control during long search, close, and mode switch.
+  - Depends on: T30E.
+  - Review gate: inspect worker ownership, generation changes, result ordering,
+    cache/frame separation, and absence of server file reads.
+  - Done when: `n`/`N` from a page-changed cursor remains responsive and bounded
+    whether the needed block is cached or reloaded.
+
+- [ ] **T30G — Build width-derived Hex row geometry**
+  - Recommended model: Luna xHigh.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Replace the fixed 16/8/4 width thresholds with one geometry calculation that
+    selects the greatest fitting eight-byte multiple, falling back to four bytes
+    and then the narrow message.
+  - Calculate one snapshot-wide offset width of at least eight hexadecimal digits
+    and reserve at least one unused display cell to avoid automatic wrap.
+  - Insert one aligned `│` between complete eight-byte Hex groups. Do not place
+    separators in the ASCII area or after the final group.
+  - Pad short final Hex rows so separators and the ASCII start remain aligned.
+  - Store explicit byte Hex-cell ranges, separator columns, and ASCII start in
+    the row geometry; do not derive post-separator columns with `index * 3`.
+  - Allowed production files: `src/viewer/hex.rs`, `src/viewer/frame.rs`.
+  - Focused tests: narrow, 4, 8, 16, 24, and 32-byte rows; exact-fit rejection
+    for wrap safety; short final row; separator alignment across rows; no ASCII
+    separator; and offsets above 4 GiB.
+  - Depends on: T30B.
+  - Done when: every rendered row and stored cell range comes from one bounded
+    geometry that fully fits the pane width.
+
+- [ ] **T30H — Apply Hex geometry to cursor, highlight, paging, and resize**
+  - Recommended model: Luna Max.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Use the T30G geometry for Hex cursor placement, Hex and ASCII search
+    highlights, clipping, row movement, page movement, preferred byte column, and
+    active-match rendering.
+  - Horizontal movement MUST remain one source byte and may cross a displayed row
+    boundary. Vertical movement MUST preserve the byte-within-row position where
+    the resized row still contains it.
+  - Resize MUST increase generation, cancel obsolete work, clear the one pending
+    replacement, invalidate three frame slots, recompute geometry, preserve the
+    source byte position, and request one new Current frame.
+  - Search matches may cross visual group, row, and raw-block boundaries; the
+    separator cells themselves MUST never become cursor stops or highlighted
+    source bytes.
+  - Do not change Text-mode mapping or create a Hex-specific raw cache.
+  - Allowed production files: `src/viewer/hex.rs`, `src/viewer/frame.rs`,
+    `src/viewer/mod.rs`, `src/viewer/worker.rs`.
+  - Focused tests: cursor before/after each separator, Hex/ASCII highlight
+    alignment, 8-to-16 and 24-to-8 resize, source-position preservation, search
+    across group/row/block boundaries, Page Up/Down, BOF/EOF, stale resize result,
+    close during rebuild, and three-frame/eight-block bounds.
+  - Depends on: T30G.
+  - Review gate: inspect one geometry owner, generation cancellation, frame
+    invalidation, cursor/highlight source mapping, and absence of a second cache.
+  - Done when: dynamic grouping changes only display geometry and never changes
+    the source byte represented by cursor or active match.
+
+- [ ] **T30I — Run Ido, repeat-search, and dynamic-Hex acceptance**
+  - Recommended model: Luna High.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add deterministic acceptance coverage for first-separator pending input,
+    `//` root, `~/` Home, entered-folder Backspace parent, error rollback,
+    Page Up/Page Down then cursor-anchored `n`/`N`, raw-block eviction/reload, and
+    dynamic 4/8/16/24/32-byte Hex rows with aligned group separators.
+  - Verify cursor and both highlight columns around separators, resize position
+    preservation, no ASCII grouping, offset width above 4 GiB, wrap safety, and
+    immediate close/cancellation.
+  - Reverify all T28/T29 bounds: eight raw blocks / 512 KiB, three frames, 256 KiB
+    source bytes per frame, 64 KiB work steps, one navigation in flight, and one
+    changed-intent replacement.
+  - Run approved focused and full Linux/WSL checks, Clippy, musl release build,
+    native Windows focused/full checks, and MSVC release build. A Windows target
+    check alone MUST leave Native Windows validation unchecked.
+  - Update `README.md` only after the matching behaviour is implemented and
+    verified on the platform being claimed. Record concise evidence and blockers
+    in this task.
+  - Allowed files: focused tests, `README.md`, and this task entry after separate
+    in-scope approval.
+  - Depends on: T30D, T30F, T30H.
+  - Done when: implementation and each authoritative platform checkbox reflect
+    actual execution evidence, documentation matches verified behaviour, and no
+    cross-platform claim relies on compile-only validation.
+

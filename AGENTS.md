@@ -11,13 +11,13 @@ The maintained project documentation is limited to:
 AGENTS.md
 README.md
 TASKS.md
-REQUIREMENT.md
+REQUIREMENTS.md
 ```
 
 `LICENSE` remains a separate legal file. Do not create another project Markdown
 document without explicit user approval.
 
-`REQUIREMENT.md` defines product behaviour. This file defines the AI and
+`REQUIREMENTS.md` defines product behaviour. This file defines the AI and
 engineering workflow. When they conflict, stop and request clarification.
 
 Primary engineering goals:
@@ -63,7 +63,7 @@ files.
 | File | Authority | Must contain | Must not contain |
 | --- | --- | --- | --- |
 | `AGENTS.md` | AI and engineering process | approval rules, workflow, coding constraints, validation rules, and documentation routing | product feature specifications, task history, user instructions |
-| `REQUIREMENT.md` | normative product contract | approved observable behaviour, limits, security requirements, architecture constraints, compatibility contract, acceptance criteria | task status, investigation diaries, command output, unapproved ideas |
+| `REQUIREMENTS.md` | normative product contract | approved observable behaviour, limits, security requirements, architecture constraints, compatibility contract, acceptance criteria | task status, investigation diaries, command output, unapproved ideas |
 | `TASKS.md` | implementation plan and durable engineering record | task breakdown, dependencies, implementation notes, root-cause conclusions, blockers, measurements, and verification evidence | duplicated user guide, full product specification |
 | `README.md` | current user-facing guide | implemented commands, keys, configuration, platform support, limits, acknowledgements, and links | future behaviour, incomplete designs, investigation details |
 
@@ -71,15 +71,15 @@ files.
 
 | Situation | Required update |
 | --- | --- |
-| A new product behaviour is approved | Add or change the normative rule in `REQUIREMENT.md`; add implementation work to `TASKS.md`. Do not update `README.md` yet. |
-| An architecture constraint is approved | Record the durable constraint in `REQUIREMENT.md`; record the implementation steps and dependencies in `TASKS.md`. |
+| A new product behaviour is approved | Add or change the normative rule in `REQUIREMENTS.md`; add implementation work to `TASKS.md`. Do not update `README.md` yet. |
+| An architecture constraint is approved | Record the durable constraint in `REQUIREMENTS.md`; record the implementation steps and dependencies in `TASKS.md`. |
 | A task is proposed | Add it to `TASKS.md` with scope, dependencies, affected requirement sections, and an objective done condition. |
 | A bug is investigated | Keep only the durable reproduction, root cause, rejected unsafe direction when still relevant, correction, and verification in the matching `TASKS.md` entry. Do not create a standalone analysis file. |
-| Code is implemented but not fully verified | Update only `TASKS.md`; keep the task incomplete and state the blocker. |
-| User-visible behaviour is implemented and verified | Update `README.md` to match the real behaviour, then mark the task complete in `TASKS.md`. |
+| Code is implemented but not fully verified | Update only `TASKS.md`; mark implementation complete separately from each required platform and state the blocker. |
+| User-visible behaviour is implemented and verified | Update `README.md` to match the real behaviour, then record the completed implementation and validation in `TASKS.md`. |
 | Build, performance, size, or compatibility evidence is produced | Store concise commands, results, environment, and blockers in `TASKS.md`. |
 | AI workflow or approval policy changes | Update `AGENTS.md` only. |
-| Acknowledgement or prior-art credit changes | Update the actual credit in `README.md`; keep only the normative credit requirement in `REQUIREMENT.md`. |
+| Acknowledgement or prior-art credit changes | Update the actual credit in `README.md`; keep only the normative credit requirement in `REQUIREMENTS.md`. |
 | A discussion produces no approved decision | Do not change project documentation. |
 | Temporary notes or exploratory analysis are needed | Keep them outside the committed project documentation and delete them after the durable conclusion is recorded. |
 
@@ -87,12 +87,13 @@ files.
 
 For an approved user-visible change:
 
-1. Update `REQUIREMENT.md` when the public contract changes.
+1. Update `REQUIREMENTS.md` when the public contract changes.
 2. Add or refine the task in `TASKS.md`.
 3. Implement the smallest approved code change.
 4. Run the approved focused checks.
 5. Update `README.md` only after the behaviour is implemented and verified.
-6. Mark the task complete in `TASKS.md` and record concise evidence.
+6. Record implementation and each required platform result separately in
+   `TASKS.md`.
 
 Documentation-only corrections that do not change behaviour may update the
 relevant owning file directly.
@@ -101,13 +102,13 @@ relevant owning file directly.
 
 Use this order:
 
-1. `REQUIREMENT.md` for product behaviour and acceptance.
+1. `REQUIREMENTS.md` for product behaviour and acceptance.
 2. `AGENTS.md` for workflow and authorization.
 3. `TASKS.md` for implementation scope and status.
 4. `README.md` for current user instructions.
 
 When `README.md` differs from implemented behaviour, correct `README.md`. When
-implementation differs from `REQUIREMENT.md`, treat the implementation as a bug
+implementation differs from `REQUIREMENTS.md`, treat the implementation as a bug
 unless the requirement is explicitly changed and approved.
 
 ## Development Workflow
@@ -122,7 +123,7 @@ Before changing code:
 6. Run focused tests.
 7. Run the approved build and verification.
 8. Update user documentation only when verified behaviour changed.
-9. Mark the completed task `[*]` in `TASKS.md`.
+9. Update the task implementation and platform checkboxes independently.
 10. Commit only after the preceding checks pass.
 11. Report only the result, risks, and remaining issues.
 
@@ -138,6 +139,87 @@ Do not:
 - Change public behaviour accidentally.
 - Create a design or analysis Markdown file instead of updating the four owned
   documents.
+
+## Luna Task Design
+
+Implementation subtasks MAY include one advisory starting level:
+
+```text
+Luna Medium
+Luna High
+Luna xHigh
+Luna Max
+```
+
+Choose the lowest level that can complete the bounded task safely:
+
+- `Luna Medium`: mechanical documentation, isolated edits, or narrow local logic
+  with explicit expected output.
+- `Luna High`: one or two modules, clear state changes, focused tests, and no
+  concurrency or architecture decision.
+- `Luna xHigh`: cross-module state or cross-platform behaviour requiring careful
+  invariants, but with the architecture already fixed.
+- `Luna Max`: worker ownership, cancellation, generation handling, ordering,
+  concurrency, rollback, or a review-gated integration task.
+
+The model field is execution guidance only. It does not authorize broader scope,
+combine tasks, change product behaviour, or replace an `APPROVE` gate.
+
+## Task and Platform Completion
+
+The following status format is mandatory for T28 and every later task.
+
+A task MUST declare one of these validation sets:
+
+```text
+Platform independent
+Linux
+Native Windows
+Linux and Native Windows
+```
+
+Shared Rust source is not automatically platform independent. Require both Linux
+and Native Windows when filesystem, terminal, input, rendering, threading,
+process, or platform-library behaviour can differ at runtime.
+
+Each task MUST record implementation separately from required validation:
+
+```text
+Completion status:
+- [x] Task implementation complete
+- [x] Linux validation complete
+- [ ] Native Windows validation complete
+```
+
+For a platform-independent task, use:
+
+```text
+Completion status:
+- [x] Task implementation complete
+- [x] Platform-independent review complete
+```
+
+Rules:
+
+- From T28 onward, the checkbox in the task heading records implementation only:
+  `[x]` means the approved implementation or documentation change exists; `[ ]`
+  means it does not. Do not use `[*]` for new tasks.
+- Missing Windows validation MUST NOT erase completed implementation or completed
+  Linux validation. Leave only `Native Windows validation complete` unchecked.
+- Do not add a platform checkbox that the task does not require.
+- A compile-only target check does not complete native runtime validation.
+- `cargo check --target x86_64-pc-windows-msvc` is useful evidence but is not a
+  native Windows test or MSVC release build.
+- Native Windows completion requires the named focused tests and build to execute
+  on native Windows with the MSVC toolchain. ConPTY, named-pipe, console-mode,
+  ACL, and Windows path behaviour require native runtime acceptance when in scope.
+- Linux completion requires the named Linux or WSL checks. Linux PTY, signals,
+  permissions, musl linking, and Unix path behaviour require Linux or WSL runtime
+  acceptance when in scope.
+- Cross-platform verification may be claimed only when every required platform
+  checkbox is complete.
+- Evidence MUST name the environment, checks, result, and blocker. Do not infer a
+  missing platform result from another platform.
 
 ## Platform Targets
 
@@ -289,7 +371,7 @@ Any `unsafe` block must include a short safety comment explaining its invariant.
 
 ## Security and Error Handling
 
-Follow the security and resource contracts in `REQUIREMENT.md`.
+Follow the security and resource contracts in `REQUIREMENTS.md`.
 
 Additionally:
 
@@ -310,7 +392,8 @@ non-trivial task in `TASKS.md` must name focused checks and an objective done
 condition before implementation.
 
 Never claim cross-platform completion from compile-only validation. Record
-unavailable environments as blockers in `TASKS.md`.
+unavailable environments as unchecked platform completion plus a blocker in
+`TASKS.md`.
 
 ## Release Checklist
 

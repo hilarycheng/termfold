@@ -284,8 +284,23 @@ block first-release acceptance.
 
 #### Text search
 
-- `/` MUST start forward search and `?` reverse search. `n` MUST repeat in the
-  same direction and `N` in the opposite direction.
+- `/` MUST start forward search and `?` reverse search. `n` MUST repeat the last
+  successful query in its recorded direction and `N` MUST repeat it in the
+  opposite direction.
+- Every new or repeated search MUST use the logical cursor position at the time
+  the search command is accepted as its anchor. It MUST NOT continue from a
+  retained previous-match offset after Page Up, Page Down, line movement,
+  horizontal movement, line start/end, or file start/end changes the cursor.
+- Forward search MUST select the first match strictly after the current cursor
+  anchor; reverse search MUST select the first match strictly before it. The
+  current active match MUST not be selected again merely because the cursor is
+  still at that match.
+- Viewport-only `Ctrl-e`/`Ctrl-y` scrolling does not move the logical cursor and
+  therefore does not change the next search anchor.
+- The last query, its recorded direction, the current cursor, and the active
+  highlighted match MUST remain distinct state. Cached match offsets MAY speed
+  selection only when the nearest valid match is chosen relative to the current
+  cursor anchor.
 - Text search MUST be literal and simple case-insensitive: ASCII letters MUST
   compare without case; non-ASCII UTF-8 and invalid bytes MUST compare exactly.
   Regex, smart-case, locale-sensitive folding, and full Unicode case folding are
@@ -313,12 +328,29 @@ block first-release acceptance.
   values, and printable ASCII side by side.
 - ASCII bytes `0x20` through `0x7e` MUST appear literally in the ASCII column;
   all other bytes MUST appear as `.`.
-- The bytes per row MUST adapt to width:
-  - 16 bytes at 80 columns or wider;
-  - 8 bytes at 48 through 79 columns;
-  - 4 bytes at 28 through 47 columns;
-  - below 28 columns, display `terminal too narrow for hex view` without losing
-    the current byte position.
+- Hex row geometry MUST be derived from the current pane-content width rather
+  than fixed 80/48/28-column thresholds.
+- The offset field MUST use one fixed uppercase hexadecimal width for the open
+  snapshot, with a minimum of eight digits and enough digits for the greatest
+  source offset in the open snapshot.
+- When at least eight bytes fit, bytes per row MUST be the greatest complete
+  multiple of eight that fits the offset field, Hex area, separators, two-column
+  gap, ASCII area, and at least one unused display cell. When eight bytes do not
+  fit but four bytes do, use four bytes. Otherwise display
+  `terminal too narrow for hex view` without losing the current byte position.
+- In the Hex area, each complete eight-byte group MUST be separated from the
+  next group by one vertically aligned `│` separator with surrounding spacing.
+  Do not place a separator after the final group.
+- The ASCII area MUST remain one continuous byte-for-character sequence without
+  eight-byte separators. A short final row MUST pad the Hex area so every group
+  separator and the ASCII start column remain vertically aligned with preceding
+  rows.
+- Cursor columns, Hex highlights, ASCII highlights, clipping, and row movement
+  MUST all use the same computed row geometry; fixed `index * 3` assumptions are
+  prohibited once group separators are present.
+- Resize MUST recompute row geometry and invalidate all PageFrames while
+  preserving the current source-byte position where the snapshot still contains
+  it.
 - Hex-mode cursor movement MUST operate on source bytes. Page, line, start/end,
   top/bottom, and horizontal movement MUST remain bounded and deterministic.
 - Normal search input in Hex mode MUST perform ASCII case-insensitive byte
@@ -346,19 +378,32 @@ block first-release acceptance.
 
 #### Path prompt and closing
 
-- The path prompt MUST list only the current directory, filter as the user types,
+- The path prompt MUST follow the approved Emacs Ido-style directory navigation
+  model: the current directory is separate state, while the editable prompt
+  contains only the current filter or explicit path-control input.
+- The prompt MUST list only the current directory, filter as the user types,
   cycle or complete matches with `Tab`, enter directories or accept a file with
   `Enter`, and support parent navigation with `Backspace`.
 - A name inserted by `Tab` completion or entry selection MUST remain ordinary
   editable prompt text. The next `Backspace` MUST remove the final prompt
   character and update both the visible query and filtering state immediately.
-  Parent navigation MUST occur only when the prompt was already empty before the
-  `Backspace` key. Prompt editing MUST never delete or modify a filesystem entry.
-- A literal `~` in the path prompt MUST never panic, terminate the client, or
-  terminate the Session Server. For this milestone it remains ordinary literal
-  filter text; shell-style home-directory expansion is not implied. Entering
-  `~/` or `~\` without a matching directory MUST produce a short actionable
-  error and keep the prompt active.
+  Parent navigation MUST occur only when the editable prompt was empty before
+  the `Backspace` key. After entering a directory, the prompt is empty, so one
+  `Backspace` MUST remove that final directory component by returning to its
+  parent. Prompt editing MUST never delete or modify a filesystem entry.
+- On Linux, entering `//` from an empty filter MUST move to `/`. The first `/`
+  MUST remain editable pending path input and MUST NOT change directory by
+  itself; Backspace after that first `/` MUST remove it.
+- On native Windows, entering `//` or `\\` from an empty filter MUST move to
+  the root of the current drive. `C:/` and `C:\` MUST move to the specified
+  drive root. A single initial separator MUST NOT change directory by itself.
+- Entering `~/` MUST move to the current user's Home directory and clear the
+  editable filter. A literal `~` without the following `/` MUST remain safe,
+  editable prompt input and MUST never panic, close the client, or terminate the
+  Session Server. `~user/` expansion is outside the approved scope.
+- Invalid root, drive, Home, or selected-directory input MUST leave the prompt
+  active and report a short actionable error without partially changing the
+  current directory or editable input.
 - The active directory MUST come from OSC 7 when available. Otherwise the prompt
   MUST fall back to the server startup directory and remain user-editable.
 - `Ctrl-b x` MUST close the viewer pane after confirmation. `q` and Esc MUST NOT
