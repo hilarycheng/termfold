@@ -789,7 +789,7 @@ perform file I/O or file scanning.
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available.
 
-- [ ] **T28T — Remove superseded and duplicated viewer code**
+- [*] **T28T — Remove superseded and duplicated viewer code**
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata
     refresh/truncation logic, duplicated newline scanners, byte-column helpers,
     `viewer_dirty` latest-input coalescing, and old page-string state.
@@ -807,6 +807,14 @@ perform file I/O or file scanning.
   - Depends on: T28S.
   - Done when: each viewer responsibility has one implementation and unrelated
     platform separation remains intact.
+  - Implementation: replaced the global `viewer_dirty` slot and repeated server
+    viewer branches with one bounded command dispatcher and per-pane pending
+    result ownership; shared the viewer path/query limits and search-status
+    formatter; removed the stale page-string test helper and duplicate mode path.
+  - Evidence: duplicate-symbol `rg` check passed; `cargo fmt --check`, focused
+    viewer/input/server tests (72/9/11), `cargo test --locked -- --test-threads=1`
+    (133 unit and 8 lifecycle tests), and the x86_64 musl release build passed.
+    Native Windows/MSVC validation was not available in this Linux host.
 
 - [ ] **T28U — Run viewer acceptance, resource, and documentation checks**
   - Add deterministic stress coverage for 1,000 Page Down and 1,000 Page Up

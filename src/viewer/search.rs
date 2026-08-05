@@ -1,8 +1,9 @@
 use std::{io, ops::Range};
 
-use super::source::{BLOCK_SIZE, FileSource};
-
-const MAX_QUERY_BYTES: usize = 256;
+use super::{
+    MAX_QUERY_BYTES,
+    source::{BLOCK_SIZE, FileSource},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SearchQueryError {

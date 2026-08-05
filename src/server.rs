@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     config::Config,
-    input::{Action, Input, MouseEvent},
+    input::{self, Action, Input, MouseEvent},
     ipc::{self, Message},
     outer::{self, Capabilities},
     pty::{self, LaunchContext, PtyChild},
@@ -152,6 +152,7 @@ struct PaneProcess {
     viewer: Option<ViewerHandle>,
     viewer_gate: ViewerGate,
     pending_viewer_search: Option<PendingViewerSearch>,
+    pending_viewer_client: Option<u64>,
     terminal: Terminal,
     pending_input: PendingInput,
     working_directory: PathBuf,
@@ -163,6 +164,17 @@ struct PendingViewerSearch {
     forward: bool,
 }
 
+enum ViewerCommand {
+    Navigate(ViewerNavigation),
+    ToggleMode {
+        client_id: u64,
+    },
+    Search {
+        pending: PendingViewerSearch,
+        repeat: bool,
+    },
+}
+
 #[derive(Clone)]
 struct ViewerPrompt {
     directory: PathBuf,
@@ -172,17 +184,40 @@ struct ViewerPrompt {
 }
 
 impl PaneProcess {
+    fn clear_viewer_state(&mut self) {
+        self.viewer_gate.cancel();
+        self.pending_viewer_search = None;
+        self.pending_viewer_client = None;
+    }
+
+    fn cancel_viewer(&mut self) {
+        self.clear_viewer_state();
+        if let Some(viewer) = self.viewer.as_mut() {
+            let _ = viewer.cancel();
+        }
+    }
+
+    fn cancel_viewer_search(&mut self) {
+        if self.pending_viewer_search.take().is_some() {
+            self.pending_viewer_client = None;
+            if let Some(viewer) = self.viewer.as_mut() {
+                let _ = viewer.cancel();
+            }
+        }
+    }
+
     fn resize(&mut self, size: Size) -> io::Result<()> {
         if let Some(child) = &self.child {
             child.resize(size)?;
         }
         let changed = self.terminal.screen().size() != size;
         self.terminal.resize(size).map_err(io::Error::other)?;
-        if changed && let Some(viewer) = &mut self.viewer {
-            self.viewer_gate.cancel();
-            self.pending_viewer_search = None;
-            viewer.cancel()?;
-            viewer.request_render(size)?;
+        if changed && self.viewer.is_some() {
+            self.clear_viewer_state();
+            if let Some(viewer) = self.viewer.as_mut() {
+                viewer.cancel()?;
+                viewer.request_render(size)?;
+            }
         }
         Ok(())
     }
@@ -250,7 +285,6 @@ struct InputContext<'a> {
     mouse: bool,
     status_line: StatusLine<'a>,
     full_dirty: &'a mut bool,
-    viewer_dirty: &'a mut Option<u64>,
     events: &'a SyncSender<ServerEvent>,
     viewer_worker: &'a ViewerWorkerHandle,
 }
@@ -286,6 +320,7 @@ pub fn run(
         viewer: None,
         viewer_gate: ViewerGate::default(),
         pending_viewer_search: None,
+        pending_viewer_client: None,
         terminal: Terminal::with_scrollback(content_size, usize::from(config.scrollback_lines))
             .map_err(|error| format!("cannot create terminal screen: {error}"))?,
         pending_input: PendingInput::new(),
@@ -309,7 +344,6 @@ pub fn run(
     let mut rendered_status = None;
     let mut full_dirty = false;
     let mut content_dirty = false;
-    let mut viewer_dirty = None;
     let mut terminate = false;
     let socket = runtime.bind(session.name())?;
     socket
@@ -343,7 +377,6 @@ pub fn run(
                             mouse: config.mouse,
                             status_line: status_line(&config, &metrics),
                             full_dirty: &mut full_dirty,
-                            viewer_dirty: &mut viewer_dirty,
                             events: &event_sender,
                             viewer_worker: &viewer_worker_handle,
                         };
@@ -385,7 +418,6 @@ pub fn run(
                 mouse: config.mouse,
                 status_line: status_line(&config, &metrics),
                 full_dirty: &mut full_dirty,
-                viewer_dirty: &mut viewer_dirty,
                 events: &event_sender,
                 viewer_worker: &viewer_worker_handle,
             };
@@ -401,7 +433,6 @@ pub fn run(
             &mut panes,
             authoritative_size,
             &mut full_dirty,
-            &mut viewer_dirty,
         );
 
         for pane in &mut panes {
@@ -880,7 +911,6 @@ fn handle_action(
     let size = *input.size;
     let content_size = pane_area(size);
     if let Some(intent) = viewer_intent(&action, input, content_size) {
-        cancel_viewer_search(input);
         if let Err(error) = queue_viewer_navigation(clients, client_id, input, intent) {
             set_status(
                 clients,
@@ -978,9 +1008,11 @@ fn handle_action(
             let close = input.session.close_active_pane(content_size);
             if let Some(index) = input.panes.iter().position(|pane| pane.id == pane_id) {
                 let mut pane = input.panes.swap_remove(index);
-                if let Some(viewer) = pane.viewer.as_mut() {
-                    pane.viewer_gate.cancel();
-                    let _ = viewer.close();
+                if pane.viewer.is_some() {
+                    pane.clear_viewer_state();
+                    if let Some(viewer) = pane.viewer.as_mut() {
+                        let _ = viewer.close();
+                    }
                 }
                 if let Some(child) = pane.child.as_mut() {
                     let _ = pty::terminate_all(&mut [child]);
@@ -990,7 +1022,6 @@ fn handle_action(
                 && let Some(client) = clients.iter_mut().find(|client| client.id == client_id)
             {
                 client.viewer_prompt = None;
-                *input.viewer_dirty = None;
             }
             match close {
                 Ok(CloseResult::SessionEmpty) => return true,
@@ -1284,15 +1315,9 @@ fn handle_action(
         | Action::ViewerTop
         | Action::ViewerBottom => unreachable!("viewer navigation was handled above"),
         Action::ViewerToggleMode => {
-            cancel_active_viewer(input);
-            let result = active_viewer(input)
-                .ok_or_else(|| "active pane is not a viewer".to_owned())
-                .and_then(|viewer| viewer.toggle_mode().map_err(|error| error.to_string()));
+            let result = dispatch_viewer_command(input, ViewerCommand::ToggleMode { client_id });
             match result {
-                Ok(()) => {
-                    schedule_viewer_render(input.viewer_dirty, client_id);
-                    set_viewer_status(clients, client_id, input);
-                }
+                Ok(()) => set_viewer_status(clients, client_id, input),
                 Err(error) => set_status(
                     clients,
                     client_id,
@@ -1326,15 +1351,14 @@ fn handle_action(
             set_status(
                 clients,
                 client_id,
-                Some(viewer_search_status(&query, forward)),
+                Some(input::viewer_search_status(forward, &query)),
                 input.full_dirty,
             );
             *input.full_dirty = true;
             return false;
         }
         Action::ViewerSearch(query, forward) => {
-            cancel_active_viewer(input);
-            let status = viewer_search_status(&query, forward);
+            let status = input::viewer_search_status(forward, &query);
             match queue_viewer_search(input, client_id, Some(query), forward, false) {
                 Ok(()) => set_status(clients, client_id, Some(status), input.full_dirty),
                 Err(error) => set_status(
@@ -1348,7 +1372,6 @@ fn handle_action(
             return false;
         }
         Action::ViewerSearchNext(same_direction) => {
-            cancel_active_viewer(input);
             if let Err(error) = queue_viewer_search(input, client_id, None, same_direction, true) {
                 set_status(
                     clients,
@@ -1445,56 +1468,21 @@ fn active_scrollback_maximum(input: &InputContext<'_>) -> usize {
         .map_or(0, |pane| pane.terminal.max_scroll_offset())
 }
 
-fn active_viewer<'a>(input: &'a mut InputContext<'_>) -> Option<&'a mut ViewerHandle> {
+fn active_viewer_size(input: &InputContext<'_>) -> Option<Size> {
     let active = input.session.active_pane()?;
     input
         .panes
-        .iter_mut()
-        .find(|pane| pane.id == active)
-        .and_then(|pane| pane.viewer.as_mut())
+        .iter()
+        .find(|pane| pane.id == active && pane.viewer.is_some())
+        .map(|pane| pane.terminal.screen().size())
 }
 
 fn cancel_active_viewer(input: &mut InputContext<'_>) {
     if let Some(active) = input.session.active_pane()
         && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
     {
-        pane.viewer_gate.cancel();
-        pane.pending_viewer_search = None;
-        if let Some(viewer) = pane.viewer.as_mut() {
-            let _ = viewer.cancel();
-        }
-        *input.viewer_dirty = None;
+        pane.cancel_viewer();
     }
-}
-
-fn cancel_viewer_search(input: &mut InputContext<'_>) {
-    if let Some(active) = input.session.active_pane()
-        && let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == active)
-        && pane.pending_viewer_search.take().is_some()
-    {
-        if let Some(viewer) = pane.viewer.as_mut() {
-            let _ = viewer.cancel();
-        }
-        *input.viewer_dirty = None;
-    }
-}
-
-fn active_viewer_rows(input: &InputContext<'_>) -> Option<u16> {
-    let active = input.session.active_pane()?;
-    input
-        .panes
-        .iter()
-        .find(|pane| pane.id == active && pane.viewer.is_some())
-        .map(|pane| pane.terminal.screen().size().rows)
-}
-
-fn active_viewer_columns(input: &InputContext<'_>) -> Option<usize> {
-    let active = input.session.active_pane()?;
-    input
-        .panes
-        .iter()
-        .find(|pane| pane.id == active && pane.viewer.is_some())
-        .map(|pane| usize::from(pane.terminal.screen().size().columns))
 }
 
 fn viewer_intent(
@@ -1502,20 +1490,21 @@ fn viewer_intent(
     input: &InputContext<'_>,
     content_size: Size,
 ) -> Option<ViewerIntent> {
+    let viewer_size = active_viewer_size(input);
     Some(match action {
         Action::ViewerScroll(amount) => ViewerIntent::Scroll(*amount),
         Action::ViewerViewport(amount) => ViewerIntent::Viewport(*amount),
         Action::ViewerPage(forward) => ViewerIntent::Page {
-            rows: active_viewer_rows(input).unwrap_or(content_size.rows),
+            rows: viewer_size.unwrap_or(content_size).rows,
             forward: *forward,
         },
         Action::ViewerHalfPage(forward) => ViewerIntent::HalfPage {
-            rows: active_viewer_rows(input).unwrap_or(content_size.rows),
+            rows: viewer_size.unwrap_or(content_size).rows,
             forward: *forward,
         },
         Action::ViewerLineStart => ViewerIntent::LineStart,
         Action::ViewerLineEnd => ViewerIntent::LineEnd {
-            columns: active_viewer_columns(input).unwrap_or(1),
+            columns: viewer_size.map_or(1, |size| usize::from(size.columns)),
         },
         Action::ViewerTop => ViewerIntent::Top,
         Action::ViewerBottom => ViewerIntent::Bottom,
@@ -1529,39 +1518,11 @@ fn queue_viewer_navigation(
     input: &mut InputContext<'_>,
     intent: ViewerIntent,
 ) -> Result<(), String> {
-    let active = input
-        .session
-        .active_pane()
-        .ok_or_else(|| "active pane does not exist".to_owned())?;
-    let dispatched = {
-        let pane = input
-            .panes
-            .iter_mut()
-            .find(|pane| pane.id == active)
-            .ok_or_else(|| "active pane does not exist".to_owned())?;
-        let navigation = ViewerNavigation { intent, client_id };
-        let decision = pane.viewer_gate.accept(navigation);
-        match decision {
-            ViewerGateDecision::Dispatch(navigation) => {
-                let viewer = pane
-                    .viewer
-                    .as_mut()
-                    .ok_or_else(|| "active pane is not a viewer".to_owned())?;
-                if let Err(error) = navigation.intent.dispatch(viewer) {
-                    pane.viewer_gate.cancel();
-                    return Err(error.to_string());
-                }
-                pane.viewer_gate.begin(navigation.intent);
-                true
-            }
-            ViewerGateDecision::Replaced => false,
-            ViewerGateDecision::Dropped => false,
-        }
-    };
+    dispatch_viewer_command(
+        input,
+        ViewerCommand::Navigate(ViewerNavigation { intent, client_id }),
+    )?;
     set_viewer_status(clients, client_id, input);
-    if dispatched {
-        schedule_viewer_render(input.viewer_dirty, client_id);
-    }
     Ok(())
 }
 
@@ -1572,6 +1533,47 @@ fn queue_viewer_search(
     forward: bool,
     repeat: bool,
 ) -> Result<(), String> {
+    dispatch_viewer_command(
+        input,
+        ViewerCommand::Search {
+            pending: PendingViewerSearch {
+                client_id,
+                query,
+                forward,
+            },
+            repeat,
+        },
+    )
+}
+
+fn dispatch_navigation(pane: &mut PaneProcess, navigation: ViewerNavigation) -> Result<(), String> {
+    let result = pane
+        .viewer
+        .as_mut()
+        .ok_or_else(|| "active pane is not a viewer".to_owned())
+        .and_then(|viewer| {
+            navigation
+                .intent
+                .dispatch(viewer)
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(()) => {
+            pane.viewer_gate.begin(navigation.intent);
+            pane.pending_viewer_client = Some(navigation.client_id);
+            Ok(())
+        }
+        Err(error) => {
+            pane.viewer_gate.cancel();
+            Err(error)
+        }
+    }
+}
+
+fn dispatch_viewer_command(
+    input: &mut InputContext<'_>,
+    command: ViewerCommand,
+) -> Result<(), String> {
     let active = input
         .session
         .active_pane()
@@ -1581,30 +1583,43 @@ fn queue_viewer_search(
         .iter_mut()
         .find(|pane| pane.id == active)
         .ok_or_else(|| "active pane does not exist".to_owned())?;
-    let viewer = pane
-        .viewer
-        .as_mut()
-        .ok_or_else(|| "active pane is not a viewer".to_owned())?;
-    if repeat {
-        viewer
-            .start_repeat_search(forward)
-            .map_err(|error| error.to_string())?;
-    } else {
-        viewer
-            .start_search(query.clone().unwrap_or_default(), forward)
-            .map_err(|error| error.to_string())?;
+    match command {
+        ViewerCommand::Navigate(navigation) => {
+            pane.cancel_viewer_search();
+            if let ViewerGateDecision::Dispatch(navigation) = pane.viewer_gate.accept(navigation) {
+                dispatch_navigation(pane, navigation)?;
+            }
+        }
+        ViewerCommand::ToggleMode { client_id } => {
+            pane.cancel_viewer();
+            pane.viewer
+                .as_mut()
+                .ok_or_else(|| "active pane is not a viewer".to_owned())?
+                .toggle_mode()
+                .map_err(|error| error.to_string())?;
+            pane.pending_viewer_client = Some(client_id);
+        }
+        ViewerCommand::Search { pending, repeat } => {
+            pane.cancel_viewer();
+            let client_id = pending.client_id;
+            let viewer = pane
+                .viewer
+                .as_mut()
+                .ok_or_else(|| "active pane is not a viewer".to_owned())?;
+            if repeat {
+                viewer
+                    .start_repeat_search(pending.forward)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                viewer
+                    .start_search(pending.query.clone().unwrap_or_default(), pending.forward)
+                    .map_err(|error| error.to_string())?;
+            }
+            pane.pending_viewer_search = Some(pending);
+            pane.pending_viewer_client = Some(client_id);
+        }
     }
-    pane.pending_viewer_search = Some(PendingViewerSearch {
-        client_id,
-        query,
-        forward,
-    });
-    schedule_viewer_render(input.viewer_dirty, client_id);
     Ok(())
-}
-
-fn schedule_viewer_render(viewer_dirty: &mut Option<u64>, client_id: u64) {
-    *viewer_dirty = Some(client_id);
 }
 
 fn apply_viewer_results(
@@ -1613,7 +1628,6 @@ fn apply_viewer_results(
     panes: &mut [PaneProcess],
     size: Size,
     full_dirty: &mut bool,
-    viewer_dirty: &mut Option<u64>,
 ) {
     let rects = session.pane_rects(pane_area(size));
     for pane in panes {
@@ -1635,7 +1649,7 @@ fn apply_viewer_results(
                     Err(error) => {
                         report_viewer_error(
                             clients,
-                            viewer_dirty,
+                            pane,
                             full_dirty,
                             format!("viewer worker failed: {error}"),
                         );
@@ -1651,7 +1665,7 @@ fn apply_viewer_results(
                         continue;
                     };
                     if !found {
-                        viewer_dirty.take();
+                        pane.pending_viewer_client = None;
                         let status = pending.query.map_or_else(
                             || "no previous viewer search".to_owned(),
                             |query| {
@@ -1676,6 +1690,7 @@ fn apply_viewer_results(
                         let status = viewer_status_message(clients, pane, pending.client_id);
                         set_status(clients, pending.client_id, status, full_dirty);
                     }
+                    pane.pending_viewer_client = Some(pending.client_id);
                     let result = pane
                         .viewer
                         .as_mut()
@@ -1684,7 +1699,7 @@ fn apply_viewer_results(
                     if let Err(error) = result {
                         report_viewer_error(
                             clients,
-                            viewer_dirty,
+                            pane,
                             full_dirty,
                             format!("viewer render failed: {error}"),
                         );
@@ -1700,7 +1715,7 @@ fn apply_viewer_results(
                         pane.viewer_gate.cancel();
                         report_viewer_error(
                             clients,
-                            viewer_dirty,
+                            pane,
                             full_dirty,
                             format!("viewer render failed: {error}"),
                         );
@@ -1708,26 +1723,17 @@ fn apply_viewer_results(
                 }
                 ViewerUpdate::RenderComplete => {
                     let replacement = pane.viewer_gate.finish();
-                    viewer_dirty.take();
+                    pane.pending_viewer_client = None;
                     *full_dirty = true;
                     if let Some(navigation) = replacement {
-                        *viewer_dirty = Some(navigation.client_id);
-                        let result = pane
-                            .viewer
-                            .as_mut()
-                            .ok_or_else(|| io::Error::other("active pane is not a viewer"))
-                            .and_then(|viewer| navigation.intent.dispatch(viewer));
-                        match result {
-                            Ok(()) => pane.viewer_gate.begin(navigation.intent),
-                            Err(error) => {
-                                pane.viewer_gate.cancel();
-                                report_viewer_error(
-                                    clients,
-                                    viewer_dirty,
-                                    full_dirty,
-                                    format!("viewer navigation failed: {error}"),
-                                );
-                            }
+                        pane.pending_viewer_client = Some(navigation.client_id);
+                        if let Err(error) = dispatch_navigation(pane, navigation) {
+                            report_viewer_error(
+                                clients,
+                                pane,
+                                full_dirty,
+                                format!("viewer navigation failed: {error}"),
+                            );
                         }
                     }
                 }
@@ -1737,7 +1743,7 @@ fn apply_viewer_results(
                     pane.viewer_gate.cancel();
                     report_viewer_error(
                         clients,
-                        viewer_dirty,
+                        pane,
                         full_dirty,
                         format!("viewer navigation failed: {error}"),
                     );
@@ -1746,7 +1752,7 @@ fn apply_viewer_results(
                     pane.viewer_gate.cancel();
                     report_viewer_error(
                         clients,
-                        viewer_dirty,
+                        pane,
                         full_dirty,
                         format!("viewer render failed: {error}"),
                     );
@@ -1758,12 +1764,12 @@ fn apply_viewer_results(
 
 fn report_viewer_error(
     clients: &mut [Client],
-    viewer_dirty: &mut Option<u64>,
+    pane: &mut PaneProcess,
     full_dirty: &mut bool,
     message: String,
 ) {
     *full_dirty = true;
-    if let Some(client_id) = viewer_dirty.take() {
+    if let Some(client_id) = pane.pending_viewer_client.take() {
         set_status(clients, client_id, Some(message), full_dirty);
     }
 }
@@ -1789,14 +1795,6 @@ fn viewer_status_message(clients: &[Client], pane: &PaneProcess, client_id: u64)
             viewer.path().display()
         )
     })
-}
-
-fn viewer_search_status(query: &[u8], forward: bool) -> String {
-    let query = String::from_utf8_lossy(query)
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>();
-    format!("{}{query}", if forward { "/" } else { "?" })
 }
 
 #[derive(Clone)]
@@ -2034,6 +2032,7 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
         viewer: Some(viewer),
         viewer_gate: ViewerGate::default(),
         pending_viewer_search: None,
+        pending_viewer_client: None,
         terminal,
         pending_input: PendingInput::new(),
         working_directory,
@@ -2514,6 +2513,7 @@ fn add_pane(
         viewer: None,
         viewer_gate: ViewerGate::default(),
         pending_viewer_search: None,
+        pending_viewer_client: None,
         terminal,
         pending_input: PendingInput::new(),
         working_directory: context.working_directory().to_owned(),
@@ -2679,15 +2679,6 @@ mod tests {
 
         assert_eq!(output, b"\x1b[1;1R\x1b[?1;2c");
         assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn viewer_render_is_coalesced_to_the_latest_input() {
-        let mut pending = None;
-        schedule_viewer_render(&mut pending, 1);
-        schedule_viewer_render(&mut pending, 2);
-
-        assert_eq!(pending, Some(2));
     }
 
     #[test]

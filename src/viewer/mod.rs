@@ -24,6 +24,7 @@ use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
 use text::DecodedText;
 
 const MAX_MATCH_OFFSETS: usize = 4096;
+pub(crate) const MAX_QUERY_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
@@ -634,13 +635,6 @@ impl Viewer {
     }
 
     pub fn top(&mut self) {
-        if self.mode == ViewerMode::Hex {
-            self.position = 0;
-            self.viewport = 0;
-            self.horizontal = 0;
-            self.preferred_column = 0;
-            return;
-        }
         self.position = 0;
         self.viewport = 0;
         self.horizontal = 0;
@@ -1037,27 +1031,6 @@ impl Viewer {
                 .filter(|offset| *offset < start)
                 .max()
         }
-    }
-
-    #[cfg(test)]
-    fn read_line(
-        &mut self,
-        start: u64,
-        columns: usize,
-        budget: usize,
-    ) -> io::Result<(u64, String, bool)> {
-        let line = self.line_boundary(start)?;
-        if budget == 0 {
-            return Ok((line.next, String::new(), line.complete));
-        }
-        let decoded = self.decode_line(&line)?;
-        let first_cell = self.horizontal.min(decoded.width as u64) as usize;
-        let rendered = if first_cell == 0 {
-            decoded.render(columns)
-        } else {
-            decoded.render_cells(first_cell..first_cell.saturating_add(columns))
-        };
-        Ok((line.next, rendered, line.complete))
     }
 
     fn decode_line(&mut self, line: &LineBoundary) -> io::Result<DecodedText> {
@@ -1535,11 +1508,15 @@ mod tests {
     fn uses_configured_tab_width_for_text() {
         let path = temp_path("termfold-viewer-tab-width");
         fs::write(&path, b"a\t\n").unwrap();
+        let size = Size {
+            columns: 20,
+            rows: 2,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
         let mut viewer = Viewer::open(path.clone(), 4).unwrap();
 
-        let (_, line, complete) = viewer.read_line(0, 20, 64 * 1024).unwrap();
-        assert_eq!(line, "a   ");
-        assert!(complete);
+        viewer.render(&mut terminal, size).unwrap();
+        assert_eq!(viewer.current_frame().unwrap().render_row(0, 0, 20), "a   ");
 
         fs::remove_file(path).unwrap();
     }

@@ -1,10 +1,12 @@
 use std::time::{Duration, Instant};
 
-use crate::session::{Direction, Split};
+use crate::{
+    ipc::MAX_VIEW_PATH_BYTES,
+    session::{Direction, Split},
+    viewer::MAX_QUERY_BYTES,
+};
 
 const MAX_FILENAME_BYTES: usize = 4096;
-const MAX_VIEW_PATH_BYTES: usize = 4096;
-const MAX_SEARCH_BYTES: usize = 256;
 const MAX_MOUSE_SEQUENCE_BYTES: usize = 32;
 const MOUSE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(10);
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -460,7 +462,7 @@ impl Input {
                 });
                 self.mode = Mode::Scroll(Vec::new());
             }
-            Mode::Search(query) if query.len() == MAX_SEARCH_BYTES => {
+            Mode::Search(query) if query.len() == MAX_QUERY_BYTES => {
                 actions.push(Action::Status("search is too long".into()));
             }
             Mode::Search(query) => {
@@ -597,7 +599,7 @@ impl Input {
                     self.mode = Mode::Viewer(Vec::new());
                 }
             }
-            Mode::ViewerSearch(query, _) if query.len() == MAX_SEARCH_BYTES => {
+            Mode::ViewerSearch(query, _) if query.len() == MAX_QUERY_BYTES => {
                 actions.push(Action::Status("viewer search is too long".into()));
             }
             Mode::ViewerSearch(_, _) if byte.is_ascii_control() => {
@@ -773,7 +775,7 @@ fn search_status(query: &[u8]) -> Action {
     Action::Status(format!("/{visible}"))
 }
 
-fn viewer_search_status(forward: bool, query: &[u8]) -> String {
+pub(crate) fn viewer_search_status(forward: bool, query: &[u8]) -> String {
     let visible: String = String::from_utf8_lossy(query)
         .chars()
         .filter(|character| !character.is_control())
