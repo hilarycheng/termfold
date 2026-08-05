@@ -1455,12 +1455,12 @@ Rules for every T30 implementation request:
   - Evidence: approved documentation-only contract added; `README.md`, Rust
     source, tests, builds, dependencies, and Git state were not changed.
 
-- [ ] **T30C — Implement Ido prompt separator state**
+- [x] **T30C — Implement Ido prompt separator state**
   - Recommended model: Luna High.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Keep the first separator entered with an empty prompt as editable pending
     input instead of changing directory immediately.
@@ -1479,6 +1479,14 @@ Rules for every T30 implementation request:
   - Depends on: T30B.
   - Done when: the first empty-prompt separator never changes directory and every
     accepted second/root or selected-directory separator produces one action.
+  - Evidence (2026-08-05): `src/input.rs` keeps the first `/` or `\\` as editable
+    query state and dispatches the existing directory action only for a following
+    separator. `cargo fmt` passed; focused Linux input (14) and server (15) tests
+    passed, and the `x86_64-unknown-linux-musl` release build produced a static
+    PIE result.
+    `cargo check --locked --target x86_64-pc-windows-msvc` passed as compile-only
+    evidence; native Windows tests and the MSVC release build remain blocked here
+    because `link.exe` and a native Windows runtime are unavailable.
 
 - [ ] **T30D — Resolve Ido root and Home paths atomically**
   - Recommended model: Luna xHigh.
@@ -1650,4 +1658,3 @@ Rules for every T30 implementation request:
   - Done when: implementation and each authoritative platform checkbox reflect
     actual execution evidence, documentation matches verified behaviour, and no
     cross-platform claim relies on compile-only validation.
-

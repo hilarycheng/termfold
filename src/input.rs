@@ -502,10 +502,15 @@ impl Input {
                 }
             }
             Mode::ViewPrompt(path, _) if matches!(byte, b'/' | b'\\') => {
-                actions.push(Action::ViewDirectory {
-                    query: path.clone(),
-                    separator: byte,
-                });
+                if path.is_empty() {
+                    path.push(byte);
+                    actions.push(Action::ViewQuery(path.clone()));
+                } else {
+                    actions.push(Action::ViewDirectory {
+                        query: path.clone(),
+                        separator: byte,
+                    });
+                }
             }
             Mode::ViewPrompt(path, _) if byte == 9 => {
                 actions.push(Action::ViewComplete(path.clone()));
@@ -978,6 +983,26 @@ mod tests {
         input.set_view_prompt("界".as_bytes().to_vec());
         assert_eq!(input.advance(b"\x08"), vec![Action::ViewQuery(Vec::new())]);
         assert!(matches!(input.mode, Mode::ViewPrompt(_, _)));
+    }
+
+    #[test]
+    fn first_viewer_separator_is_editable_before_directory_navigation() {
+        let mut input = Input::new(2, false);
+        assert_eq!(input.advance(b"\x02v"), vec![Action::ViewPrompt(false)]);
+        assert_eq!(input.advance(b"/"), vec![Action::ViewQuery(b"/".to_vec())]);
+        assert_eq!(input.advance(b"\x08"), vec![Action::ViewQuery(Vec::new())]);
+        assert_eq!(input.advance(b"\x08"), vec![Action::ViewParent]);
+        assert_eq!(
+            input.advance(b"\\"),
+            vec![Action::ViewQuery(b"\\".to_vec())]
+        );
+        assert_eq!(
+            input.advance(b"\\"),
+            vec![Action::ViewDirectory {
+                query: b"\\".to_vec(),
+                separator: b'\\',
+            }]
+        );
     }
 
     #[test]
