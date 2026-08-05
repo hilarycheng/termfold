@@ -266,7 +266,8 @@ mod tests {
             ..HexPage::default()
         };
         let mut spans = Vec::new();
-        page.for_each_highlight(&[1..3], Some(&(2..3)), |span| spans.push(span));
+        let matches = std::iter::once(1..3).collect::<Vec<_>>();
+        page.for_each_highlight(&matches, Some(&(2..3)), |span| spans.push(span));
 
         assert_eq!(
             spans,

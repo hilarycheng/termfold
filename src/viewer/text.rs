@@ -33,7 +33,7 @@ impl DecodedText {
             }
             if token.cells.start < cells.start {
                 let end = token.cells.end.min(cells.end);
-                output.extend(std::iter::repeat(' ').take(end - cells.start));
+                output.extend(std::iter::repeat_n(' ', end - cells.start));
                 if token.cells.end > cells.end {
                     break;
                 }

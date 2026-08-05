@@ -346,17 +346,17 @@ impl FrameSlots {
         let old = self.current.take();
         self.previous = None;
         self.next = None;
-        if let Some(old) = old {
-            if old.key.context == frame.key.context {
-                match forward {
-                    Some(true) if old.key.source_start < frame.key.source_start => {
-                        self.previous = Some(old);
-                    }
-                    Some(false) if frame.key.source_start < old.key.source_start => {
-                        self.next = Some(old);
-                    }
-                    _ => {}
+        if let Some(old) = old
+            && old.key.context == frame.key.context
+        {
+            match forward {
+                Some(true) if old.key.source_start < frame.key.source_start => {
+                    self.previous = Some(old);
                 }
+                Some(false) if frame.key.source_start < old.key.source_start => {
+                    self.next = Some(old);
+                }
+                _ => {}
             }
         }
         self.current = Some(frame);
@@ -390,134 +390,17 @@ impl FrameSlots {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_context(mode: u8, size: Size) -> FrameContext {
-        FrameContext::new(1024, mode, size, 8, 1)
-    }
-
-    fn frame(context: FrameContext, start: u64, end: u64) -> PageFrame {
-        PageFrame {
-            key: FrameKey::new(context, start),
-            source_range: start..end,
-            ..PageFrame::default()
-        }
-    }
-
-    #[test]
-    fn rotates_forward_and_backward_without_growing_slots() {
-        let context = make_context(
-            0,
-            Size {
-                columns: 80,
-                rows: 24,
-            },
-        );
-        let mut slots = FrameSlots::default();
-        slots.set_context(context);
-        slots.commit(frame(context, 0, 20), None);
-        slots.insert_neighbour(frame(context, 10, 30), true);
-
-        assert!(slots.rotate_forward(FrameKey::new(context, 10)));
-        assert_eq!(
-            slots.current().map(|frame| frame.key.source_start),
-            Some(10)
-        );
-        assert_eq!(slots.count(), 2);
-
-        assert!(slots.rotate_backward(FrameKey::new(context, 0)));
-        assert_eq!(slots.current().map(|frame| frame.key.source_start), Some(0));
-        assert_eq!(slots.count(), 2);
-    }
-
-    #[test]
-    fn rejects_an_invalid_neighbour_without_losing_current() {
-        let context = make_context(
-            0,
-            Size {
-                columns: 80,
-                rows: 24,
-            },
-        );
-        let other = make_context(
-            1,
-            Size {
-                columns: 80,
-                rows: 24,
-            },
-        );
-        let mut slots = FrameSlots::default();
-        slots.set_context(context);
-        slots.commit(frame(context, 0, 20), None);
-        slots.insert_neighbour(frame(context, 10, 30), true);
-
-        assert!(!slots.rotate_forward(FrameKey::new(other, 10)));
-        assert_eq!(slots.current().map(|frame| frame.key.source_start), Some(0));
-        assert_eq!(slots.count(), 2);
-    }
-
-    #[test]
-    fn changing_context_invalidates_all_slots() {
-        let size = Size {
-            columns: 80,
-            rows: 24,
-        };
-        let context = make_context(0, size);
-        let mut slots = FrameSlots::default();
-        slots.set_context(context);
-        slots.commit(frame(context, 0, 20), None);
-        slots.insert_neighbour(frame(context, 10, 30), true);
-        assert_eq!(slots.count(), 2);
-
-        slots.set_context(make_context(
-            0,
-            Size {
-                columns: 100,
-                rows: 24,
-            },
-        ));
-        assert_eq!(slots.count(), 0);
-    }
-
-    #[test]
-    fn alternating_direction_keeps_three_slot_bound() {
-        let context = make_context(
-            0,
-            Size {
-                columns: 80,
-                rows: 24,
-            },
-        );
-        let mut slots = FrameSlots::default();
-        slots.set_context(context);
-        slots.commit(frame(context, 10, 30), None);
-        slots.insert_neighbour(frame(context, 20, 40), true);
-        assert!(slots.rotate_forward(FrameKey::new(context, 20)));
-        slots.insert_neighbour(frame(context, 30, 50), true);
-        assert_eq!(slots.count(), 3);
-        assert!(!slots.insert_neighbour(frame(context, 40, 60), true));
-        assert_eq!(slots.count(), 3);
-
-        assert!(slots.rotate_backward(FrameKey::new(context, 10)));
-        assert_eq!(slots.count(), 2);
-        slots.insert_neighbour(frame(context, 0, 20), false);
-        assert_eq!(slots.count(), 3);
-    }
-}
-
 pub(super) fn build(
     source: &mut FileSource,
     lines: &mut VecDeque<LineBoundary>,
-    length: u64,
-    tab_width: usize,
     viewport: u64,
-    rows: usize,
     query: Option<&SearchQuery>,
     active_offset: Option<u64>,
     context: FrameContext,
 ) -> io::Result<PageFrame> {
+    let length = context.snapshot_length;
+    let tab_width = context.tab_width;
+    let rows = usize::from(context.size.rows);
     if context.mode == ViewerMode::Hex as u8 {
         let page = hex::build(
             source,
@@ -707,4 +590,121 @@ fn cached_forward_continuation(
     let line = lines.remove(index)?;
     lines.push_front(line);
     line.resume
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_context(mode: u8, size: Size) -> FrameContext {
+        FrameContext::new(1024, mode, size, 8, 1)
+    }
+
+    fn frame(context: FrameContext, start: u64, end: u64) -> PageFrame {
+        PageFrame {
+            key: FrameKey::new(context, start),
+            source_range: start..end,
+            ..PageFrame::default()
+        }
+    }
+
+    #[test]
+    fn rotates_forward_and_backward_without_growing_slots() {
+        let context = make_context(
+            0,
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        );
+        let mut slots = FrameSlots::default();
+        slots.set_context(context);
+        slots.commit(frame(context, 0, 20), None);
+        slots.insert_neighbour(frame(context, 10, 30), true);
+
+        assert!(slots.rotate_forward(FrameKey::new(context, 10)));
+        assert_eq!(
+            slots.current().map(|frame| frame.key.source_start),
+            Some(10)
+        );
+        assert_eq!(slots.count(), 2);
+
+        assert!(slots.rotate_backward(FrameKey::new(context, 0)));
+        assert_eq!(slots.current().map(|frame| frame.key.source_start), Some(0));
+        assert_eq!(slots.count(), 2);
+    }
+
+    #[test]
+    fn rejects_an_invalid_neighbour_without_losing_current() {
+        let context = make_context(
+            0,
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        );
+        let other = make_context(
+            1,
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        );
+        let mut slots = FrameSlots::default();
+        slots.set_context(context);
+        slots.commit(frame(context, 0, 20), None);
+        slots.insert_neighbour(frame(context, 10, 30), true);
+
+        assert!(!slots.rotate_forward(FrameKey::new(other, 10)));
+        assert_eq!(slots.current().map(|frame| frame.key.source_start), Some(0));
+        assert_eq!(slots.count(), 2);
+    }
+
+    #[test]
+    fn changing_context_invalidates_all_slots() {
+        let size = Size {
+            columns: 80,
+            rows: 24,
+        };
+        let context = make_context(0, size);
+        let mut slots = FrameSlots::default();
+        slots.set_context(context);
+        slots.commit(frame(context, 0, 20), None);
+        slots.insert_neighbour(frame(context, 10, 30), true);
+        assert_eq!(slots.count(), 2);
+
+        slots.set_context(make_context(
+            0,
+            Size {
+                columns: 100,
+                rows: 24,
+            },
+        ));
+        assert_eq!(slots.count(), 0);
+    }
+
+    #[test]
+    fn alternating_direction_keeps_three_slot_bound() {
+        let context = make_context(
+            0,
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        );
+        let mut slots = FrameSlots::default();
+        slots.set_context(context);
+        slots.commit(frame(context, 10, 30), None);
+        slots.insert_neighbour(frame(context, 20, 40), true);
+        assert!(slots.rotate_forward(FrameKey::new(context, 20)));
+        slots.insert_neighbour(frame(context, 30, 50), true);
+        assert_eq!(slots.count(), 3);
+        assert!(!slots.insert_neighbour(frame(context, 40, 60), true));
+        assert_eq!(slots.count(), 3);
+
+        assert!(slots.rotate_backward(FrameKey::new(context, 10)));
+        assert_eq!(slots.count(), 2);
+        slots.insert_neighbour(frame(context, 0, 20), false);
+        assert_eq!(slots.count(), 3);
+    }
 }

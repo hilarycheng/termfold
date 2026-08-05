@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::VecDeque,
     io,
     ops::Range,
@@ -235,7 +236,7 @@ impl Viewer {
                     .cloned()
                     .ok_or_else(|| io::Error::other("viewer previous frame disappeared"))?
             } else {
-                self.build_page_at(size, self.viewport, context)?
+                self.build_page_at(self.viewport, context)?
             };
 
             let (cursor_row, cursor_column) = if hex {
@@ -333,20 +334,11 @@ impl Viewer {
         )
     }
 
-    fn build_page_at(
-        &mut self,
-        size: Size,
-        viewport: u64,
-        context: FrameContext,
-    ) -> io::Result<PageFrame> {
-        let length = self.length();
+    fn build_page_at(&mut self, viewport: u64, context: FrameContext) -> io::Result<PageFrame> {
         frame::build(
             &mut self.source,
             &mut self.lines,
-            length,
-            self.tab_width,
             viewport,
-            usize::from(size.rows),
             self.search.as_ref().map(|search| &search.query),
             self.search.as_ref().map(|search| search.offset),
             context,
@@ -398,7 +390,7 @@ impl Viewer {
         {
             return;
         }
-        let Ok(frame) = self.build_page_at(size, start, context) else {
+        let Ok(frame) = self.build_page_at(start, context) else {
             return;
         };
         if frame.key.source_start == start {
@@ -428,7 +420,7 @@ impl Viewer {
         {
             return;
         }
-        if let Ok(frame) = self.build_page_at(size, start, context) {
+        if let Ok(frame) = self.build_page_at(start, context) {
             self.frames.insert_neighbour(frame, forward);
         }
     }
@@ -829,10 +821,10 @@ impl Viewer {
             .and_then(|range| intersect_range(range, &primary));
 
         let mut ranges = VecDeque::with_capacity(5);
-        let mut selected = excluded
-            .filter(|offset| *offset < limit)
-            .map(|offset| vec![offset..offset.saturating_add(1)])
-            .unwrap_or_default();
+        let mut selected = Vec::new();
+        if let Some(offset) = excluded.filter(|offset| *offset < limit) {
+            selected.push(offset..offset.saturating_add(1));
+        }
         for priority in [current, neighbour].into_iter().flatten() {
             let mut pieces = subtract_range(priority, &selected);
             order_ranges(&mut pieces, forward);
@@ -1345,7 +1337,7 @@ fn order_ranges(ranges: &mut [Range<u64>], forward: bool) {
     if forward {
         ranges.sort_by_key(|range| range.start);
     } else {
-        ranges.sort_by(|first, second| second.end.cmp(&first.end));
+        ranges.sort_by_key(|range| Reverse(range.end));
     }
 }
 
@@ -2316,6 +2308,57 @@ mod tests {
             final_page
         );
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn acceptance_stress_keeps_frames_cache_and_search_steps_bounded() {
+        let path = temp_path("termfold-viewer-acceptance-bounds");
+        let mut data = Vec::new();
+        for line in 0..7_000 {
+            data.extend_from_slice(format!("line {line:04}\n").as_bytes());
+        }
+        fs::write(&path, data).unwrap();
+
+        let size = Size {
+            columns: 32,
+            rows: 8,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+
+        for _ in 0..100 {
+            viewer.page(size.rows, true).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+            assert!(viewer.frames.count() <= 3);
+            assert!(
+                viewer
+                    .current_frame()
+                    .is_none_or(|frame| frame.source_bytes() <= frame::MAX_FRAME_SOURCE_BYTES)
+            );
+            assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
+            assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
+        }
+
+        viewer.source.reset_metrics();
+        assert!(!viewer.search("not-found", true).unwrap());
+        assert!(viewer.source.max_range_bytes() <= BLOCK_SIZE as usize);
+
+        for _ in 0..100 {
+            viewer.page(size.rows, false).unwrap();
+            viewer.render(&mut terminal, size).unwrap();
+            assert!(viewer.frames.count() <= 3);
+            assert!(
+                viewer
+                    .current_frame()
+                    .is_none_or(|frame| frame.source_bytes() <= frame::MAX_FRAME_SOURCE_BYTES)
+            );
+            assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
+            assert!(cache_bytes(&viewer) <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
+        }
+
+        assert!(viewer.source.peak_cache_bytes() <= BLOCK_SIZE as usize * BLOCK_CACHE_SIZE);
         fs::remove_file(path).unwrap();
     }
 

@@ -59,7 +59,7 @@ impl SearchQuery {
 
     pub(super) fn matches_byte(&self, query: u8, byte: u8) -> bool {
         match self {
-            Self::Text(_) => query.to_ascii_lowercase() == byte.to_ascii_lowercase(),
+            Self::Text(_) => query.eq_ignore_ascii_case(&byte),
             Self::Hex(_) => query == byte,
         }
     }

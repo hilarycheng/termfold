@@ -464,7 +464,7 @@ perform file I/O or file scanning.
     `cargo audit` and `cargo deny check` were unavailable because the commands
     are not installed in WSL.
 
-- [*] **T28F — Add and validate `viewer_tab_width`**
+- [ ] **T28F — Add and validate `viewer_tab_width`**
   - Add `viewer_tab_width = 8` to configuration defaults.
   - Accept only integer values 1 through 16 and identify the field on error.
   - Pass the validated value into viewer creation without changing existing
@@ -480,7 +480,7 @@ perform file I/O or file scanning.
     (83 unit tests and 8 integration tests), and the x86_64 musl release build
     passed. The full test run required elevated temporary Unix-socket access.
 
-- [*] **T28G — Build source-byte to display-cell spans**
+- [ ] **T28G — Build source-byte to display-cell spans**
   - Extend `viewer/text.rs` with one mapping representation shared by cursor,
     clipping, and highlight code.
   - Every span MUST contain a source byte range, display-cell start/end, rendered
@@ -498,7 +498,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 28 viewer tests; the
     x86_64 musl release build passed.
 
-- [*] **T28H — Correct Text-mode cursor semantics**
+- [ ] **T28H — Correct Text-mode cursor semantics**
   - Replace byte-column cursor movement with source offset plus preferred
     display-cell column.
   - Implement line start/end, Up/Down preferred-cell movement, top/bottom, and
@@ -521,7 +521,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 30 viewer tests; the
     x86_64 musl release build passed.
 
-- [*] **T28I — Introduce the Current PageFrame builder**
+- [ ] **T28I — Introduce the Current PageFrame builder**
   - Create `viewer/frame.rs` with the approved PageFrame fields: source range,
     decoded rows, line boundaries, source/cell spans, valid cursor stops, and
     visible match ranges.
@@ -546,7 +546,7 @@ perform file I/O or file scanning.
     elevated full `cargo test --locked` passed with 90 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [*] **T28J — Add Previous/Current/Next frame rotation**
+- [ ] **T28J — Add Previous/Current/Next frame rotation**
   - Store exactly three optional frame slots in `viewer/frame.rs`.
   - Implement deterministic Page Up/Page Down rotation when the neighbour matches
     the current snapshot, mode, size, tab width, and expected source boundary.
@@ -567,7 +567,7 @@ perform file I/O or file scanning.
     elevated `cargo test --locked` passed with 94 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [*] **T28K — Add the session-scoped Viewer Worker foundation**
+- [ ] **T28K — Add the session-scoped Viewer Worker foundation**
   - Create `viewer/worker.rs` and one worker per Session Server, not one thread per
     viewer.
   - Define bounded `ViewerCommand` and `ViewerResult` messages containing viewer
@@ -595,7 +595,7 @@ perform file I/O or file scanning.
     full elevated `cargo test --locked` passed with 99 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed.
 
-- [*] **T28L — Move page and line navigation behind the Viewer Worker**
+- [ ] **T28L — Move page and line navigation behind the Viewer Worker**
   - Convert line, page, half-page, viewport, start/end, and top/bottom actions into
     ViewerCommand messages.
   - Apply ViewerResult only when viewer ID and generation still match.
@@ -620,7 +620,7 @@ perform file I/O or file scanning.
     tests; the x86_64 musl release build passed and produced a stripped static PIE.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [*] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
+- [ ] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
   - Add a server-side ViewerGate containing generation, in-flight state, current
     intent, and at most one replacement command.
   - Dispatch one navigation when idle. Drop same-intent repeats while in flight.
@@ -648,7 +648,7 @@ perform file I/O or file scanning.
     and 8 lifecycle tests; the x86_64 musl release build passed. Native
     Windows/MSVC validation was not available in this Linux host.
 
-- [*] **T28N — Define text and hex search query types**
+- [ ] **T28N — Define text and hex search query types**
   - Create `viewer/search.rs` query parsing without scanning the file.
   - Text queries MUST be literal, ASCII case-insensitive, non-ASCII exact, and
     limited to 256 bytes.
@@ -667,7 +667,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed with 51 viewer tests; the
     x86_64-unknown-linux-musl release build passed.
 
-- [*] **T28O — Implement incremental cancellable forward/reverse search**
+- [ ] **T28O — Implement incremental cancellable forward/reverse search**
   - Search Current from the cursor first, then the neighbour in the requested
     direction, then scan the snapshot in 64 KiB steps.
   - Support forward/reverse, `n`/`N`, matches crossing block boundaries, and one
@@ -689,7 +689,7 @@ perform file I/O or file scanning.
     x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
     validation was not available in this Linux host.
 
-- [*] **T28P — Highlight visible search matches**
+- [ ] **T28P — Highlight visible search matches**
   - Map every matching source range in Current to display-cell spans through the
     PageFrame mapping.
   - Render ordinary visible matches with an attribute-based highlight and the
@@ -716,7 +716,7 @@ perform file I/O or file scanning.
   - Verification note: repository-wide `cargo fmt` was applied and
     `cargo fmt --check` passed.
 
-- [x] **T28Q — Implement Hex PageFrame rendering and navigation**
+- [ ] **T28Q — Implement Hex PageFrame rendering and navigation**
   - Create `viewer/hex.rs` and add the `Text`/`Hex` mode enum to the viewer facade.
   - Render absolute offset, hex bytes, and printable ASCII side by side using
     16/8/4 bytes per row at the approved width thresholds.
@@ -741,7 +741,7 @@ perform file I/O or file scanning.
     67 viewer tests; the x86_64-unknown-linux-musl release build passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [*] **T28R — Add Hex-mode ASCII and exact-byte search**
+- [ ] **T28R — Add Hex-mode ASCII and exact-byte search**
   - Use normal parsed text queries for ASCII case-insensitive search in Hex mode
     and parsed `hex:` queries for exact bytes.
   - Permit matches across displayed rows and raw block boundaries.
@@ -763,7 +763,7 @@ perform file I/O or file scanning.
     cargo build --release --locked --target x86_64-unknown-linux-musl passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [*] **T28S — Wire mode switching, cancellation, and input actions**
+- [ ] **T28S — Wire mode switching, cancellation, and input actions**
   - Map `H` in Viewer mode to a semantic mode-toggle action.
   - Mode switch MUST increase generation, cancel search/navigation, clear the one
     replacement, invalidate all frames, preserve source byte position where
@@ -789,7 +789,7 @@ perform file I/O or file scanning.
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available.
 
-- [*] **T28T — Remove superseded and duplicated viewer code**
+- [ ] **T28T — Remove superseded and duplicated viewer code**
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata
     refresh/truncation logic, duplicated newline scanners, byte-column helpers,
     `viewer_dirty` latest-input coalescing, and old page-string state.
@@ -830,6 +830,39 @@ perform file I/O or file scanning.
   - Allowed files: focused tests, `README.md`, and this task entry after separate
     in-scope approval for those actions.
   - Depends on: T28T.
+  - Implementation: extended the worker stress test to run 1,000 Page Down and
+    1,000 Page Up operations, increased the zero-repeat gate stress to 1,000
+    attempts, and added test-only runtime metrics for maximum source-read range.
+    Fixed all current Clippy `-D warnings` findings without changing the viewer
+    contract or adding dependencies.
+    The acceptance test asserts the three-frame, eight-block/512 KiB cache, 256
+    KiB frame-source, and 64 KiB search-step limits. Existing focused tests cover
+    mixed EOL, huge lines, controls, UTF-8, highlighting, Text/Hex search, wrap,
+    immediate close, and cancellation. `README.md` already matches the verified
+    behaviour, so no documentation change was needed.
+  - Evidence: `cargo fmt --check`, focused viewer tests (73), focused viewer-gate
+    tests (5), and elevated `cargo test --locked -- --test-threads=1` (134 unit
+    and 8 lifecycle tests) passed. The x86_64 musl release build passed;
+    `file`/`ldd` confirmed a stripped static PIE and the artifact was 865,008
+    bytes. A build from pre-T28U `HEAD` was also 865,008 bytes (0-byte delta),
+    and `cargo bloat --release --target x86_64-unknown-linux-musl -n 10` ran.
+    The Windows target `cargo check --locked --target
+    x86_64-pc-windows-msvc` passed, but native Windows build and test execution
+    were unavailable because `link.exe` is absent on this Linux host. Clippy
+    with `-D warnings` passed after the warning fixes, and final-source
+    `cargo fmt --check` passed. Runtime tests and release builds were not rerun
+    for this warning-only cleanup. T28U remains incomplete until those checks
+    and native Windows acceptance are rerun on the final source.
   - Done when: the complete T28 contract passes on authoritative Linux/WSL and
     native Windows environments, or each unavailable acceptance environment is
     recorded as a blocker and T28 remains incomplete.
+
+### T28 native Windows confirmation ledger
+
+- Confirmed: T28B, T28C, T28D, and T28E each record native Windows/MSVC focused
+  tests and release-build evidence.
+- Not confirmed: T28F through T28T have Linux/WSL implementation evidence but
+  no recorded native Windows/MSVC focused test and build for their final code;
+  their unchecked status is intentional until that validation is supplied.
+- T28A is documentation-only. T28U remains the acceptance gate for the missing
+  native Windows validation and the final cross-platform claim.

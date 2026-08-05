@@ -1642,21 +1642,18 @@ fn apply_viewer_results(
             columns: rect.width,
             rows: rect.height,
         };
-        loop {
-            let update = match pane.viewer.as_mut() {
-                Some(viewer) => match viewer.poll(&mut pane.terminal) {
-                    Ok(update) => update,
-                    Err(error) => {
-                        report_viewer_error(
-                            clients,
-                            pane,
-                            full_dirty,
-                            format!("viewer worker failed: {error}"),
-                        );
-                        break;
-                    }
-                },
-                None => break,
+        while let Some(viewer) = pane.viewer.as_mut() {
+            let update = match viewer.poll(&mut pane.terminal) {
+                Ok(update) => update,
+                Err(error) => {
+                    report_viewer_error(
+                        clients,
+                        pane,
+                        full_dirty,
+                        format!("viewer worker failed: {error}"),
+                    );
+                    break;
+                }
             };
             let Some(update) = update else { break };
             match update {
@@ -2697,7 +2694,7 @@ mod tests {
         ));
         gate.begin(intent);
 
-        for _ in 0..100 {
+        for _ in 0..1_000 {
             assert!(matches!(
                 gate.accept(ViewerNavigation {
                     intent,

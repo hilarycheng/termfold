@@ -56,7 +56,7 @@ pub(super) enum ViewerOperation {
     ToggleMode,
     Search { query: Vec<u8>, forward: bool },
     RepeatSearch { same_direction: bool },
-    Render { terminal: Terminal, size: Size },
+    Render { terminal: Box<Terminal>, size: Size },
 }
 
 pub(super) enum ViewerResult {
@@ -385,7 +385,13 @@ impl ViewerHandle {
     pub(crate) fn request_render(&mut self, size: Size) -> io::Result<()> {
         let terminal = Terminal::new(size).map_err(io::Error::other)?;
         let invalidate = self.render_size.is_some_and(|previous| previous != size);
-        let result = self.dispatch(ViewerOperation::Render { terminal, size }, invalidate);
+        let result = self.dispatch(
+            ViewerOperation::Render {
+                terminal: Box::new(terminal),
+                size,
+            },
+            invalidate,
+        );
         if result.is_ok() {
             self.render_size = Some(size);
         }
@@ -865,31 +871,34 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                         terminal,
                     },
                 ),
-                Err((message, terminal)) => send(
-                    &reply,
-                    ViewerResult::Error {
-                        id,
-                        generation,
-                        message,
-                        terminal,
-                    },
-                ),
+                Err(error) => {
+                    let (message, terminal) = *error;
+                    send(
+                        &reply,
+                        ViewerResult::Error {
+                            id,
+                            generation,
+                            message,
+                            terminal,
+                        },
+                    )
+                }
             }
             None
         }
     }
 }
 
-type ExecResult = Result<(Option<bool>, Option<Terminal>), (String, Option<Terminal>)>;
+type ExecResult = Result<(Option<bool>, Option<Terminal>), Box<(String, Option<Terminal>)>>;
 
 fn no_value(result: io::Result<()>) -> ExecResult {
     result
         .map(|_| (None, None))
-        .map_err(|error| (error.to_string(), None))
+        .map_err(|error| Box::new((error.to_string(), None)))
 }
 
 fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
-    let result = match operation {
+    match operation {
         ViewerOperation::MoveLines(amount) => no_value(viewer.move_lines(amount)),
         ViewerOperation::ScrollViewport(amount) => no_value(viewer.scroll_viewport(amount)),
         ViewerOperation::Page { rows, forward } => no_value(viewer.page(rows, forward)),
@@ -905,17 +914,16 @@ fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
         ViewerOperation::Render { mut terminal, size } => {
             match viewer.render(&mut terminal, size) {
                 Ok(()) => match apply_hex_highlights(viewer, &mut terminal) {
-                    Ok(()) => Ok((None, Some(terminal))),
-                    Err(error) => Err((error.to_string(), Some(terminal))),
+                    Ok(()) => Ok((None, Some(*terminal))),
+                    Err(error) => Err(Box::new((error.to_string(), Some(*terminal)))),
                 },
-                Err(error) => Err((error.to_string(), Some(terminal))),
+                Err(error) => Err(Box::new((error.to_string(), Some(*terminal)))),
             }
         }
         ViewerOperation::Search { .. } | ViewerOperation::RepeatSearch { .. } => {
-            Err(("search was not scheduled".into(), None))
+            Err(Box::new(("search was not scheduled".into(), None)))
         }
-    };
-    result
+    }
 }
 
 fn apply_hex_highlights(viewer: &mut Viewer, terminal: &mut Terminal) -> io::Result<()> {
@@ -1037,7 +1045,7 @@ fn send_stale(work: Work) {
 
 fn take_terminal_from(operation: ViewerOperation) -> Option<Terminal> {
     match operation {
-        ViewerOperation::Render { terminal, .. } => Some(terminal),
+        ViewerOperation::Render { terminal, .. } => Some(*terminal),
         _ => None,
     }
 }
@@ -1405,6 +1413,19 @@ mod tests {
         ));
         for _ in 0..1_000 {
             viewer.page(size.rows, true).unwrap();
+            let update = wait_update(&mut viewer, &mut terminal);
+            assert!(
+                matches!(update, ViewerUpdate::NavigationComplete),
+                "unexpected update: {update:?}"
+            );
+            viewer.request_render(size).unwrap();
+            assert!(matches!(
+                wait_update(&mut viewer, &mut terminal),
+                ViewerUpdate::RenderComplete
+            ));
+        }
+        for _ in 0..1_000 {
+            viewer.page(size.rows, false).unwrap();
             let update = wait_update(&mut viewer, &mut terminal);
             assert!(
                 matches!(update, ViewerUpdate::NavigationComplete),

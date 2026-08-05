@@ -28,6 +28,8 @@ pub(super) struct FileSource {
     block_accesses: usize,
     #[cfg(test)]
     peak_cache_bytes: usize,
+    #[cfg(test)]
+    max_range_bytes: usize,
 }
 
 impl FileSource {
@@ -51,6 +53,8 @@ impl FileSource {
             block_accesses: 0,
             #[cfg(test)]
             peak_cache_bytes: 0,
+            #[cfg(test)]
+            max_range_bytes: 0,
         })
     }
 
@@ -89,6 +93,10 @@ impl FileSource {
                 io::ErrorKind::InvalidInput,
                 "viewer range is too large",
             ));
+        }
+        #[cfg(test)]
+        {
+            self.max_range_bytes = self.max_range_bytes.max(requested as usize);
         }
 
         let start = range.start.min(self.length);
@@ -185,9 +193,15 @@ impl FileSource {
     }
 
     #[cfg(test)]
+    pub(super) fn max_range_bytes(&self) -> usize {
+        self.max_range_bytes
+    }
+
+    #[cfg(test)]
     pub(super) fn reset_metrics(&mut self) {
         self.block_reads = 0;
         self.block_accesses = 0;
+        self.max_range_bytes = 0;
     }
 
     #[cfg(all(test, unix))]
