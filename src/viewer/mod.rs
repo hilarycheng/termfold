@@ -2220,6 +2220,19 @@ mod tests {
         assert!(viewer.repeat_search(false).unwrap());
         assert_eq!(viewer.position, 16);
 
+        viewer.top();
+        assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, 16);
+        viewer.top();
+        viewer.page(3, true).unwrap();
+        assert_eq!(viewer.position, 9);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, 16);
+        viewer.page(3, false).unwrap();
+        assert_eq!(viewer.position, 9);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, 0);
+
         fs::remove_file(path).unwrap();
     }
 

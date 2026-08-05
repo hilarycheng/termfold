@@ -299,6 +299,30 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_layouts_fit_and_keep_ascii_without_group_separators() {
+        let path = temp_path("termfold-hex-layout-acceptance");
+        fs::write(&path, (0..64).collect::<Vec<_>>()).unwrap();
+        for (columns, expected) in [(28, 4), (48, 8), (80, 16), (112, 24), (146, 32)] {
+            let mut source = FileSource::open(path.clone()).unwrap();
+            let page = build(&mut source, 0, 1, columns, 256 * 1024).unwrap();
+            assert_eq!(page.bytes_per_row, expected);
+            let rendered = page.render_row(0);
+            assert!(rendered.chars().count() < columns);
+            assert_eq!(
+                page.geometry.separator_columns.len(),
+                expected / 8 - usize::from(expected % 8 == 0)
+            );
+            assert!(
+                rendered
+                    .chars()
+                    .skip(page.geometry.ascii_start)
+                    .all(|character| character != '│')
+            );
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn wide_offsets_reduce_the_layout_only_when_wrap_safety_requires_it() {
         assert_eq!(layout(80, 0x1_0000_0000).unwrap().0, 16);
         assert_eq!(layout(78, 0x1_0000_0000).unwrap().0, 8);

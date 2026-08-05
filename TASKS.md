@@ -1690,11 +1690,11 @@ Rules for every T30 implementation request:
     build remain blocked because this environment has no native Windows runtime
     and `link.exe` is unavailable.
 
-- [ ] **T30I — Run Ido, repeat-search, and dynamic-Hex acceptance**
+- [x] **T30I — Run Ido, repeat-search, and dynamic-Hex acceptance**
   - Recommended model: Luna High.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
+    - [x] Task implementation complete.
     - [ ] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add deterministic acceptance coverage for first-separator pending input,
@@ -1719,3 +1719,20 @@ Rules for every T30 implementation request:
   - Done when: implementation and each authoritative platform checkbox reflect
     actual execution evidence, documentation matches verified behaviour, and no
     cross-platform claim relies on compile-only validation.
+  - Implementation: added deterministic acceptance coverage for prompt
+    separators and folder input, Page Down/Page Up cursor-anchored repeat search,
+    and rendered 4/8/16/24/32-byte Hex layouts with wrap and ASCII-separator
+    assertions. Existing acceptance coverage reverified raw-block reload,
+    resize preservation, highlight mapping, close/cancellation, frame/cache
+    bounds, work-step bounds, and navigation replacement bounds.
+  - Evidence (2026-08-05): `cargo fmt --check` passed. Focused Linux checks
+    passed: `cargo test --locked viewer:: -- --test-threads=1` 98/98,
+    `cargo test --locked server::tests::viewer_` 12/12, viewer input checks
+    4/4, and the first-separator regression 1/1. The isolated Worker
+    cancellation regression passed. The full Linux suite passed 169/170; the
+    existing Unix socket privacy test is blocked by
+    this sandbox's `Operation not permitted` socket-bind restriction. The musl
+    release build passed. Windows target test compilation passed with
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc`; native
+    Windows focused/full tests and the MSVC release build remain blocked because
+    no native Windows runtime or `link.exe` is available.

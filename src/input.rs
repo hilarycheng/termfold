@@ -1003,6 +1003,14 @@ mod tests {
                 separator: b'\\',
             }]
         );
+        input.set_view_prompt(b"folder".to_vec());
+        assert_eq!(
+            input.advance(b"/"),
+            vec![Action::ViewDirectory {
+                query: b"folder".to_vec(),
+                separator: b'/',
+            }]
+        );
     }
 
     #[test]

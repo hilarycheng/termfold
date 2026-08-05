@@ -186,11 +186,12 @@ when the terminal is wide and a minimal reminder when it is narrow.
 After `Ctrl-b v` or `Ctrl-b V`, the prompt lists entries from the active pane's current
 directory. Type to filter, press `Tab` to complete or cycle matches, press
 `Enter` to enter a directory or open a file, and press `Backspace` on an empty
-filter to move to the parent directory. `/` and `\` process directory
-separators; `/` starts a Linux absolute path, while `C:\` and `C:/` start a
-Windows drive-root path. A literal `~` remains filter text and is never
-shell-expanded. Invalid selections show a short error and keep the prompt
-active; `Esc` or `Ctrl-c` cancels it.
+filter to move to the parent directory. The first `/` or `\` remains editable
+path input; a second separator enters the filesystem root (`//` on Linux, or
+the current drive root on Windows), and `~/` enters the current user's Home.
+`C:\` and `C:/` enter a named Windows drive root. A literal `~` remains filter
+text and is never shell-expanded. Invalid selections show a short error and
+keep the prompt active; `Esc` or `Ctrl-c` cancels it.
 
 The viewer reads fixed-size blocks and keeps only the visible page, at most eight
 64 KiB raw blocks (512 KiB), three page frames, and at most 256 KiB of source
@@ -227,6 +228,8 @@ current byte position is preserved where possible, and in-flight viewer work is
 cancelled before the new frame is rendered.
 In Hex mode, normal search queries match ASCII bytes case-insensitively; queries
 starting with `hex:` use exact space-separated bytes, such as `hex:00 FF 1B`.
+Hex rows use the greatest fitting 4/8-byte group layout, with aligned separators
+between complete eight-byte groups and no separators in the ASCII column.
 Matches may cross displayed rows and raw file blocks.
 
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
