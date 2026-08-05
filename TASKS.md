@@ -513,7 +513,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Add `viewer_tab_width = 8` to configuration defaults.
   - Accept only integer values 1 through 16 and identify the field on error.
   - Pass the validated value into viewer creation without changing existing
@@ -527,14 +527,20 @@ perform file I/O or file scanning.
     remains duplicated.
   - Evidence: Ubuntu 24.04 x86_64 `cargo fmt -- --check`, `cargo test --locked`
     (83 unit tests and 8 integration tests), and the x86_64 musl release build
-    passed. The full test run required elevated temporary Unix-socket access.
+    passed. Native Windows MSVC `cargo test --locked --target
+    x86_64-pc-windows-msvc validates_viewer_tab_width` (1 test) and
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
+    The Windows release artifact is 571,392 bytes with SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
+    The full Linux test run and Windows linker required elevated temporary-file
+    access.
 
 - [x] **T28G — Build source-byte to display-cell spans**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Extend `viewer/text.rs` with one mapping representation shared by cursor,
     clipping, and highlight code.
   - Every span MUST contain a source byte range, display-cell start/end, rendered
@@ -550,7 +556,12 @@ perform file I/O or file scanning.
   - Done when: viewer navigation and rendering no longer derive a terminal column
     by subtracting two byte offsets.
   - Evidence: `cargo test --locked viewer::` passed with 28 viewer tests; the
-    x86_64 musl release build passed.
+    x86_64 musl release build passed. Native Windows MSVC `cargo test --locked
+    --target x86_64-pc-windows-msvc viewer::text::` passed with 9 tests, and
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
+    The Windows release artifact is 571,392 bytes with SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
+    The Windows linker required elevated temporary-file access.
 
 - [x] **T28H — Correct Text-mode cursor semantics**
   - Required validation: Linux and Native Windows.
@@ -984,9 +995,9 @@ perform file I/O or file scanning.
 
 ### T28 native Windows confirmation ledger
 
-- Confirmed: T28B, T28C, T28D, and T28E each record native Windows/MSVC focused
-  tests and release-build evidence.
-- Not confirmed: T28F through T28T have Linux/WSL implementation evidence but
+- Confirmed: T28B, T28C, T28D, T28E, T28F, and T28G each record native
+  Windows/MSVC focused tests and release-build evidence.
+- Not confirmed: T28H through T28T have Linux/WSL implementation evidence but
   no recorded native Windows/MSVC focused test and build for their final code;
   their unchecked status is intentional until that validation is supplied.
 - T28A is platform independent. T28U implementation and Linux validation are
