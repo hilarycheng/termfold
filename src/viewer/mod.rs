@@ -145,6 +145,39 @@ impl Viewer {
         self.pending_page_direction = None;
     }
 
+    pub(super) fn toggle_mode(&mut self) -> io::Result<()> {
+        let previous_mode = self.mode;
+        let previous_state = self.state();
+        self.mode = match self.mode {
+            ViewerMode::Text => ViewerMode::Hex,
+            ViewerMode::Hex => ViewerMode::Text,
+        };
+        let result = (|| {
+            if self.mode == ViewerMode::Hex {
+                if self.length() == 0 {
+                    self.position = 0;
+                    self.viewport = 0;
+                } else {
+                    self.position = self.position.min(self.length() - 1);
+                    self.viewport = self.hex_row_start(self.viewport);
+                    self.preferred_column = self.position % self.hex_width();
+                    self.ensure_cursor_visible()?;
+                }
+                self.horizontal = 0;
+                Ok(())
+            } else {
+                self.set_position(self.position.min(self.length()))
+            }
+        })();
+        if result.is_err() {
+            self.mode = previous_mode;
+            self.restore_state(previous_state);
+            return result;
+        }
+        self.invalidate_frames();
+        Ok(())
+    }
+
     pub fn render(&mut self, terminal: &mut Terminal, size: Size) -> io::Result<()> {
         let committed = self.committed;
         let previous_frames = self.frames.clone();
@@ -1464,6 +1497,36 @@ mod tests {
             hex::NARROW_MESSAGE
         );
         assert!(frame.hex.as_ref().expect("hex page").narrow);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn toggling_mode_invalidates_frames_and_preserves_byte_position() {
+        let path = temp_path("termfold-viewer-toggle-mode");
+        fs::write(&path, b"0123456789\n").unwrap();
+        let size = Size {
+            columns: 80,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.position = 5;
+        viewer.render(&mut terminal, size).unwrap();
+        let generation = viewer.generation;
+
+        viewer.toggle_mode().unwrap();
+        assert_eq!(viewer.mode, ViewerMode::Hex);
+        assert_eq!(viewer.position, 5);
+        assert!(viewer.current_frame().is_none());
+        assert!(viewer.generation > generation);
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.current_frame().unwrap().hex.is_some());
+
+        viewer.toggle_mode().unwrap();
+        assert_eq!(viewer.mode, ViewerMode::Text);
+        assert_eq!(viewer.position, 5);
+        assert!(viewer.current_frame().is_none());
 
         fs::remove_file(path).unwrap();
     }

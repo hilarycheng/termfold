@@ -31,6 +31,10 @@ pub(super) enum ViewerCommand {
         generation: u64,
         reply: SyncSender<ViewerResult>,
     },
+    Cancel {
+        id: ViewerId,
+        generation: u64,
+    },
     Run {
         id: ViewerId,
         generation: u64,
@@ -49,6 +53,7 @@ pub(super) enum ViewerOperation {
     LineEnd { columns: usize },
     Top,
     Bottom,
+    ToggleMode,
     Search { query: Vec<u8>, forward: bool },
     RepeatSearch { same_direction: bool },
     Render { terminal: Terminal, size: Size },
@@ -87,6 +92,7 @@ pub(super) enum ViewerResult {
 #[derive(Debug)]
 pub(crate) enum ViewerUpdate {
     NavigationComplete,
+    SearchComplete { found: bool, wrapped: bool },
     RenderComplete,
     Stale,
     NavigationError(String),
@@ -265,6 +271,31 @@ impl ViewerHandle {
         }
     }
 
+    pub(crate) fn cancel(&mut self) -> io::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let generation = self.generation.wrapping_add(1);
+        self.worker
+            .sender
+            .try_send(ViewerCommand::Cancel {
+                id: self.id,
+                generation,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "viewer worker command queue is full",
+                ),
+                TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "viewer worker stopped")
+                }
+            })?;
+        self.generation = generation;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn run(&mut self, operation: ViewerOperation, invalidate: bool) -> io::Result<ViewerResult> {
         let generation = if invalidate {
             self.generation.wrapping_add(1)
@@ -286,6 +317,7 @@ impl ViewerHandle {
         result
     }
 
+    #[cfg(test)]
     fn check(&self, result: ViewerResult, generation: u64) -> io::Result<ViewerResult> {
         match &result {
             ViewerResult::Done {
@@ -307,6 +339,7 @@ impl ViewerHandle {
         }
     }
 
+    #[cfg(test)]
     fn boolean(&mut self, operation: ViewerOperation) -> io::Result<(bool, bool)> {
         match self.run(operation, true)? {
             ViewerResult::Done {
@@ -359,6 +392,10 @@ impl ViewerHandle {
         result
     }
 
+    pub(crate) fn toggle_mode(&mut self) -> io::Result<()> {
+        self.dispatch(ViewerOperation::ToggleMode, true)
+    }
+
     pub(crate) fn poll(&mut self, terminal: &mut Terminal) -> io::Result<Option<ViewerUpdate>> {
         if self.closed {
             while self.results.try_recv().is_ok() {}
@@ -375,6 +412,16 @@ impl ViewerHandle {
             }
         };
         match result {
+            ViewerResult::Done {
+                id,
+                generation,
+                value: Some(found),
+                wrapped,
+                terminal: None,
+                ..
+            } if id == self.id && generation == self.generation => {
+                Ok(Some(ViewerUpdate::SearchComplete { found, wrapped }))
+            }
             ViewerResult::Done {
                 id,
                 generation,
@@ -405,7 +452,12 @@ impl ViewerHandle {
                     ViewerUpdate::NavigationError(message)
                 }))
             }
-            ViewerResult::Stale { id, terminal, .. } if id == self.id => {
+            ViewerResult::Stale {
+                id,
+                generation,
+                terminal,
+            } if id == self.id => {
+                let _ = generation;
                 drop(terminal);
                 Ok(Some(ViewerUpdate::Stale))
             }
@@ -440,12 +492,22 @@ impl ViewerHandle {
     pub(crate) fn bottom(&mut self) -> io::Result<()> {
         self.dispatch(ViewerOperation::Bottom, true)
     }
+
+    pub(crate) fn start_search(&mut self, query: Vec<u8>, forward: bool) -> io::Result<()> {
+        self.dispatch(ViewerOperation::Search { query, forward }, true)
+    }
+
+    pub(crate) fn start_repeat_search(&mut self, same_direction: bool) -> io::Result<()> {
+        self.dispatch(ViewerOperation::RepeatSearch { same_direction }, true)
+    }
+    #[cfg(test)]
     pub(crate) fn search(&mut self, query: &str, forward: bool) -> io::Result<(bool, bool)> {
         self.boolean(ViewerOperation::Search {
             query: query.as_bytes().to_vec(),
             forward,
         })
     }
+    #[cfg(test)]
     pub(crate) fn repeat_search(&mut self, same_direction: bool) -> io::Result<(bool, bool)> {
         self.boolean(ViewerOperation::RepeatSearch { same_direction })
     }
@@ -565,6 +627,14 @@ fn control(
                 },
             };
             send(&reply, result);
+        }
+        ViewerCommand::Cancel { id, generation } => {
+            cancel(id, active, queue);
+            if let Some(viewer) = viewers.get_mut(&id)
+                && generation >= viewer.generation
+            {
+                viewer.generation = generation;
+            }
         }
         ViewerCommand::Shutdown => {
             cancel_all(active, queue);
@@ -831,6 +901,7 @@ fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
             Ok((None, None))
         }
         ViewerOperation::Bottom => no_value(viewer.bottom()),
+        ViewerOperation::ToggleMode => no_value(viewer.toggle_mode()),
         ViewerOperation::Render { mut terminal, size } => {
             match viewer.render(&mut terminal, size) {
                 Ok(()) => Ok((None, Some(terminal))),
@@ -1083,6 +1154,41 @@ mod tests {
                 .unwrap(),
             ViewerResult::Closed { .. }
         ));
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mode_switch_preempts_async_search() {
+        let (path, mut worker, mut viewer) = open("mode-switch", &vec![b'a'; 128 * 1024]);
+        let mut terminal = Terminal::new(Size {
+            columns: 80,
+            rows: 8,
+        })
+        .unwrap();
+        viewer.start_search(vec![b'z'; 256], true).unwrap();
+        viewer.toggle_mode().unwrap();
+
+        let mut saw_stale = false;
+        let mut switched = false;
+        for _ in 0..10_000 {
+            if let Some(update) = viewer.poll(&mut terminal).unwrap() {
+                match update {
+                    ViewerUpdate::Stale => saw_stale = true,
+                    ViewerUpdate::NavigationComplete => {
+                        switched = true;
+                        break;
+                    }
+                    other => panic!("unexpected update: {other:?}"),
+                }
+            } else {
+                thread::yield_now();
+            }
+        }
+        assert!(saw_stale);
+        assert!(switched);
+
+        viewer.close().unwrap();
         worker.shutdown();
         fs::remove_file(path).unwrap();
     }

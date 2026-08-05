@@ -755,7 +755,7 @@ perform file I/O or file scanning.
   - Done when: Text and Hex search share one bounded search engine and differ only
     by query interpretation and frame mapping.
 
-- [ ] **T28S — Wire mode switching, cancellation, and input actions**
+- [*] **T28S — Wire mode switching, cancellation, and input actions**
   - Map `H` in Viewer mode to a semantic mode-toggle action.
   - Mode switch MUST increase generation, cancel search/navigation, clear the one
     replacement, invalidate all frames, preserve source byte position where
@@ -770,6 +770,16 @@ perform file I/O or file scanning.
   - Depends on: T28M, T28P, T28Q, T28R.
   - Done when: input state controls Viewer Worker only through semantic commands
     and every intent-changing action invalidates obsolete work.
+  - Implementation: mapped `H` to a semantic toggle, added worker-owned mode
+    switching with source-position preservation and frame invalidation, made
+    search dispatch cooperative, and added generation-tagged cancellation for
+    navigation, resize, mode switching, prompt cancellation, and close.
+  - Scope note: private command/result plumbing in `src/viewer/worker.rs` was
+    required because the worker owns viewer state.
+  - Evidence: `cargo fmt --check`, focused input/viewer/worker tests, elevated
+    `cargo test --locked` (131 unit tests and 8 lifecycle tests), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    Native Windows/MSVC validation was not available; T28R remains open.
 
 - [ ] **T28T — Remove superseded and duplicated viewer code**
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata

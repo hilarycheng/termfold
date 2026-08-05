@@ -209,6 +209,9 @@ and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
 Visible matches use inverse attributes; the active match is additionally
 underlined, and wrapped searches report `wrapped`.
+Press `H` to toggle between Text and Hex mode without reopening the file; the
+current byte position is preserved where possible, and in-flight viewer work is
+cancelled before the new frame is rendered.
 
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
 stay with the preceding token, tabs expand to the next eight-cell stop, ASCII

@@ -57,6 +57,7 @@ pub enum Action {
     ViewerLineEnd,
     ViewerTop,
     ViewerBottom,
+    ViewerToggleMode,
     ViewerSearchPrompt(bool),
     ViewerSearchQuery(Vec<u8>, bool),
     ViewerSearch(Vec<u8>, bool),
@@ -543,6 +544,7 @@ impl Input {
                         Some(Action::ViewerBottom)
                     }
                     [b'G'] => Some(Action::ViewerBottom),
+                    [b'H'] => Some(Action::ViewerToggleMode),
                     [b'/'] => Some(Action::ViewerSearchPrompt(true)),
                     [b'?'] => Some(Action::ViewerSearchPrompt(false)),
                     [b'n'] => Some(Action::ViewerSearchNext(true)),
@@ -559,7 +561,7 @@ impl Input {
                     | [27, b'[', b'4', b';']
                     | [27, b'[', b'4', b';', b'5'] => None,
                     _ => Some(Action::Status(
-                        "viewer: j/k arrows Home/End gg/G Ctrl-u/d Ctrl-b/f / ? n/N".into(),
+                        "viewer: j/k arrows Home/End gg/G H Ctrl-u/d Ctrl-b/f / ? n/N".into(),
                     )),
                 };
                 if let Some(action) = action {
@@ -954,6 +956,12 @@ mod tests {
                 Action::ViewerViewport(-1),
             ]
         );
+        assert_eq!(
+            input.advance(b"HH"),
+            vec![Action::ViewerToggleMode, Action::ViewerToggleMode,]
+        );
+        assert!(input.advance(b"\x1b[").is_empty());
+        assert_eq!(input.advance(b"A"), vec![Action::ViewerScroll(-1)]);
         assert_eq!(
             input.advance(b"\x1b[H\x1b[F\x1b[1;5H\x1b[1;5F"),
             vec![
