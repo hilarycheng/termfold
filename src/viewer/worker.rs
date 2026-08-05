@@ -1144,51 +1144,47 @@ fn apply_hex_highlights(viewer: &mut Viewer, terminal: &mut Terminal) -> io::Res
     let Some(frame) = viewer.current_frame() else {
         return Ok(());
     };
-    let Some(search) = viewer.search.as_ref() else {
-        return Ok(());
-    };
-    let source_range = frame.source_range.clone();
-    let query = search.query.clone();
-    let active_offset = search.offset;
-    let matches = query.visible_matches(&mut viewer.source, source_range)?;
-    if matches.is_empty() {
+    if frame.visible_match_ranges.is_empty() {
         return Ok(());
     }
-    let active = active_offset..active_offset.saturating_add(query.len() as u64);
     let Some(page) = viewer.current_frame().and_then(|frame| frame.hex.as_ref()) else {
         return Ok(());
     };
     let cursor = terminal.screen().cursor();
-    page.for_each_highlight(&matches, Some(&active), |span| {
-        let Some(row) = page.rows.get(span.row) else {
-            return;
-        };
-        let index = span.source.saturating_sub(row.offset) as usize;
-        let Some(&byte) = row.bytes.get(index) else {
-            return;
-        };
-        let text = if span.width == 2 {
-            format!("{byte:02X}")
-        } else {
-            char::from(if (0x20..=0x7e).contains(&byte) {
-                byte
+    page.for_each_highlight(
+        &frame.visible_match_ranges,
+        frame.active_match_range.as_ref(),
+        |span| {
+            let Some(row) = page.rows.get(span.row) else {
+                return;
+            };
+            let index = span.source.saturating_sub(row.offset) as usize;
+            let Some(&byte) = row.bytes.get(index) else {
+                return;
+            };
+            let text = if span.width == 2 {
+                format!("{byte:02X}")
             } else {
-                b'.'
-            })
-            .to_string()
-        };
-        let style = if span.active { "7;4" } else { "7" };
-        terminal.advance(
-            format!(
-                "\x1b[{};{}H\x1b[{}m{}\x1b[0m",
-                span.row + 1,
-                span.column + 1,
-                style,
-                text
-            )
-            .as_bytes(),
-        );
-    });
+                char::from(if (0x20..=0x7e).contains(&byte) {
+                    byte
+                } else {
+                    b'.'
+                })
+                .to_string()
+            };
+            let style = if span.active { "7;4" } else { "7" };
+            terminal.advance(
+                format!(
+                    "\x1b[{};{}H\x1b[{}m{}\x1b[0m",
+                    span.row + 1,
+                    span.column + 1,
+                    style,
+                    text
+                )
+                .as_bytes(),
+            );
+        },
+    );
     terminal.advance(format!("\x1b[{};{}H", cursor.row + 1, cursor.column + 1).as_bytes());
     Ok(())
 }
@@ -1945,6 +1941,97 @@ mod tests {
         }
 
         viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn resize_replaces_a_stale_hex_render_and_preserves_the_byte() {
+        let (path, mut worker, mut viewer) = open("hex-resize", &(0..64).collect::<Vec<_>>());
+        let narrow = Size {
+            columns: 48,
+            rows: 4,
+        };
+        let wide = Size {
+            columns: 80,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(narrow).unwrap();
+
+        viewer.toggle_mode().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+        viewer.request_render(narrow).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        viewer.move_horizontal(15).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+
+        viewer.request_render(wide).unwrap();
+        viewer.request_render(narrow).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut stale = false;
+        let mut rendered = false;
+        while !rendered {
+            if let Some(update) = viewer.poll(&mut terminal).unwrap() {
+                match update {
+                    ViewerUpdate::Stale => stale = true,
+                    ViewerUpdate::RenderComplete => rendered = true,
+                    other => panic!("unexpected update: {other:?}"),
+                }
+            } else {
+                assert!(Instant::now() < deadline, "resize render did not finish");
+                thread::yield_now();
+            }
+        }
+        assert!(stale);
+        assert_eq!(terminal.screen().size(), narrow);
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn close_during_hex_resize_drops_the_rebuild_result() {
+        let (path, mut worker, mut viewer) = open("hex-close-resize", &(0..64).collect::<Vec<_>>());
+        let mut terminal = Terminal::new(Size {
+            columns: 48,
+            rows: 4,
+        })
+        .unwrap();
+
+        viewer.toggle_mode().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+        viewer
+            .request_render(Size {
+                columns: 48,
+                rows: 4,
+            })
+            .unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        viewer
+            .request_render(Size {
+                columns: 80,
+                rows: 4,
+            })
+            .unwrap();
+        viewer.close().unwrap();
+        assert!(viewer.poll(&mut terminal).unwrap().is_none());
+
         worker.shutdown();
         fs::remove_file(path).unwrap();
     }

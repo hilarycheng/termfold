@@ -37,8 +37,9 @@ pub(super) struct HighlightSpan {
     pub(super) active: bool,
 }
 
+#[cfg(test)]
 pub(super) fn bytes_per_row(columns: usize) -> usize {
-    select_bytes(columns, 8)
+    layout(columns, 0).map_or(0, |(bytes, _)| bytes)
 }
 
 fn offset_width(max_offset: u64) -> usize {
@@ -72,7 +73,7 @@ fn select_bytes(columns: usize, offset_width: usize) -> usize {
     if fits(columns, offset_width, 4) { 4 } else { 0 }
 }
 
-fn geometry(columns: usize, max_offset: u64) -> Option<(usize, HexGeometry)> {
+pub(super) fn layout(columns: usize, max_offset: u64) -> Option<(usize, HexGeometry)> {
     let offset_width = offset_width(max_offset);
     let bytes_per_row = select_bytes(columns, offset_width);
     if bytes_per_row == 0 {
@@ -88,7 +89,7 @@ pub(super) fn build(
     columns: usize,
     max_source_bytes: u64,
 ) -> io::Result<HexPage> {
-    let Some((bytes_per_row, geometry)) = geometry(columns, source.len().saturating_sub(1)) else {
+    let Some((bytes_per_row, geometry)) = layout(columns, source.len().saturating_sub(1)) else {
         return Ok(HexPage {
             source_range: start..start,
             narrow: true,
@@ -298,6 +299,12 @@ mod tests {
     }
 
     #[test]
+    fn wide_offsets_reduce_the_layout_only_when_wrap_safety_requires_it() {
+        assert_eq!(layout(80, 0x1_0000_0000).unwrap().0, 16);
+        assert_eq!(layout(78, 0x1_0000_0000).unwrap().0, 8);
+    }
+
+    #[test]
     fn renders_offset_hex_and_printable_ascii() {
         let path = temp_path("termfold-hex-render");
         fs::write(&path, [b'A', b' ', 0, 0x7e]).unwrap();
@@ -463,6 +470,42 @@ mod tests {
                     active: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn highlights_crossing_rows_use_geometry_without_separator_cells() {
+        let geometry = HexGeometry::new(8, 16);
+        let page = HexPage {
+            bytes_per_row: 16,
+            geometry: geometry.clone(),
+            rows: vec![
+                HexRow::new(0, &(0..16).collect::<Vec<_>>(), &geometry),
+                HexRow::new(16, &(16..32).collect::<Vec<_>>(), &geometry),
+            ],
+            ..HexPage::default()
+        };
+        let mut spans = Vec::new();
+        page.for_each_highlight(&[15..18], Some(&(16..18)), |span| spans.push(span));
+
+        assert_eq!(spans.len(), 6);
+        assert!(spans.iter().all(|span| {
+            let row = &page.rows[span.row];
+            let index = (span.source - row.offset) as usize;
+            let expected = if span.width == 2 {
+                row.hex_cells[index].start
+            } else {
+                geometry.ascii_start + index
+            };
+            span.column == expected
+        }));
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|span| span.active)
+                .map(|span| span.source)
+                .collect::<Vec<_>>(),
+            vec![16, 16, 17, 17]
         );
     }
 }

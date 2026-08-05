@@ -1645,12 +1645,12 @@ Rules for every T30 implementation request:
     build remain blocked because this environment has no native Windows runtime
     or `link.exe`.
 
-- [ ] **T30H — Apply Hex geometry to cursor, highlight, paging, and resize**
+- [x] **T30H — Apply Hex geometry to cursor, highlight, paging, and resize**
   - Recommended model: Luna Max.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Use the T30G geometry for Hex cursor placement, Hex and ASCII search
     highlights, clipping, row movement, page movement, preferred byte column, and
@@ -1676,6 +1676,19 @@ Rules for every T30 implementation request:
     invalidation, cursor/highlight source mapping, and absence of a second cache.
   - Done when: dynamic grouping changes only display geometry and never changes
     the source byte represented by cursor or active match.
+  - Implementation: navigation now derives its row width from the shared
+    snapshot geometry, cursor stops and Hex/ASCII highlights use stored geometry,
+    Hex frames retain visible and active match ranges, and resize invalidates the
+    generation and frame slots while preserving the source byte. Focused worker
+    regressions cover stale resize replacement and close during rebuild.
+  - Evidence (2026-08-05): `cargo fmt --check` passed. Linux `cargo test
+    --locked viewer:: -- --test-threads=1` passed 97/97, including Hex geometry, cross-row matching,
+    cursor movement, resize, bounds, paging, and worker cancellation coverage.
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
+    compile-only evidence. Native Windows runtime tests and the MSVC release
+    build remain blocked because this environment has no native Windows runtime
+    and `link.exe` is unavailable.
 
 - [ ] **T30I — Run Ido, repeat-search, and dynamic-Hex acceptance**
   - Recommended model: Luna High.

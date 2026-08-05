@@ -16,7 +16,6 @@ mod text;
 pub(super) mod worker;
 
 use frame::{FrameContext, FrameKey, FrameSlots, PageFrame};
-use hex::bytes_per_row;
 use line::{LineBoundary, LineScanner, ScanStep};
 use search::SearchQuery;
 use source::FileSource;
@@ -189,6 +188,14 @@ impl Viewer {
         let committed = self.committed;
         let previous_frames = self.frames.clone();
         let previous_direction = self.pending_page_direction;
+        let previous_generation = self.generation;
+        let resized = self
+            .frames
+            .context()
+            .is_some_and(|context| context.size != size);
+        if resized {
+            self.invalidate_frames();
+        }
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
         let hex = self.mode == ViewerMode::Hex;
@@ -201,6 +208,9 @@ impl Viewer {
                 } else {
                     self.position.min(length - 1)
                 };
+                if resized {
+                    self.preferred_column = self.position % self.hex_width();
+                }
                 self.viewport = self.hex_row_start(self.viewport);
                 self.ensure_cursor_visible()?;
             } else {
@@ -309,6 +319,7 @@ impl Viewer {
             Ok(())
         })();
         if result.is_err() {
+            self.generation = previous_generation;
             self.restore_state(committed);
             self.frames = previous_frames;
             self.pending_page_direction = previous_direction;
@@ -322,6 +333,13 @@ impl Viewer {
         };
         if page.narrow || page.bytes_per_row == 0 {
             return (0, 0);
+        }
+        if let Some(stop) = frame
+            .cursor_stops
+            .iter()
+            .find(|stop| stop.source == self.position)
+        {
+            return (stop.row, stop.cell);
         }
         let row = self
             .position
@@ -465,7 +483,8 @@ impl Viewer {
     }
 
     fn hex_width(&self) -> u64 {
-        bytes_per_row(self.visible_columns).max(1) as u64
+        hex::layout(self.visible_columns, self.length().saturating_sub(1))
+            .map_or(1, |(bytes, _)| bytes as u64)
     }
 
     fn hex_row_start(&self, position: u64) -> u64 {
@@ -496,7 +515,7 @@ impl Viewer {
             .saturating_mul(width)
             .saturating_add(preferred)
             .min(self.length() - 1);
-        self.preferred_column = self.position % width;
+        self.preferred_column = preferred;
         self.ensure_cursor_visible()
     }
 
@@ -1410,6 +1429,152 @@ mod tests {
         viewer.bottom().unwrap();
         assert_eq!(viewer.position, 39);
         assert!(viewer.lines.is_empty());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_cursor_and_preferred_column_follow_geometry_resize() {
+        let path = temp_path("termfold-viewer-hex-geometry-cursor");
+        fs::write(&path, (0..64).collect::<Vec<_>>()).unwrap();
+        let narrow = Size {
+            columns: 48,
+            rows: 4,
+        };
+        let wide = Size {
+            columns: 80,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(narrow).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+        viewer.render(&mut terminal, narrow).unwrap();
+        assert_eq!(
+            viewer
+                .current_frame()
+                .unwrap()
+                .hex
+                .as_ref()
+                .unwrap()
+                .bytes_per_row,
+            8
+        );
+
+        for source in [7, 8, 15] {
+            viewer.position = source;
+            viewer.render(&mut terminal, narrow).unwrap();
+            let page = viewer.current_frame().unwrap().hex.as_ref().unwrap();
+            let byte = source % page.bytes_per_row as u64;
+            assert_eq!(
+                terminal.screen().cursor().column,
+                page.geometry.hex_cells[byte as usize].start
+            );
+        }
+
+        viewer.position = 15;
+        viewer.preferred_column = 7;
+        let generation = viewer.generation;
+        viewer.render(&mut terminal, wide).unwrap();
+        let page = viewer.current_frame().unwrap().hex.as_ref().unwrap();
+        assert_eq!(page.bytes_per_row, 16);
+        assert_eq!(viewer.position, 15);
+        assert!(viewer.generation > generation);
+        assert_eq!(viewer.preferred_column, 15);
+        assert_eq!(terminal.screen().cursor().row, 0);
+        assert_eq!(
+            terminal.screen().cursor().column,
+            page.geometry.hex_cells[15].start
+        );
+
+        for source in [7, 8, 15, 16] {
+            viewer.position = source;
+            viewer.render(&mut terminal, wide).unwrap();
+            let page = viewer.current_frame().unwrap().hex.as_ref().unwrap();
+            let row = source / page.bytes_per_row as u64;
+            let byte = source % page.bytes_per_row as u64;
+            assert_eq!(terminal.screen().cursor().row, row as usize);
+            assert_eq!(
+                terminal.screen().cursor().column,
+                page.geometry.hex_cells[byte as usize].start
+            );
+        }
+
+        let very_wide = Size {
+            columns: 112,
+            rows: 4,
+        };
+        viewer.position = 15;
+        viewer.render(&mut terminal, very_wide).unwrap();
+        assert_eq!(
+            viewer
+                .current_frame()
+                .unwrap()
+                .hex
+                .as_ref()
+                .unwrap()
+                .bytes_per_row,
+            24
+        );
+        assert_eq!(viewer.position, 15);
+        viewer.render(&mut terminal, narrow).unwrap();
+        assert_eq!(
+            viewer
+                .current_frame()
+                .unwrap()
+                .hex
+                .as_ref()
+                .unwrap()
+                .bytes_per_row,
+            8
+        );
+        assert_eq!(viewer.position, 15);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_vertical_movement_keeps_preferred_byte_column_on_short_rows() {
+        let path = temp_path("termfold-viewer-hex-preferred");
+        fs::write(&path, (0..10).collect::<Vec<_>>()).unwrap();
+        let size = Size {
+            columns: 48,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+        viewer.position = 5;
+        viewer.preferred_column = 5;
+        viewer.render(&mut terminal, size).unwrap();
+
+        viewer.move_lines(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (9, 5));
+        viewer.move_lines(-1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (5, 5));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_frames_record_cross_row_match_ranges() {
+        let path = temp_path("termfold-viewer-hex-match-geometry");
+        let mut data = (0..32).collect::<Vec<_>>();
+        data[7..10].copy_from_slice(b"abc");
+        fs::write(&path, data).unwrap();
+        let size = Size {
+            columns: 48,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.search("abc", true).unwrap());
+        viewer.render(&mut terminal, size).unwrap();
+
+        let frame = viewer.current_frame().unwrap();
+        assert_eq!(frame.visible_match_ranges, vec![7..10]);
+        assert_eq!(frame.active_match_range, Some(7..10));
 
         fs::remove_file(path).unwrap();
     }

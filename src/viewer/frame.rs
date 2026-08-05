@@ -416,6 +416,18 @@ pub(super) fn build(
             hex: Some(page),
             ..PageFrame::default()
         };
+        if let Some(query) = query {
+            frame.visible_match_ranges =
+                query.visible_matches(source, frame.source_range.clone())?;
+            if let Some(offset) = active_offset {
+                let end = offset.saturating_add(query.len() as u64);
+                let start = max(offset, frame.source_range.start);
+                let end = min(end, frame.source_range.end);
+                if start < end {
+                    frame.active_match_range = Some(start..end);
+                }
+            }
+        }
         if let Some(page) = frame.hex.as_ref() {
             for (row, row_data) in page.rows.iter().enumerate() {
                 for (token, cells) in row_data.hex_cells.iter().enumerate() {
