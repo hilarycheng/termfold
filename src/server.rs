@@ -281,8 +281,8 @@ pub fn run(
         working_directory: context.working_directory().to_owned(),
     }];
     spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
-    let mut viewer_worker = ViewerWorker::spawn()
-        .map_err(|error| format!("cannot start viewer worker: {error}"))?;
+    let mut viewer_worker =
+        ViewerWorker::spawn().map_err(|error| format!("cannot start viewer worker: {error}"))?;
     let viewer_worker_handle = viewer_worker.handle();
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
@@ -1316,8 +1316,10 @@ fn handle_action(
             };
             let result = active_viewer(input).map(|viewer| viewer.search(&query, forward));
             match result {
-                Some(Ok(true)) => defer_viewer_refresh(clients, client_id, input),
-                Some(Ok(false)) => set_status(
+                Some(Ok((true, wrapped))) => {
+                    defer_viewer_refresh(clients, client_id, input, wrapped)
+                }
+                Some(Ok((false, _))) => set_status(
                     clients,
                     client_id,
                     Some(format!(
@@ -1346,8 +1348,10 @@ fn handle_action(
             cancel_active_viewer(input);
             let result = active_viewer(input).map(|viewer| viewer.repeat_search(same_direction));
             match result {
-                Some(Ok(true)) => defer_viewer_refresh(clients, client_id, input),
-                Some(Ok(false)) => set_status(
+                Some(Ok((true, wrapped))) => {
+                    defer_viewer_refresh(clients, client_id, input, wrapped)
+                }
+                Some(Ok((false, _))) => set_status(
                     clients,
                     client_id,
                     Some("no previous viewer search".into()),
@@ -1562,9 +1566,18 @@ fn schedule_viewer_render(viewer_dirty: &mut Option<u64>, client_id: u64) {
     *viewer_dirty = Some(client_id);
 }
 
-fn defer_viewer_refresh(clients: &mut [Client], client_id: u64, input: &mut InputContext<'_>) {
+fn defer_viewer_refresh(
+    clients: &mut [Client],
+    client_id: u64,
+    input: &mut InputContext<'_>,
+    wrapped: bool,
+) {
     schedule_viewer_render(input.viewer_dirty, client_id);
-    set_viewer_status(clients, client_id, input);
+    if wrapped {
+        set_status(clients, client_id, Some("wrapped".into()), input.full_dirty);
+    } else {
+        set_viewer_status(clients, client_id, input);
+    }
 }
 
 fn apply_viewer_results(
@@ -1577,10 +1590,17 @@ fn apply_viewer_results(
 ) {
     let rects = session.pane_rects(pane_area(size));
     for pane in panes {
-        let Some(rect) = rects.iter().find(|(id, _)| *id == pane.id).map(|(_, rect)| rect) else {
+        let Some(rect) = rects
+            .iter()
+            .find(|(id, _)| *id == pane.id)
+            .map(|(_, rect)| rect)
+        else {
             continue;
         };
-        let viewer_size = Size { columns: rect.width, rows: rect.height };
+        let viewer_size = Size {
+            columns: rect.width,
+            rows: rect.height,
+        };
         loop {
             let update = match pane.viewer.as_mut() {
                 Some(viewer) => match viewer.poll(&mut pane.terminal) {
@@ -1948,7 +1968,11 @@ fn open_viewer_at(input: &mut InputContext<'_>, path: PathBuf) -> Result<(), Str
         .find(|candidate| candidate.id == pane)
         .and_then(|candidate| candidate.viewer.as_mut())
         .ok_or_else(|| "viewer pane disappeared".to_owned())
-        .and_then(|viewer| viewer.request_render(pane_size).map_err(|error| error.to_string()));
+        .and_then(|viewer| {
+            viewer
+                .request_render(pane_size)
+                .map_err(|error| error.to_string())
+        });
     if let Err(error) = render_result {
         if let Some(viewer) = input
             .panes
@@ -2597,14 +2621,20 @@ mod tests {
         };
         let mut gate = ViewerGate::default();
         assert!(matches!(
-            gate.accept(ViewerNavigation { intent, client_id: 1 }),
+            gate.accept(ViewerNavigation {
+                intent,
+                client_id: 1
+            }),
             ViewerGateDecision::Dispatch(_)
         ));
         gate.begin(intent);
 
         for _ in 0..100 {
             assert!(matches!(
-                gate.accept(ViewerNavigation { intent, client_id: 1 }),
+                gate.accept(ViewerNavigation {
+                    intent,
+                    client_id: 1
+                }),
                 ViewerGateDecision::Dropped
             ));
         }
@@ -2639,12 +2669,24 @@ mod tests {
         gate.begin(down);
 
         assert!(matches!(
-            gate.accept(ViewerNavigation { intent: up, client_id: 2 }),
+            gate.accept(ViewerNavigation {
+                intent: up,
+                client_id: 2
+            }),
             ViewerGateDecision::Replaced
         ));
-        assert_eq!(gate.replacement, Some(ViewerNavigation { intent: up, client_id: 2 }));
+        assert_eq!(
+            gate.replacement,
+            Some(ViewerNavigation {
+                intent: up,
+                client_id: 2
+            })
+        );
         assert!(matches!(
-            gate.accept(ViewerNavigation { intent: up, client_id: 3 }),
+            gate.accept(ViewerNavigation {
+                intent: up,
+                client_id: 3
+            }),
             ViewerGateDecision::Dropped
         ));
     }
@@ -2661,10 +2703,22 @@ mod tests {
         };
         let mut gate = ViewerGate::default();
         gate.begin(down);
-        gate.accept(ViewerNavigation { intent: up, client_id: 1 });
-        gate.accept(ViewerNavigation { intent: down, client_id: 2 });
+        gate.accept(ViewerNavigation {
+            intent: up,
+            client_id: 1,
+        });
+        gate.accept(ViewerNavigation {
+            intent: down,
+            client_id: 2,
+        });
 
-        assert_eq!(gate.replacement, Some(ViewerNavigation { intent: down, client_id: 2 }));
+        assert_eq!(
+            gate.replacement,
+            Some(ViewerNavigation {
+                intent: down,
+                client_id: 2
+            })
+        );
     }
 
     #[test]
@@ -2679,7 +2733,10 @@ mod tests {
         };
         let mut gate = ViewerGate::default();
         gate.begin(down);
-        gate.accept(ViewerNavigation { intent: up, client_id: 1 });
+        gate.accept(ViewerNavigation {
+            intent: up,
+            client_id: 1,
+        });
         let generation = gate.generation;
 
         gate.cancel();

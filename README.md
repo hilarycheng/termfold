@@ -207,6 +207,8 @@ and one changed-direction replacement. Use `/` for forward search, `?` for rever
 and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
+Visible matches use inverse attributes; the active match is additionally
+underlined, and wrapped searches report `wrapped`.
 
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
 stay with the preceding token, tabs expand to the next eight-cell stop, ASCII

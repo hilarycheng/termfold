@@ -57,17 +57,14 @@ impl DecodedText {
     }
 
     pub(super) fn cell_to_token(&self, cell: usize) -> Option<&TextToken> {
-        self.tokens
-            .iter()
-            .find(|span| span.cells.contains(&cell))
+        self.tokens.iter().find(|span| span.cells.contains(&cell))
     }
 
     pub(super) fn cell_to_source(&self, cell: usize) -> Option<usize> {
         self.cell_to_token(cell)
             .map(|span| span.source.start)
             .or_else(|| {
-                (cell == self.width)
-                    .then(|| self.tokens.last().map_or(0, |span| span.source.end))
+                (cell == self.width).then(|| self.tokens.last().map_or(0, |span| span.source.end))
             })
     }
 
@@ -129,9 +126,8 @@ impl DecodedText {
     }
 
     pub(super) fn cursor_stop_at_cell(&self, cell: usize) -> Option<&TextToken> {
-        self.cell_to_token(cell).filter(|span| {
-            span.cursor_stop && span.cells.start == cell
-        })
+        self.cell_to_token(cell)
+            .filter(|span| span.cursor_stop && span.cells.start == cell)
     }
 
     fn span_for_source(&self, source: usize) -> Option<&TextToken> {

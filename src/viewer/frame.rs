@@ -9,8 +9,9 @@ use crate::session::Size;
 
 use super::{
     line::{LineBoundary, LineScanner, ScanStep},
+    search::SearchQuery,
     source::FileSource,
-    text::{decode, DecodedText},
+    text::{DecodedText, decode},
 };
 
 pub(super) const MAX_FRAME_SOURCE_BYTES: u64 = 256 * 1024;
@@ -83,6 +84,7 @@ pub(super) struct PageFrame {
     pub(super) source_cell_spans: Vec<SourceCellSpan>,
     pub(super) cursor_stops: Vec<CursorStop>,
     pub(super) visible_match_ranges: Vec<Range<u64>>,
+    pub(super) active_match_range: Option<Range<u64>>,
 }
 
 impl PageFrame {
@@ -91,7 +93,82 @@ impl PageFrame {
             return String::new();
         };
         let first = min(horizontal, decoded.width as u64) as usize;
-        decoded.render_cells(first..first.saturating_add(columns))
+        let last = first.saturating_add(columns);
+        if first >= last {
+            return String::new();
+        }
+
+        let styles = self.row_match_styles(row, decoded.tokens.len());
+        let mut segments = Vec::new();
+        let mut position = first;
+        for (token, style) in decoded
+            .tokens
+            .iter()
+            .zip(styles)
+            .filter(|(token, _)| token.cells.end > first && token.cells.start < last)
+        {
+            let start = token.cells.start.max(first);
+            let end = token.cells.end.min(last);
+            if position < start {
+                push_segment(&mut segments, position..start, MatchStyle::None);
+            }
+            push_segment(&mut segments, start..end, style);
+            position = end;
+        }
+        if position < last {
+            push_segment(&mut segments, position..last, MatchStyle::None);
+        }
+
+        let mut rendered = String::new();
+        for (cells, style) in segments {
+            let text = decoded.render_cells(cells);
+            if text.is_empty() {
+                continue;
+            }
+            match style {
+                MatchStyle::None => rendered.push_str(&text),
+                MatchStyle::Ordinary => {
+                    rendered.push_str("\x1b[7m");
+                    rendered.push_str(&text);
+                    rendered.push_str("\x1b[0m");
+                }
+                MatchStyle::Active => {
+                    rendered.push_str("\x1b[7;4m");
+                    rendered.push_str(&text);
+                    rendered.push_str("\x1b[0m");
+                }
+            }
+        }
+        rendered
+    }
+
+    fn row_match_styles(&self, row: usize, token_count: usize) -> Vec<MatchStyle> {
+        let mut styles = vec![MatchStyle::None; token_count];
+        let mut match_index = 0;
+        for span in self.source_cell_spans.iter().filter(|span| span.row == row) {
+            while self
+                .visible_match_ranges
+                .get(match_index)
+                .is_some_and(|range| range.end <= span.source.start)
+            {
+                match_index += 1;
+            }
+            let ordinary = self
+                .visible_match_ranges
+                .get(match_index..)
+                .unwrap_or_default()
+                .iter()
+                .any(|range| range.start < span.source.end && span.source.start < range.end);
+            let active = self.active_match_range.as_ref().is_some_and(|range| {
+                range.start < span.source.end && span.source.start < range.end
+            });
+            if active {
+                styles[span.token] = MatchStyle::Active;
+            } else if ordinary {
+                styles[span.token] = MatchStyle::Ordinary;
+            }
+        }
+        styles
     }
 
     pub(super) fn cursor_row(&self, line: u64) -> Option<usize> {
@@ -126,6 +203,31 @@ impl PageFrame {
             .end
             .saturating_sub(self.source_range.start)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MatchStyle {
+    None,
+    Ordinary,
+    Active,
+}
+
+fn push_segment(
+    segments: &mut Vec<(Range<usize>, MatchStyle)>,
+    range: Range<usize>,
+    style: MatchStyle,
+) {
+    if range.start >= range.end {
+        return;
+    }
+    if let Some((previous, previous_style)) = segments.last_mut()
+        && *previous_style == style
+        && previous.end == range.start
+    {
+        previous.end = range.end;
+        return;
+    }
+    segments.push((range, style));
 }
 
 #[derive(Clone, Debug, Default)]
@@ -403,8 +505,8 @@ pub(super) fn build(
     tab_width: usize,
     viewport: u64,
     rows: usize,
-    matches: &[u64],
-    match_length: Option<usize>,
+    query: Option<&SearchQuery>,
+    active_offset: Option<u64>,
     context: FrameContext,
 ) -> io::Result<PageFrame> {
     let viewport = line_boundary(source, lines, length, viewport)?.start;
@@ -452,13 +554,14 @@ pub(super) fn build(
         position = boundary.next;
     }
 
-    if let Some(match_length) = match_length {
-        for &offset in matches {
-            let end = offset.saturating_add(match_length as u64);
+    if let Some(query) = query {
+        frame.visible_match_ranges = query.visible_matches(source, frame.source_range.clone())?;
+        if let Some(offset) = active_offset {
+            let end = offset.saturating_add(query.len() as u64);
             let start = max(offset, frame.source_range.start);
             let end = min(end, frame.source_range.end);
             if start < end {
-                frame.visible_match_ranges.push(start..end);
+                frame.active_match_range = Some(start..end);
             }
         }
     }

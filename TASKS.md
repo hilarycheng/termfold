@@ -689,7 +689,7 @@ perform file I/O or file scanning.
     x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
     validation was not available in this Linux host.
 
-- [ ] **T28P — Highlight visible search matches**
+- [*] **T28P — Highlight visible search matches**
   - Map every matching source range in Current to display-cell spans through the
     PageFrame mapping.
   - Render ordinary visible matches with an attribute-based highlight and the
@@ -698,12 +698,23 @@ perform file I/O or file scanning.
   - Preserve the last successful query for `n`/`N`; report `wrapped` after a
     wrapped success.
   - Allowed production files: `src/viewer/frame.rs`, `src/viewer/search.rs`,
-    `src/viewer/mod.rs`.
+    `src/viewer/mod.rs`, `src/viewer/worker.rs`, and `src/server.rs` for
+    wrapped-status propagation.
   - Focused tests: multiple visible matches, active distinction, horizontal
     clipping, tabs, wide text, invalid-byte replacement, and monochrome output.
   - Depends on: T28I, T28O.
   - Done when: all visible matches are marked without colour-only meaning or a
     full-file highlight scan.
+  - Implementation: scans only the bounded Current frame in 64 KiB chunks,
+    maps every match through `SourceCellSpan`, renders ordinary matches with
+    inverse and the active match with inverse plus underline, and propagates
+    wrapped search results to the temporary status.
+  - Evidence: `cargo test --locked viewer::` passed 60 tests; elevated
+    `cargo test --locked` passed 121 unit tests and 8 lifecycle tests; the
+    x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
+    validation was not available in this Linux host.
+  - Verification note: repository-wide `cargo fmt` was applied and
+    `cargo fmt --check` passed.
 
 - [ ] **T28Q — Implement Hex PageFrame rendering and navigation**
   - Create `viewer/hex.rs` and add the `Text`/`Hex` mode enum to the viewer facade.

@@ -1,3 +1,7 @@
+use std::{io, ops::Range};
+
+use super::source::{BLOCK_SIZE, FileSource};
+
 const MAX_QUERY_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +61,46 @@ impl SearchQuery {
             Self::Text(_) => query.to_ascii_lowercase() == byte.to_ascii_lowercase(),
             Self::Hex(_) => query == byte,
         }
+    }
+
+    pub(super) fn visible_matches(
+        &self,
+        source: &mut FileSource,
+        visible: Range<u64>,
+    ) -> io::Result<Vec<Range<u64>>> {
+        let query_len = self.len() as u64;
+        let visible = visible.start.min(source.len())..visible.end.min(source.len());
+        if query_len == 0 || visible.start >= visible.end {
+            return Ok(Vec::new());
+        }
+
+        let scan_start = visible.start.saturating_sub(query_len - 1);
+        let candidate_step = BLOCK_SIZE - query_len + 1;
+        let mut candidate_start = scan_start;
+        let mut matches = Vec::new();
+        while candidate_start < visible.end {
+            let candidate_end = candidate_start
+                .saturating_add(candidate_step)
+                .min(visible.end);
+            let read_end = candidate_end
+                .saturating_add(query_len - 1)
+                .min(source.len());
+            let bytes = source.read_range(candidate_start..read_end)?;
+            let candidates = (candidate_end - candidate_start) as usize;
+            for offset in 0..candidates {
+                let end = offset.saturating_add(query_len as usize);
+                if end > bytes.len() || !self.matches_bytes(&bytes[offset..end]) {
+                    continue;
+                }
+                let start = candidate_start + offset as u64;
+                let end = start.saturating_add(query_len);
+                if start < visible.end && end > visible.start {
+                    matches.push(start.max(visible.start)..end.min(visible.end));
+                }
+            }
+            candidate_start = candidate_end;
+        }
+        Ok(matches)
     }
 }
 

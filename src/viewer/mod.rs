@@ -6,10 +6,10 @@ use std::{
 };
 
 use crate::{session::Size, terminal::Terminal};
-mod line;
 mod frame;
-mod source;
+mod line;
 mod search;
+mod source;
 mod text;
 pub(super) mod worker;
 
@@ -34,6 +34,7 @@ pub(super) struct SearchWork {
     query: SearchQuery,
     forward: bool,
     ranges: VecDeque<Range<u64>>,
+    wrap_range: Range<u64>,
     matches: Vec<u64>,
 }
 
@@ -69,6 +70,7 @@ pub struct Viewer {
     visible_columns: usize,
     matches: Vec<u64>,
     search: Option<SearchState>,
+    search_wrapped: bool,
     frames: FrameSlots,
     mode: u8,
     generation: u64,
@@ -95,6 +97,7 @@ impl Viewer {
             visible_columns: 1,
             matches: Vec::new(),
             search: None,
+            search_wrapped: false,
             frames: FrameSlots::default(),
             mode: 0,
             generation: 0,
@@ -252,8 +255,8 @@ impl Viewer {
             self.tab_width,
             viewport,
             usize::from(size.rows),
-            &self.matches,
-            self.search.as_ref().map(|search| search.query.len()),
+            self.search.as_ref().map(|search| &search.query),
+            self.search.as_ref().map(|search| search.offset),
             context,
         )
     }
@@ -505,6 +508,7 @@ impl Viewer {
     }
 
     pub(super) fn begin_search_work(&mut self, input: Vec<u8>, forward: bool) -> SearchStart {
+        self.search_wrapped = false;
         let Ok(query) = SearchQuery::parse(&input) else {
             return SearchStart::Complete(false);
         };
@@ -515,6 +519,7 @@ impl Viewer {
         &mut self,
         same_direction: bool,
     ) -> io::Result<SearchStart> {
+        self.search_wrapped = false;
         let Some(previous) = self.search.clone() else {
             return Ok(SearchStart::Complete(false));
         };
@@ -600,7 +605,7 @@ impl Viewer {
         } else {
             start.saturating_add(1).min(limit)..limit
         };
-        let mut wrapped = subtract_range(wrap, &selected);
+        let mut wrapped = subtract_range(wrap.clone(), &selected);
         order_ranges(&mut wrapped, forward);
         ranges.extend(wrapped);
 
@@ -608,12 +613,14 @@ impl Viewer {
             query,
             forward,
             ranges,
+            wrap_range: wrap,
             matches: Vec::new(),
         })
     }
 
     pub(super) fn step_search_work(&mut self, work: &mut SearchWork) -> io::Result<SearchStep> {
         let Some(range) = work.ranges.front().cloned() else {
+            self.search_wrapped = false;
             return Ok(SearchStep::Complete(false));
         };
         let query_len = work.query.len();
@@ -669,6 +676,7 @@ impl Viewer {
         if let Some(offset) = found {
             self.set_position(offset)?;
             self.matches = std::mem::take(&mut work.matches);
+            self.search_wrapped = work.wrap_range.contains(&offset);
             self.search = Some(SearchState {
                 query: work.query.clone(),
                 forward: work.forward,
@@ -678,10 +686,15 @@ impl Viewer {
             return Ok(SearchStep::Complete(true));
         }
         if work.ranges.is_empty() {
+            self.search_wrapped = false;
             Ok(SearchStep::Complete(false))
         } else {
             Ok(SearchStep::Continue)
         }
+    }
+
+    pub(super) fn search_wrapped(&self) -> bool {
+        self.search_wrapped
     }
 
     fn navigation<T, F>(&mut self, operation: F) -> io::Result<T>
@@ -795,11 +808,7 @@ impl Viewer {
         } else {
             decoded.render_cells(first_cell..first_cell.saturating_add(columns))
         };
-        Ok((
-            line.next,
-            rendered,
-            line.complete,
-        ))
+        Ok((line.next, rendered, line.complete))
     }
 
     fn decode_line(&mut self, line: &LineBoundary) -> io::Result<DecodedText> {
@@ -808,12 +817,7 @@ impl Viewer {
 
     fn line_boundary(&mut self, start: u64) -> io::Result<LineBoundary> {
         let length = self.length();
-        frame::line_boundary(
-            &mut self.source,
-            &mut self.lines,
-            length,
-            start,
-        )
+        frame::line_boundary(&mut self.source, &mut self.lines, length, start)
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
@@ -829,9 +833,7 @@ impl Viewer {
             .or_else(|| decoded.cursor_source_at_cell(0))
             .unwrap_or(0);
         self.position = line.saturating_add(source as u64);
-        self.preferred_column = decoded
-            .cursor_cell_at_source(source)
-            .unwrap_or(0) as u64;
+        self.preferred_column = decoded.cursor_cell_at_source(source).unwrap_or(0) as u64;
         self.adjust_horizontal()?;
         self.ensure_cursor_visible()
     }
@@ -1164,6 +1166,79 @@ mod tests {
         assert_eq!(frame.source_cell_spans.len(), 9);
         assert_eq!(frame.cursor_stops.len(), 9);
         assert_eq!(frame.visible_match_ranges, vec![6..10]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn highlights_all_visible_matches_with_the_active_match_distinct() {
+        let path = temp_path("termfold-viewer-highlights");
+        let mut data = b"a\t\xE7\x95\x8C".to_vec();
+        data.extend_from_slice(&[0xff]);
+        data.extend_from_slice(b"hit hit\n");
+        fs::write(&path, data).unwrap();
+        let size = Size {
+            columns: 32,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.search("hit", true).unwrap());
+        viewer.render(&mut terminal, size).unwrap();
+
+        let frame = viewer.current_frame().expect("current frame");
+        assert_eq!(frame.visible_match_ranges, vec![6..9, 10..13]);
+        assert_eq!(frame.active_match_range, Some(6..9));
+
+        let row = &terminal.screen().rows()[0];
+        assert!(row[14].attributes().inverse);
+        assert!(row[14].attributes().underline);
+        assert!(row[18].attributes().inverse);
+        assert!(!row[18].attributes().underline);
+        assert!(!row[10].attributes().inverse);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn highlights_are_clipped_to_the_horizontal_view() {
+        let path = temp_path("termfold-viewer-highlight-clipping");
+        fs::write(&path, b"0123456789hit\n").unwrap();
+        let size = Size {
+            columns: 4,
+            rows: 2,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(viewer.search("hit", true).unwrap());
+        viewer.horizontal = 10;
+        viewer.render(&mut terminal, size).unwrap();
+
+        let row = &terminal.screen().rows()[0];
+        assert!(row[0].attributes().inverse);
+        assert!(row[0].attributes().underline);
+        assert!(row[2].attributes().inverse);
+        assert!(row[2].attributes().underline);
+        assert!(!row[3].attributes().inverse);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn wrapped_search_sets_the_wrapped_result_flag() {
+        let path = temp_path("termfold-viewer-highlight-wrap");
+        fs::write(&path, b"hit---middle---hit").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.position = 15;
+
+        assert!(viewer.search("hit", true).unwrap());
+        assert!(!viewer.search_wrapped());
+        assert!(viewer.repeat_search(true).unwrap());
+        assert!(viewer.search_wrapped());
 
         fs::remove_file(path).unwrap();
     }
@@ -1804,7 +1879,10 @@ mod tests {
         }
         let cold_elapsed = started.elapsed();
         let cold_reads = viewer.source.block_reads() - initial_reads;
-        assert!(cold_reads <= 2, "cold paging reads including prefetch: {cold_reads}");
+        assert!(
+            cold_reads <= 2,
+            "cold paging reads including prefetch: {cold_reads}"
+        );
         let cold_page = page_bytes(&viewer);
 
         let started = std::time::Instant::now();
