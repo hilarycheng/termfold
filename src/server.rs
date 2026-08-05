@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    fs,
+    env, fs,
     io::{self, Read, Write},
     path::PathBuf,
     sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
@@ -1917,34 +1917,10 @@ fn open_prompt_directory(
         .find(|client| client.id == client_id)
         .and_then(|client| client.viewer_prompt.clone())
         .ok_or_else(|| "viewer prompt is not active".to_owned())?;
-    let absolute = if query.is_empty() {
-        prompt_root(&prompt.directory, separator)
-    } else {
-        prompt_drive_root(&query)
-    };
-    if let Some(directory) = absolute {
-        if !directory.is_dir() {
-            return Err(format!("cannot open directory {}", directory.display()));
-        }
-        if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
-            client.input.set_view_prompt(Vec::new());
-            client.viewer_prompt = Some(ViewerPrompt {
-                directory,
-                query: Vec::new(),
-                filter: Vec::new(),
-                selected: 0,
-            });
-            client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
-        }
-        return Ok(());
+    let directory = resolve_prompt_directory(&prompt, &query, separator, prompt_home_directory())?;
+    if !directory.is_dir() {
+        return Err(format!("cannot open directory {}", directory.display()));
     }
-    if query.is_empty() {
-        return Err("absolute path must start with the native separator".to_owned());
-    }
-    let entries = viewer_entries(&prompt.directory, &prompt.filter);
-    let selected = selected_viewer_entry(&prompt, &entries, &query, true)
-        .ok_or_else(|| "select a matching directory before the path separator".to_owned())?;
-    let directory = prompt.directory.join(&entries[selected].name);
     if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
         client.input.set_view_prompt(Vec::new());
         client.viewer_prompt = Some(ViewerPrompt {
@@ -1956,6 +1932,55 @@ fn open_prompt_directory(
         client.status = client.viewer_prompt.as_ref().map(viewer_prompt_status);
     }
     Ok(())
+}
+
+fn resolve_prompt_directory(
+    prompt: &ViewerPrompt,
+    query: &[u8],
+    separator: u8,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    if query.len() == 2 && query[1] == b':' && !query[0].is_ascii_alphabetic() {
+        return Err("invalid drive root".to_owned());
+    }
+
+    let absolute = if query == b"~" && separator == b'/' {
+        Some(home.ok_or_else(|| "home directory is unavailable".to_owned())?)
+    } else if query.len() == 1 && query[0] == separator {
+        Some(
+            prompt_root(&prompt.directory, separator)
+                .ok_or_else(|| "absolute path must start with the native separator".to_owned())?,
+        )
+    } else {
+        prompt_drive_root(query)
+    };
+    if let Some(directory) = absolute {
+        return Ok(directory);
+    }
+    if query.is_empty() {
+        return Err("absolute path must start with the native separator".to_owned());
+    }
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    let selected = selected_viewer_entry(&prompt, &entries, query, true)
+        .ok_or_else(|| "select a matching directory before the path separator".to_owned())?;
+    Ok(prompt.directory.join(&entries[selected].name))
+}
+
+fn prompt_home_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let home = env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let mut home = PathBuf::from(env::var_os("HOMEDRIVE")?);
+            home.push(env::var_os("HOMEPATH")?);
+            Some(home.into_os_string())
+        });
+
+    #[cfg(not(windows))]
+    let home = env::var_os("HOME").filter(|value| !value.is_empty());
+
+    home.map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 #[cfg(windows)]
@@ -3018,6 +3043,65 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn viewer_prompt_ido_resolves_linux_root_and_home() {
+        let prompt = ViewerPrompt {
+            directory: std::env::current_dir().unwrap(),
+            query: Vec::new(),
+            filter: Vec::new(),
+            selected: 0,
+        };
+        let home = prompt.directory.clone();
+
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"/", b'/', Some(home.clone())).unwrap(),
+            PathBuf::from("/")
+        );
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"~", b'/', Some(home.clone())).unwrap(),
+            home
+        );
+    }
+
+    #[test]
+    fn viewer_prompt_ido_errors_preserve_editable_state_and_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "termfold-viewer-ido-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let marker = directory.join("marker");
+        fs::write(&marker, b"unchanged").unwrap();
+        let prompt = ViewerPrompt {
+            directory: directory.clone(),
+            query: b"keep".to_vec(),
+            filter: b"keep".to_vec(),
+            selected: 3,
+        };
+        let before = prompt.clone();
+
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"~", b'/', None),
+            Err("home directory is unavailable".to_owned())
+        );
+        assert!(
+            resolve_prompt_directory(&prompt, b"~text", b'/', Some(directory.clone())).is_err()
+        );
+        assert_eq!(prompt.directory, before.directory);
+        assert_eq!(prompt.query, before.query);
+        assert_eq!(prompt.filter, before.filter);
+        assert_eq!(prompt.selected, before.selected);
+        assert_eq!(fs::read(&marker).unwrap(), b"unchanged");
+
+        fs::remove_file(marker).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn viewer_prompt_root_uses_windows_drive_and_separators() {
@@ -3025,5 +3109,36 @@ mod tests {
         assert_eq!(prompt_root(&directory, b'\\'), Some(PathBuf::from("C:\\")));
         assert_eq!(prompt_root(&directory, b'/'), Some(PathBuf::from("C:\\")));
         assert_eq!(prompt_drive_root(b"C:"), Some(PathBuf::from("C:\\")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn viewer_prompt_ido_resolves_windows_roots_and_rejects_invalid_drives() {
+        let directory = std::env::current_dir().unwrap();
+        let root = prompt_root(&directory, b'/').unwrap();
+        let prompt = ViewerPrompt {
+            directory,
+            query: Vec::new(),
+            filter: Vec::new(),
+            selected: 0,
+        };
+
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"/", b'/', Some(root.clone())).unwrap(),
+            root
+        );
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"\\", b'\\', Some(root.clone())).unwrap(),
+            root
+        );
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"C:", b'/', Some(root.clone())).unwrap(),
+            PathBuf::from("C:\\")
+        );
+        assert_eq!(
+            resolve_prompt_directory(&prompt, b"C:", b'\\', Some(root.clone())).unwrap(),
+            PathBuf::from("C:\\")
+        );
+        assert!(resolve_prompt_directory(&prompt, b"1:", b'/', Some(root)).is_err());
     }
 }

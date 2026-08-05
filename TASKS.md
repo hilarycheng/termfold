@@ -1488,12 +1488,12 @@ Rules for every T30 implementation request:
     evidence; native Windows tests and the MSVC release build remain blocked here
     because `link.exe` and a native Windows runtime are unavailable.
 
-- [ ] **T30D — Resolve Ido root and Home paths atomically**
+- [x] **T30D — Resolve Ido root and Home paths atomically**
   - Recommended model: Luna xHigh.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Resolve Linux `//` to `/` and portable `~/` to the current user's Home using
     standard-library and platform environment data only.
@@ -1513,6 +1513,18 @@ Rules for every T30 implementation request:
     normalization, root-parent behaviour, and absence of shell expansion.
   - Done when: every approved Ido path form is deterministic on its native
     platform and every rejected form preserves prompt state.
+  - Evidence (2026-08-05): `src/server.rs` resolves exact Linux root, Windows
+    current-drive and named-drive roots, and `~/` from validated standard-library
+    environment data before committing prompt state; invalid, missing, and
+    non-directory destinations leave the existing state unchanged. Focused Linux
+    tests (`cargo test --locked viewer_prompt`) passed 6/6, formatting and diff
+    checks passed, and `cargo build --release --locked --target
+    x86_64-unknown-linux-musl` produced a static PIE executable; `file` and `ldd`
+    confirmed static linking. `cargo check --locked --target
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
+    compile-only evidence. Native Windows tests and the MSVC release build
+    remain blocked because this environment has no native Windows runtime or
+    `link.exe`.
 
 - [ ] **T30E — Anchor `n` and `N` at the current Viewer cursor**
   - Recommended model: Luna xHigh.
