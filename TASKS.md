@@ -1110,7 +1110,7 @@ Rules for every T29 implementation request:
     interval. The approved `cargo build --release --locked
     --target x86_64-unknown-linux-musl` passed.
 
-- [ ] **T29I — Remove neighbour prefetch from the visible-frame critical path**
+- [*] **T29I — Remove neighbour prefetch from the visible-frame critical path**
   - Recommended model: Luna Max.
   - Return and commit a completed `Current` frame before performing any optional
     Previous/Next prefetch work.
@@ -1131,6 +1131,15 @@ Rules for every T29 implementation request:
     priority, command-queue checks, and all prefetch call sites.
   - Done when: optional neighbour preparation contributes no latency to delivery
     of the requested visible page.
+  - Implementation: removed synchronous Previous/Next prefetch from `Viewer::render`.
+    The requested `Current` frame is committed and returned without optional file
+    work; the existing bounded three-slot ownership and rotation checks remain.
+    Active prefetch is intentionally disabled pending a lower-priority worker path.
+  - Evidence (2026-08-05): `cargo fmt --check` and `cargo test --locked viewer --no-fail-fast
+    -- --test-threads=1` passed with 97 tests, including the new current-before-
+    prefetch regression and existing frame rotation, invalid-neighbour,
+    cancellation, resize, and bounded-cache coverage. The approved
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
 
 - [ ] **T29J — Combine page navigation and visible rendering safely**
   - Recommended model: Luna Max.

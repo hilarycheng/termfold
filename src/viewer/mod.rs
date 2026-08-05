@@ -300,9 +300,7 @@ impl Viewer {
             );
             terminal.advance(format!("\x1b[{row};{column}H").as_bytes());
 
-            if direction.is_some() {
-                self.prefetch_neighbour(size, direction.unwrap_or(true));
-            }
+            // ponytail: neighbour prefetch is disabled; add bounded low-priority work if cold-page latency matters.
             Ok(())
         })();
         if result.is_err() {
@@ -355,76 +353,6 @@ impl Viewer {
             ));
         }
         Ok(())
-    }
-
-    fn prefetch_neighbour(&mut self, size: Size, forward: bool) {
-        if self.mode == ViewerMode::Hex {
-            self.prefetch_hex_neighbour(size, forward);
-            return;
-        }
-        let Some(current_start) = self.current_frame().map(|frame| frame.key.source_start) else {
-            return;
-        };
-        let steps = usize::from(size.rows.saturating_sub(2).max(1));
-        let mut start = current_start;
-        for _ in 0..steps {
-            let next = if forward {
-                self.next_line(start)
-            } else {
-                self.previous_line(start)
-            };
-            let Ok(next) = next else {
-                return;
-            };
-            if (forward && next <= start) || (!forward && next >= start) {
-                return;
-            }
-            start = next;
-        }
-        if (forward && start >= self.length()) || (!forward && start == current_start) {
-            return;
-        }
-
-        let context = self.frame_context(size);
-        if self
-            .frames
-            .neighbour_matches(FrameKey::new(context, start), forward)
-        {
-            return;
-        }
-        let Ok(frame) = self.build_page_at(start, context) else {
-            return;
-        };
-        if frame.key.source_start == start {
-            self.frames.insert_neighbour(frame, forward);
-        }
-    }
-
-    fn prefetch_hex_neighbour(&mut self, size: Size, forward: bool) {
-        let Some(current_start) = self.current_frame().map(|frame| frame.key.source_start) else {
-            return;
-        };
-        let width = bytes_per_row(usize::from(size.columns)).max(1) as u64;
-        let rows = u64::from(size.rows.saturating_sub(2).max(1));
-        let distance = width.saturating_mul(rows);
-        let start = if forward {
-            current_start.saturating_add(distance)
-        } else {
-            current_start.saturating_sub(distance)
-        };
-        if (forward && start >= self.length()) || (!forward && start >= current_start) {
-            return;
-        }
-        let context = self.frame_context(size);
-        if self
-            .frames
-            .neighbour_matches(FrameKey::new(context, start), forward)
-        {
-            return;
-        }
-        if let Ok(frame) = self.build_page_at(start, context) {
-            self.frames.insert_neighbour(frame, forward);
-        }
     }
 
     pub fn move_lines(&mut self, amount: i32) -> io::Result<()> {
@@ -2273,6 +2201,26 @@ mod tests {
             "block accesses: {}",
             viewer.source.block_accesses()
         );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn page_render_commits_current_without_prefetching_a_neighbour() {
+        let path = temp_path("termfold-viewer-no-prefetch");
+        fs::write(&path, b"one\ntwo\nthree\nfour\n").unwrap();
+        let size = Size {
+            columns: 16,
+            rows: 1,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        viewer.render(&mut terminal, size).unwrap();
+        assert_eq!(viewer.frames.count(), 1);
+        viewer.page(size.rows, true).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        assert_eq!(viewer.frames.count(), 2);
 
         fs::remove_file(path).unwrap();
     }

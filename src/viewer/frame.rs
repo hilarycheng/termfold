@@ -362,6 +362,7 @@ impl FrameSlots {
         self.current = Some(frame);
     }
 
+    #[cfg(test)]
     pub(super) fn insert_neighbour(&mut self, frame: PageFrame, forward: bool) -> bool {
         if self.context != Some(frame.key.context)
             || !self
