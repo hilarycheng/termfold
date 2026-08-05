@@ -79,7 +79,7 @@ enum Mode {
     ConfirmClose(bool),
     Filename(Vec<u8>),
     Resize(Vec<u8>),
-    Help(Vec<u8>),
+    Help(Vec<u8>, bool),
     Scroll(Vec<u8>),
     Search(Vec<u8>),
     ViewPrompt(Vec<u8>, bool),
@@ -183,7 +183,7 @@ impl Input {
                     self.mode,
                     Mode::Resize(_)
                         | Mode::Scroll(_)
-                        | Mode::Help(_)
+                        | Mode::Help(_, _)
                         | Mode::Search(_)
                         | Mode::ViewPrompt(_, _)
                         | Mode::Viewer(_)
@@ -229,8 +229,12 @@ impl Input {
                     self.mode = Mode::Normal;
                     vec![Action::ExitScrollView]
                 }
-                Mode::Help(_) => {
-                    self.mode = Mode::Normal;
+                Mode::Help(_, return_viewer) => {
+                    self.mode = if return_viewer {
+                        Mode::Viewer(Vec::new())
+                    } else {
+                        Mode::Normal
+                    };
                     vec![Action::ExitHelpView]
                 }
                 Mode::Search(_) => {
@@ -274,7 +278,7 @@ impl Input {
                 self.mode,
                 Mode::Resize(_)
                     | Mode::Scroll(_)
-                    | Mode::Help(_)
+                    | Mode::Help(_, _)
                     | Mode::Search(_)
                     | Mode::ViewPrompt(_, _)
                     | Mode::Viewer(_)
@@ -303,6 +307,11 @@ impl Input {
                 actions.push(Action::ViewPrompt(true));
                 return;
             }
+            if byte == b'?' {
+                self.mode = Mode::Help(Vec::new(), true);
+                actions.push(Action::HelpView);
+                return;
+            }
             actions.push(Action::ViewerPage(false));
             self.advance_byte(byte, actions, forwarded);
             return;
@@ -329,7 +338,7 @@ impl Input {
                         [b'x'] => Mode::ConfirmClose(false),
                         [b'S'] => Mode::Filename(Vec::new()),
                         [b'r'] => Mode::Resize(Vec::new()),
-                        [b'?'] => Mode::Help(Vec::new()),
+                        [b'?'] => Mode::Help(Vec::new(), false),
                         [b'['] => Mode::Scroll(Vec::new()),
                         [b'v' | b'V'] => Mode::ViewPrompt(Vec::new(), false),
                         _ => Mode::Normal,
@@ -395,7 +404,7 @@ impl Input {
                     }
                 }
             }
-            Mode::Help(sequence) => {
+            Mode::Help(sequence, return_viewer) => {
                 sequence.push(byte);
                 let action = match sequence.as_slice() {
                     [b'q' | 3] => Some(Action::ExitHelpView),
@@ -410,7 +419,11 @@ impl Input {
                 };
                 if let Some(action) = action {
                     if matches!(action, Action::ExitHelpView) {
-                        self.mode = Mode::Normal;
+                        self.mode = if *return_viewer {
+                            Mode::Viewer(Vec::new())
+                        } else {
+                            Mode::Normal
+                        };
                     } else {
                         sequence.clear();
                     }
@@ -1150,6 +1163,23 @@ mod tests {
         assert!(input.advance(b"\x1b").is_empty());
         input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
         assert_eq!(input.flush_pending_mouse(), vec![Action::ExitHelpView]);
+    }
+
+    #[test]
+    fn viewer_help_has_no_side_effect_and_returns_to_viewer() {
+        let mut input = Input::new(1, false);
+        input.enter_viewer();
+
+        assert_eq!(input.advance(b"\x01?"), vec![Action::HelpView]);
+        assert!(matches!(input.mode, Mode::Help(_, true)));
+        assert_eq!(input.advance(b"q"), vec![Action::ExitHelpView]);
+        assert!(matches!(input.mode, Mode::Viewer(_)));
+
+        assert_eq!(input.advance(b"\x01?"), vec![Action::HelpView]);
+        assert!(input.advance(b"\x1b").is_empty());
+        input.pending_since = Some(Instant::now() - ESCAPE_SEQUENCE_TIMEOUT);
+        assert_eq!(input.flush_pending_mouse(), vec![Action::ExitHelpView]);
+        assert!(matches!(input.mode, Mode::Viewer(_)));
     }
 
     #[test]

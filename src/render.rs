@@ -251,6 +251,14 @@ fn help_lines(prefix: u8) -> Vec<String> {
         format!("{prefix} S            = Save retained scrollback"),
         format!("{prefix} ?            = Show this key reminder"),
         String::new(),
+        "Viewer: j/k or Up/Down = line; h/l or Left/Right = horizontal".to_string(),
+        "Home/End or 0/$ = line ends; gg/G or Ctrl-Home/End = file ends".to_string(),
+        "Page Up/Down or Ctrl-b/f = page; Ctrl-u/d = half page; Ctrl-y/e = viewport".to_string(),
+        "H = toggle Text/Hex; / and ? = forward/reverse search; n/N = repeat".to_string(),
+        "Hex search: normal text is ASCII case-insensitive".to_string(),
+        "Hex search: hex:00 FF 1B = exact byte syntax".to_string(),
+        format!("{prefix} ? = Help from Viewer; {prefix} x then y = close Viewer"),
+        String::new(),
         "Help: Up/Down or k/j = line, Page Up/Page Down = page, q/Esc = exit".to_string(),
     ]
     .into()
@@ -1315,6 +1323,9 @@ mod tests {
         assert!(output.contains("= Create tab"));
         assert!(output.contains("HELP 1/3"));
         assert!(help_max_offset(8, 1) > 0);
+        let help = help_lines(1).join("\n");
+        assert!(help.contains("Ctrl-a ? = Help from Viewer"));
+        assert!(help.contains("hex:00 FF 1B"));
     }
 
     #[test]

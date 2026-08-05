@@ -1047,7 +1047,7 @@ Rules for every T29 implementation request:
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
 
-- [ ] **T29G — Make Viewer Help complete and return-safe**
+- [*] **T29G — Make Viewer Help complete and return-safe**
   - Recommended model: Luna High.
   - Make configured-prefix `?` open Help from Viewer mode without first executing
     the viewer prefix's Page Up fallback or the viewer's reverse-search action.
@@ -1065,6 +1065,15 @@ Rules for every T29 implementation request:
   - Depends on: T29E.
   - Done when: Help accurately describes the implemented viewer and exits to its
     exact calling mode without changing viewer state.
+  - Implementation: made configured-prefix `?` a direct Viewer-to-Help transition,
+    retained the Help origin in input state for `q`, `Ctrl-c`, and `Esc`, and added
+    the complete viewer navigation, search, Hex syntax, Help, and close reminders.
+  - Evidence (2026-08-05): `cargo fmt --check`,
+    `cargo test --locked viewer --no-fail-fast -- --test-threads=1` (92 passed),
+    `cargo test --locked render::tests::help_uses_the_configured_prefix_and_pages
+    -- --exact` (1 passed),
+    and `cargo build --release --locked --target x86_64-unknown-linux-musl`
+    passed.
 
 - [ ] **T29H — Wake the Session Server on Viewer Worker results**
   - Recommended model: Luna Max.
