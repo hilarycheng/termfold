@@ -967,7 +967,7 @@ Rules for every T29 implementation request:
     had 137 passing tests and one unrelated runtime socket test failed with
     sandbox `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
-- [ ] **T29D — Implement horizontal viewer cursor primitives**
+- [*] **T29D — Implement horizontal viewer cursor primitives**
   - Recommended model: Luna High.
   - In Text mode, implement previous/next valid display-token movement within the
     current logical line. Stop at line boundaries and never wrap to another line.
@@ -985,6 +985,15 @@ Rules for every T29 implementation request:
   - Depends on: T29A.
   - Done when: direct core calls report valid source offsets and display cells for
     every Text and Hex case without changing worker or input semantics.
+  - Implementation: added `Viewer::move_horizontal`; Text movement follows the
+    decoder's valid cursor-token starts and Hex movement clamps source-byte
+    offsets while updating preferred cells and viewport visibility.
+  - Evidence (2026-08-05): `cargo fmt --check`, focused horizontal movement test,
+    `cargo test --locked viewer --no-fail-fast` (87 passed), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    Full `cargo test --locked --no-fail-fast` had 138 passing tests; one runtime
+    socket test and eight lifecycle tests were blocked by sandbox
+    `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
 - [ ] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
   - Recommended model: Luna Max.

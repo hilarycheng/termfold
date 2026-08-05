@@ -201,6 +201,8 @@ preferred column when possible, and scroll the viewport only when the cursor
 approaches an edge. Home/End or `0`/`$` move within the current line; `gg`/`G`
 or Ctrl-Home/Ctrl-End move to the file start/end. End and `$` stop at the start
 of the last visible token; empty lines use column zero. Page Up/Page Down and
+Left/Right Arrow or `h`/`l` move between valid display tokens within the current
+line in Text mode; in Hex mode they move by one source byte and may cross rows.
 Ctrl-f/Ctrl-b move by one page; Ctrl-u/Ctrl-d move by half a page; Ctrl-e/Ctrl-y
 scroll the viewport by one line without moving the cursor. A page is the visible
 viewer height minus two rows. Repeated page input keeps at most one page in flight

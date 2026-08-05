@@ -432,6 +432,42 @@ impl Viewer {
         self.navigation(|viewer| viewer.move_lines_inner(amount))
     }
 
+    #[allow(dead_code)]
+    pub fn move_horizontal(&mut self, amount: i32) -> io::Result<()> {
+        self.navigation(|viewer| {
+            if viewer.mode == ViewerMode::Hex {
+                return viewer.move_hex_bytes(amount);
+            }
+            viewer.move_text_tokens(amount)
+        })
+    }
+
+    #[allow(dead_code)]
+    fn move_text_tokens(&mut self, amount: i32) -> io::Result<()> {
+        let line = self.line_start_at(self.position)?;
+        let boundary = self.line_boundary(line)?;
+        let decoded = self.decode_line(&boundary)?;
+        let source = self
+            .position
+            .saturating_sub(line)
+            .min(boundary.content_end.saturating_sub(line)) as usize;
+        let mut token = decoded.cursor_source_at_source(source).unwrap_or(0);
+        let steps = amount.unsigned_abs() as usize;
+        for _ in 0..steps {
+            let next = if amount < 0 {
+                decoded.previous_cursor_stop(token)
+            } else {
+                decoded.next_cursor_stop(token)
+            };
+            let Some(next) = next else { break };
+            token = next.source.start;
+        }
+        self.position = line.saturating_add(token as u64);
+        self.preferred_column = decoded.cursor_cell_at_source(token).unwrap_or(0) as u64;
+        self.adjust_horizontal()?;
+        self.ensure_cursor_visible()
+    }
+
     fn move_lines_inner(&mut self, amount: i32) -> io::Result<()> {
         let current_line = self.line_start_at(self.position)?;
         let preferred = self
@@ -528,6 +564,29 @@ impl Viewer {
             .saturating_add(preferred)
             .min(self.length() - 1);
         self.preferred_column = self.position % width;
+        self.ensure_cursor_visible()
+    }
+
+    #[allow(dead_code)]
+    fn move_hex_bytes(&mut self, amount: i32) -> io::Result<()> {
+        if self.length() == 0 {
+            self.position = 0;
+            self.viewport = 0;
+            self.preferred_column = 0;
+            return Ok(());
+        }
+        let last = self.length() - 1;
+        self.position = if amount < 0 {
+            self.position
+                .min(last)
+                .saturating_sub(amount.unsigned_abs() as u64)
+        } else {
+            self.position
+                .min(last)
+                .saturating_add(amount as u64)
+                .min(last)
+        };
+        self.preferred_column = self.position % self.hex_width();
         self.ensure_cursor_visible()
     }
 
@@ -1766,6 +1825,40 @@ mod tests {
         viewer.move_lines(1).unwrap();
         assert_eq!(viewer.position, 17);
         assert_eq!(viewer.cursor_cell(17, viewer.position).unwrap(), 0);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn horizontal_movement_uses_text_tokens_and_hex_bytes() {
+        let path = temp_path("termfold-viewer-horizontal");
+        fs::write(&path, "a\t界e\u{301}x\nlast\n01234567890123456789").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 4).unwrap();
+
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (1, 1));
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (2, 4));
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (5, 6));
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (8, 7));
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (8, 7));
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (8, 7));
+        viewer.move_horizontal(-10).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (0, 0));
+
+        viewer.mode = ViewerMode::Hex;
+        viewer.visible_columns = 80;
+        viewer.position = 15;
+        viewer.move_horizontal(1).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (16, 0));
+        viewer.move_horizontal(-100).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (0, 0));
+        viewer.move_horizontal(100).unwrap();
+        assert_eq!((viewer.position, viewer.preferred_column), (34, 2));
 
         fs::remove_file(path).unwrap();
     }

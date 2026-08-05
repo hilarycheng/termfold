@@ -130,6 +130,21 @@ impl DecodedText {
             .filter(|span| span.cursor_stop && span.cells.start == cell)
     }
 
+    #[allow(dead_code)]
+    pub(super) fn next_cursor_stop(&self, source: usize) -> Option<&TextToken> {
+        self.tokens
+            .iter()
+            .find(|token| token.cursor_stop && token.source.start > source)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn previous_cursor_stop(&self, source: usize) -> Option<&TextToken> {
+        self.tokens
+            .iter()
+            .rev()
+            .find(|token| token.cursor_stop && token.source.start < source)
+    }
+
     fn span_for_source(&self, source: usize) -> Option<&TextToken> {
         self.tokens
             .iter()
