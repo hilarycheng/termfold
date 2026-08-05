@@ -1608,12 +1608,12 @@ Rules for every T30 implementation request:
     evidence. Native Windows runtime tests and the MSVC release build remain
     blocked because this environment has no native Windows runtime or `link.exe`.
 
-- [ ] **T30G — Build width-derived Hex row geometry**
+- [x] **T30G — Build width-derived Hex row geometry**
   - Recommended model: Luna xHigh.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Replace the fixed 16/8/4 width thresholds with one geometry calculation that
     selects the greatest fitting eight-byte multiple, falling back to four bytes
@@ -1632,6 +1632,18 @@ Rules for every T30 implementation request:
   - Depends on: T30B.
   - Done when: every rendered row and stored cell range comes from one bounded
     geometry that fully fits the pane width.
+  - Implementation: added one snapshot-wide Hex geometry for offset width,
+    dynamic eight-byte grouping, four-byte fallback, separators, explicit Hex
+    cells, and ASCII placement. Short rows pad only the Hex area, and partial
+    rows carry across raw-block reads so 24-byte layouts remain source-aligned.
+  - Evidence (2026-08-05): `cargo fmt --check`, focused Hex tests (9/9), and
+    the Linux musl release build passed. `cargo check --locked --tests
+    --target x86_64-pc-windows-msvc` passed as compile-only evidence. A full
+    filtered Viewer run reached 88/89 because the existing timing-sensitive
+    `mode_switch_preempts_async_search` test missed its stale result; that test
+    passed in isolation. Native Windows runtime tests and the MSVC release
+    build remain blocked because this environment has no native Windows runtime
+    or `link.exe`.
 
 - [ ] **T30H — Apply Hex geometry to cursor, highlight, paging, and resize**
   - Recommended model: Luna Max.

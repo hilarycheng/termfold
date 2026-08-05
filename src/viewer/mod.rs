@@ -1397,7 +1397,7 @@ mod tests {
         assert_eq!(frame.cursor_stops.len(), 40);
         assert_eq!(
             page.render_row(0),
-            "00000000  00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  ................"
+            "00000000  00 01 02 03 04 05 06 07 │ 08 09 0A 0B 0C 0D 0E 0F  ................"
         );
 
         viewer.move_lines(1).unwrap();
