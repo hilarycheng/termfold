@@ -961,6 +961,46 @@ mod tests {
     }
 
     #[test]
+    fn literal_tilde_viewer_prompt_inputs_remain_active() {
+        let mut input = Input::new(2, false);
+        assert_eq!(input.advance(b"\x02v"), vec![Action::ViewPrompt(false)]);
+
+        for path in [b"~".as_slice(), b"prefix~".as_slice()] {
+            input.set_view_prompt(path.to_vec());
+            assert_eq!(
+                input.advance(b"/"),
+                vec![Action::ViewDirectory {
+                    query: path.to_vec(),
+                    separator: b'/',
+                }]
+            );
+            input.set_view_prompt(path.to_vec());
+            assert_eq!(
+                input.advance(b"\\"),
+                vec![Action::ViewDirectory {
+                    query: path.to_vec(),
+                    separator: b'\\',
+                }]
+            );
+            input.set_view_prompt(path.to_vec());
+            assert_eq!(
+                input.advance(b"\r"),
+                vec![Action::OpenViewer(path.to_vec())]
+            );
+            input.set_view_prompt(path.to_vec());
+            assert_eq!(
+                input.advance(b"\t"),
+                vec![Action::ViewComplete(path.to_vec())]
+            );
+            input.set_view_prompt(path.to_vec());
+            assert_eq!(
+                input.advance(b"\x08"),
+                vec![Action::ViewQuery(path[..path.len() - 1].to_vec(),)]
+            );
+        }
+    }
+
+    #[test]
     fn viewer_uses_vim_navigation_and_prefix_kill() {
         let mut input = Input::new(2, false);
         input.enter_viewer();

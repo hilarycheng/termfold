@@ -941,7 +941,7 @@ Rules for every T29 implementation request:
     Full `cargo test --locked` had 135 passing tests and one unrelated runtime
     socket test failed with sandbox `Operation not permitted`.
 
-- [ ] **T29C — Prevent literal-tilde path-prompt crashes**
+- [*] **T29C — Prevent literal-tilde path-prompt crashes**
   - Recommended model: Luna High.
   - First add a focused reproduction for entering literal `~` in an empty and a
     non-empty viewer path prompt; identify whether failure occurs in input,
@@ -958,6 +958,14 @@ Rules for every T29 implementation request:
   - Depends on: T29A.
   - Done when: every tilde path-prompt case is non-panicking and deterministic,
     without adding shell expansion or an external helper.
+  - Correction: centralized prompt-entry selection returns no entry before any
+    selected-index modulo when filtering produces no matches. This keeps Enter
+    and separator errors actionable while leaving the prompt active.
+  - Evidence (2026-08-05): `cargo fmt --check`, focused tilde/input and
+    `viewer_prompt` tests, and `cargo build --release --locked
+    --target x86_64-unknown-linux-musl` passed. Full `cargo test --locked`
+    had 137 passing tests and one unrelated runtime socket test failed with
+    sandbox `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
 - [ ] **T29D — Implement horizontal viewer cursor primitives**
   - Recommended model: Luna High.

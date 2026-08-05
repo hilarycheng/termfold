@@ -1881,6 +1881,24 @@ fn complete_viewer_entry(prompt: &mut ViewerPrompt) -> Result<Vec<u8>, String> {
     Ok(prompt.query.clone())
 }
 
+fn selected_viewer_entry(
+    prompt: &ViewerPrompt,
+    entries: &[ViewerEntry],
+    query: &[u8],
+    directory_only: bool,
+) -> Option<usize> {
+    if entries.is_empty() {
+        return None;
+    }
+    entries
+        .iter()
+        .position(|entry| (!directory_only || entry.directory) && entry.name.as_bytes() == query)
+        .or_else(|| {
+            let selected = prompt.selected % entries.len();
+            (!directory_only || entries[selected].directory).then_some(selected)
+        })
+}
+
 fn open_prompt_directory(
     clients: &mut [Client],
     client_id: u64,
@@ -1917,14 +1935,7 @@ fn open_prompt_directory(
         return Err("absolute path must start with the native separator".to_owned());
     }
     let entries = viewer_entries(&prompt.directory, &prompt.filter);
-    let selected = entries
-        .iter()
-        .position(|entry| entry.directory && entry.name.as_bytes() == query.as_slice())
-        .or_else(|| {
-            (!entries.is_empty())
-                .then_some(prompt.selected % entries.len())
-                .filter(|index| entries[*index].directory)
-        })
+    let selected = selected_viewer_entry(&prompt, &entries, &query, true)
         .ok_or_else(|| "select a matching directory before the path separator".to_owned())?;
     let directory = prompt.directory.join(&entries[selected].name);
     if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
@@ -2095,10 +2106,7 @@ fn open_prompt_viewer(
         .and_then(|client| client.viewer_prompt.clone())
         .ok_or_else(|| "viewer prompt is not active".to_owned())?;
     let entries = viewer_entries(&prompt.directory, &prompt.filter);
-    let selected = entries
-        .iter()
-        .position(|entry| entry.name.as_bytes() == query.as_slice())
-        .or_else(|| (!entries.is_empty()).then_some(prompt.selected % entries.len()))
+    let selected = selected_viewer_entry(&prompt, &entries, &query, false)
         .ok_or_else(|| "no matching file or directory".to_owned())?;
     let target = prompt.directory.join(&entries[selected].name);
     if entries[selected].directory {
@@ -2945,6 +2953,25 @@ mod tests {
         assert_eq!(prompt.selected, 1);
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn empty_tilde_prompt_has_no_selected_entry() {
+        for query in [
+            b"~".as_slice(),
+            b"prefix~".as_slice(),
+            b"~/".as_slice(),
+            b"~\\".as_slice(),
+        ] {
+            let prompt = ViewerPrompt {
+                directory: PathBuf::from("/definitely/missing"),
+                query: query.to_vec(),
+                filter: query.to_vec(),
+                selected: 0,
+            };
+            assert_eq!(selected_viewer_entry(&prompt, &[], query, false), None);
+            assert_eq!(selected_viewer_entry(&prompt, &[], query, true), None);
+        }
     }
 
     #[cfg(windows)]

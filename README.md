@@ -188,8 +188,9 @@ directory. Type to filter, press `Tab` to complete or cycle matches, press
 `Enter` to enter a directory or open a file, and press `Backspace` on an empty
 filter to move to the parent directory. `/` and `\` process directory
 separators; `/` starts a Linux absolute path, while `C:\` and `C:/` start a
-Windows drive-root path. `Esc` or `Ctrl-c` cancels invalid paths without
-closing the prompt.
+Windows drive-root path. A literal `~` remains filter text and is never
+shell-expanded. Invalid selections show a short error and keep the prompt
+active; `Esc` or `Ctrl-c` cancels it.
 
 The viewer reads fixed-size blocks and keeps only the visible page, a small block
 cache, and bounded search offsets. Each open uses a fixed file snapshot; later
