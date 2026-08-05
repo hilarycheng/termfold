@@ -1023,7 +1023,7 @@ Rules for every T29 implementation request:
     `server.rs` retains no viewer file I/O; horizontal navigation uses the
     existing search cancellation, generation, and stale-result paths.
 
-- [ ] **T29F — Remove the phantom row above the status bar**
+- [*] **T29F — Remove the phantom row above the status bar**
   - Recommended model: Luna High.
   - Render each viewer row without causing the virtual terminal to scroll after
     the final pane-content row.
@@ -1039,6 +1039,13 @@ Rules for every T29 implementation request:
   - Depends on: T29A.
   - Done when: Text and Hex views never retain a permanent blank content row above
     the status bar and cursor placement remains correct.
+  - Implementation: render line endings only between viewer rows, so the final
+    pane-content row cannot trigger virtual-terminal scrolling. Added focused
+    text, Hex, full-width, empty, short, narrow-Hex, and resize regressions.
+  - Evidence (2026-08-05): `cargo fmt --check`,
+    `cargo test --locked viewer --no-fail-fast -- --test-threads=1` (91 passed),
+    and `cargo build --release --locked --target x86_64-unknown-linux-musl`
+    passed.
 
 - [ ] **T29G — Make Viewer Help complete and return-safe**
   - Recommended model: Luna High.

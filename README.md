@@ -210,6 +210,8 @@ and one changed-direction replacement. Use `/` for forward search, `?` for rever
 and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
+The viewer uses every pane-content row directly above the status bar, including
+when the final line fills the terminal width or ends with a newline.
 Visible matches use inverse attributes; the active match is additionally
 underlined, and wrapped searches report `wrapped`.
 Press `H` to toggle between Text and Hex mode without reopening the file; the

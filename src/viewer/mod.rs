@@ -290,7 +290,9 @@ impl Viewer {
             };
             for row in 0..row_count {
                 terminal.advance(frame.render_row(row, self.horizontal, columns).as_bytes());
-                terminal.advance(b"\r\n");
+                if row + 1 < row_count {
+                    terminal.advance(b"\r\n");
+                }
             }
             let (row, column) = (
                 cursor_row.saturating_add(1),
@@ -1710,6 +1712,100 @@ mod tests {
 
         fs::remove_file(empty_path).unwrap();
         fs::remove_file(long_path).unwrap();
+    }
+
+    #[test]
+    fn final_viewer_row_does_not_scroll_the_terminal() {
+        fn screen_line(terminal: &Terminal, row: usize) -> String {
+            terminal.screen().rows()[row]
+                .iter()
+                .filter(|cell| !cell.is_continuation())
+                .map(crate::terminal::Cell::character)
+                .collect()
+        }
+
+        let hex_data: Vec<u8> = (0..48).collect();
+        let cases = [
+            (
+                b"one\ntwo\nthree\n".as_slice(),
+                ViewerMode::Text,
+                8,
+                3,
+                "one",
+                "three",
+            ),
+            (
+                b"1234\n5678".as_slice(),
+                ViewerMode::Text,
+                4,
+                2,
+                "1234",
+                "5678",
+            ),
+            (
+                hex_data.as_slice(),
+                ViewerMode::Hex,
+                80,
+                3,
+                "00000000",
+                "00000020",
+            ),
+            (b"short".as_slice(), ViewerMode::Text, 8, 3, "short", ""),
+            (b"".as_slice(), ViewerMode::Text, 8, 3, "", ""),
+        ];
+        for (data, mode, columns, rows, first, last) in cases {
+            let path = temp_path("termfold-viewer-final-row");
+            fs::write(&path, data).unwrap();
+            let size = Size { columns, rows };
+            let mut terminal = Terminal::new(size).unwrap();
+            let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+            viewer.mode = mode;
+
+            viewer.render(&mut terminal, size).unwrap();
+
+            assert!(screen_line(&terminal, 0).starts_with(first));
+            assert!(screen_line(&terminal, rows as usize - 1).starts_with(last));
+            fs::remove_file(path).unwrap();
+        }
+
+        let path = temp_path("termfold-viewer-narrow-hex");
+        fs::write(&path, b"0123456789").unwrap();
+        let size = Size {
+            columns: 27,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+        viewer.render(&mut terminal, size).unwrap();
+        assert_eq!(terminal.screen().cursor().row, 0);
+        fs::remove_file(path).unwrap();
+
+        let path = temp_path("termfold-viewer-resize-final-row");
+        fs::write(&path, b"one\ntwo\nthree\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        let mut terminal = Terminal::new(Size {
+            columns: 8,
+            rows: 3,
+        })
+        .unwrap();
+        viewer
+            .render(
+                &mut terminal,
+                Size {
+                    columns: 8,
+                    rows: 3,
+                },
+            )
+            .unwrap();
+        let size = Size {
+            columns: 8,
+            rows: 2,
+        };
+        viewer.render(&mut terminal, size).unwrap();
+        assert!(screen_line(&terminal, 0).starts_with("one"));
+        assert!(screen_line(&terminal, 1).starts_with("two"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
