@@ -147,6 +147,11 @@ impl Viewer {
         self.pending_page_direction = None;
     }
 
+    pub(super) fn rollback_pending_page(&mut self) {
+        self.restore_state(self.committed);
+        self.pending_page_direction = None;
+    }
+
     pub(super) fn toggle_mode(&mut self) -> io::Result<()> {
         let previous_mode = self.mode;
         let previous_state = self.state();
@@ -2519,6 +2524,7 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         let state = viewer.state();
+        viewer.page(size.rows, true).unwrap();
 
         let directory = File::open(std::env::temp_dir()).unwrap();
         assert!(directory.metadata().unwrap().len() > 0);

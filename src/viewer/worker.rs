@@ -65,16 +65,31 @@ pub(super) enum ViewerOperation {
     MoveLines(i32),
     MoveHorizontal(i32),
     ScrollViewport(i32),
-    Page { rows: u16, forward: bool },
-    HalfPage { rows: u16, forward: bool },
+    PageRender {
+        rows: u16,
+        forward: bool,
+        half_page: bool,
+        terminal: Box<Terminal>,
+        size: Size,
+    },
     LineStart,
-    LineEnd { columns: usize },
+    LineEnd {
+        columns: usize,
+    },
     Top,
     Bottom,
     ToggleMode,
-    Search { query: Vec<u8>, forward: bool },
-    RepeatSearch { same_direction: bool },
-    Render { terminal: Box<Terminal>, size: Size },
+    Search {
+        query: Vec<u8>,
+        forward: bool,
+    },
+    RepeatSearch {
+        same_direction: bool,
+    },
+    Render {
+        terminal: Box<Terminal>,
+        size: Size,
+    },
 }
 
 pub(super) enum ViewerResult {
@@ -145,11 +160,28 @@ struct WorkerViewer {
     generation: u64,
 }
 
+#[derive(Clone, Copy)]
+enum PageRenderPhase {
+    Navigate,
+    Render,
+}
+
 enum Work {
     Run {
         id: ViewerId,
         generation: u64,
         operation: ViewerOperation,
+        reply: SyncSender<ViewerResult>,
+    },
+    PageRender {
+        id: ViewerId,
+        generation: u64,
+        rows: u16,
+        forward: bool,
+        half_page: bool,
+        terminal: Box<Terminal>,
+        size: Size,
+        phase: PageRenderPhase,
         reply: SyncSender<ViewerResult>,
     },
     Search {
@@ -427,6 +459,30 @@ impl ViewerHandle {
         result
     }
 
+    pub(crate) fn page_render(
+        &mut self,
+        rows: u16,
+        forward: bool,
+        half_page: bool,
+        size: Size,
+    ) -> io::Result<()> {
+        let terminal = Terminal::new(size).map_err(io::Error::other)?;
+        let result = self.dispatch(
+            ViewerOperation::PageRender {
+                rows,
+                forward,
+                half_page,
+                terminal: Box::new(terminal),
+                size,
+            },
+            true,
+        );
+        if result.is_ok() {
+            self.render_size = Some(size);
+        }
+        result
+    }
+
     pub(crate) fn toggle_mode(&mut self) -> io::Result<()> {
         self.dispatch(ViewerOperation::ToggleMode, true)
     }
@@ -511,12 +567,6 @@ impl ViewerHandle {
     }
     pub(crate) fn scroll_viewport(&mut self, amount: i32) -> io::Result<()> {
         self.dispatch(ViewerOperation::ScrollViewport(amount), true)
-    }
-    pub(crate) fn page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
-        self.dispatch(ViewerOperation::Page { rows, forward }, true)
-    }
-    pub(crate) fn half_page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
-        self.dispatch(ViewerOperation::HalfPage { rows, forward }, true)
     }
     pub(crate) fn line_start(&mut self) -> io::Result<()> {
         self.dispatch(ViewerOperation::LineStart, true)
@@ -653,7 +703,7 @@ fn control(
             generation,
             reply,
         } => {
-            cancel(id, active, queue, wake);
+            cancel(id, active, queue, viewers, wake);
             let result = match viewers.get(&id) {
                 Some(viewer) if generation >= viewer.generation => {
                     viewers.remove(&id);
@@ -668,7 +718,7 @@ fn control(
             send_direct(&reply, result);
         }
         ViewerCommand::Cancel { id, generation } => {
-            cancel(id, active, queue, wake);
+            cancel(id, active, queue, viewers, wake);
             if let Some(viewer) = viewers.get_mut(&id)
                 && generation >= viewer.generation
             {
@@ -676,7 +726,7 @@ fn control(
             }
         }
         ViewerCommand::Shutdown => {
-            cancel_all(active, queue, wake);
+            cancel_all(active, queue, viewers, wake);
             return true;
         }
         ViewerCommand::Run { .. } => {}
@@ -700,7 +750,7 @@ fn enqueue(
     else {
         return;
     };
-    let Some(viewer) = viewers.get_mut(&id) else {
+    let Some(current_generation) = viewers.get(&id).map(|viewer| viewer.generation) else {
         wake.send(
             &reply,
             ViewerResult::Stale {
@@ -711,7 +761,7 @@ fn enqueue(
         );
         return;
     };
-    if generation < viewer.generation {
+    if generation < current_generation {
         wake.send(
             &reply,
             ViewerResult::Stale {
@@ -722,8 +772,8 @@ fn enqueue(
         );
         return;
     }
-    if generation > viewer.generation {
-        cancel(id, active, queue, wake);
+    if generation > current_generation {
+        cancel(id, active, queue, viewers, wake);
     }
     if queue.len() + usize::from(active.is_some()) >= VIEWER_COMMAND_CAPACITY {
         wake.send(
@@ -737,6 +787,9 @@ fn enqueue(
         );
         return;
     }
+    let viewer = viewers
+        .get_mut(&id)
+        .expect("viewer exists after generation cancellation");
     viewer.generation = generation;
     match operation {
         ViewerOperation::Search { query, forward } => {
@@ -788,6 +841,23 @@ fn enqueue(
                 ),
             }
         }
+        ViewerOperation::PageRender {
+            rows,
+            forward,
+            half_page,
+            terminal,
+            size,
+        } => queue.push_back(Work::PageRender {
+            id,
+            generation,
+            rows,
+            forward,
+            half_page,
+            terminal,
+            size,
+            phase: PageRenderPhase::Navigate,
+            reply,
+        }),
         operation => queue.push_back(Work::Run {
             id,
             generation,
@@ -865,6 +935,102 @@ fn step(
                 }
             }
         }
+        Work::PageRender {
+            id,
+            generation,
+            rows,
+            forward,
+            half_page,
+            mut terminal,
+            size,
+            phase,
+            reply,
+        } => {
+            let Some(viewer) = viewers.get_mut(&id) else {
+                wake.send(
+                    &reply,
+                    ViewerResult::Stale {
+                        id,
+                        generation,
+                        terminal: Some(*terminal),
+                    },
+                );
+                return None;
+            };
+            if viewer.generation != generation {
+                wake.send(
+                    &reply,
+                    ViewerResult::Stale {
+                        id,
+                        generation,
+                        terminal: Some(*terminal),
+                    },
+                );
+                return None;
+            }
+            match phase {
+                PageRenderPhase::Navigate => {
+                    let result = if half_page {
+                        viewer.viewer.half_page(rows, forward)
+                    } else {
+                        viewer.viewer.page(rows, forward)
+                    };
+                    match result {
+                        Ok(()) => Some(Work::PageRender {
+                            id,
+                            generation,
+                            rows,
+                            forward,
+                            half_page,
+                            terminal,
+                            size,
+                            phase: PageRenderPhase::Render,
+                            reply,
+                        }),
+                        Err(error) => {
+                            wake.send(
+                                &reply,
+                                ViewerResult::Error {
+                                    id,
+                                    generation,
+                                    message: error.to_string(),
+                                    terminal: None,
+                                },
+                            );
+                            None
+                        }
+                    }
+                }
+                PageRenderPhase::Render => {
+                    match render_current(&mut viewer.viewer, &mut terminal, size) {
+                        Ok(()) => {
+                            wake.send(
+                                &reply,
+                                ViewerResult::Done {
+                                    id,
+                                    generation,
+                                    value: None,
+                                    wrapped: false,
+                                    terminal: Some(*terminal),
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            wake.send(
+                                &reply,
+                                ViewerResult::Error {
+                                    id,
+                                    generation,
+                                    message: error.to_string(),
+                                    terminal: Some(*terminal),
+                                },
+                            );
+                        }
+                    }
+                    None
+                }
+            }
+        }
         Work::Run {
             id,
             generation,
@@ -935,13 +1101,16 @@ fn no_value(result: io::Result<()>) -> ExecResult {
         .map_err(|error| Box::new((error.to_string(), None)))
 }
 
+fn render_current(viewer: &mut Viewer, terminal: &mut Terminal, size: Size) -> io::Result<()> {
+    viewer.render(terminal, size)?;
+    apply_hex_highlights(viewer, terminal)
+}
+
 fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
     match operation {
         ViewerOperation::MoveLines(amount) => no_value(viewer.move_lines(amount)),
         ViewerOperation::MoveHorizontal(amount) => no_value(viewer.move_horizontal(amount)),
         ViewerOperation::ScrollViewport(amount) => no_value(viewer.scroll_viewport(amount)),
-        ViewerOperation::Page { rows, forward } => no_value(viewer.page(rows, forward)),
-        ViewerOperation::HalfPage { rows, forward } => no_value(viewer.half_page(rows, forward)),
         ViewerOperation::LineStart => no_value(viewer.line_start()),
         ViewerOperation::LineEnd { columns } => no_value(viewer.line_end(columns)),
         ViewerOperation::Top => {
@@ -951,17 +1120,17 @@ fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
         ViewerOperation::Bottom => no_value(viewer.bottom()),
         ViewerOperation::ToggleMode => no_value(viewer.toggle_mode()),
         ViewerOperation::Render { mut terminal, size } => {
-            match viewer.render(&mut terminal, size) {
-                Ok(()) => match apply_hex_highlights(viewer, &mut terminal) {
-                    Ok(()) => Ok((None, Some(*terminal))),
-                    Err(error) => Err(Box::new((error.to_string(), Some(*terminal)))),
-                },
+            match render_current(viewer, &mut terminal, size) {
+                Ok(()) => Ok((None, Some(*terminal))),
                 Err(error) => Err(Box::new((error.to_string(), Some(*terminal)))),
             }
         }
-        ViewerOperation::Search { .. } | ViewerOperation::RepeatSearch { .. } => {
-            Err(Box::new(("search was not scheduled".into(), None)))
-        }
+        ViewerOperation::PageRender { .. }
+        | ViewerOperation::Search { .. }
+        | ViewerOperation::RepeatSearch { .. } => Err(Box::new((
+            "viewer operation was not scheduled".into(),
+            None,
+        ))),
     }
 }
 
@@ -1021,13 +1190,22 @@ fn apply_hex_highlights(viewer: &mut Viewer, terminal: &mut Terminal) -> io::Res
     Ok(())
 }
 
-fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>, wake: &ViewerWake) {
+fn cancel(
+    id: ViewerId,
+    active: &mut Option<Work>,
+    queue: &mut VecDeque<Work>,
+    viewers: &mut HashMap<ViewerId, WorkerViewer>,
+    wake: &ViewerWake,
+) {
     if active.as_ref().is_some_and(|work| work_id(work) == id) {
-        send_stale(active.take().unwrap(), wake);
+        let work = active.take().unwrap();
+        rollback_page_render(&work, viewers);
+        send_stale(work, wake);
     }
     let mut keep = VecDeque::new();
     while let Some(work) = queue.pop_front() {
         if work_id(&work) == id {
+            rollback_page_render(&work, viewers);
             send_stale(work, wake)
         } else {
             keep.push_back(work)
@@ -1036,18 +1214,38 @@ fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>, w
     *queue = keep;
 }
 
-fn cancel_all(active: &mut Option<Work>, queue: &mut VecDeque<Work>, wake: &ViewerWake) {
+fn cancel_all(
+    active: &mut Option<Work>,
+    queue: &mut VecDeque<Work>,
+    viewers: &mut HashMap<ViewerId, WorkerViewer>,
+    wake: &ViewerWake,
+) {
     if let Some(work) = active.take() {
+        rollback_page_render(&work, viewers);
         send_stale(work, wake);
     }
     while let Some(work) = queue.pop_front() {
+        rollback_page_render(&work, viewers);
         send_stale(work, wake);
+    }
+}
+
+fn rollback_page_render(work: &Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) {
+    if let Work::PageRender {
+        id,
+        phase: PageRenderPhase::Render,
+        ..
+    } = work
+        && let Some(viewer) = viewers.get_mut(id)
+    {
+        viewer.viewer.rollback_pending_page();
     }
 }
 
 fn work_id(work: &Work) -> ViewerId {
     match work {
         Work::Run { id, .. } | Work::Search { id, .. } => *id,
+        Work::PageRender { id, .. } => *id,
     }
 }
 
@@ -1079,12 +1277,28 @@ fn send_stale(work: Work, wake: &ViewerWake) {
                 terminal: None,
             },
         ),
+        Work::PageRender {
+            id,
+            generation,
+            terminal,
+            reply,
+            ..
+        } => wake.send(
+            &reply,
+            ViewerResult::Stale {
+                id,
+                generation,
+                terminal: Some(*terminal),
+            },
+        ),
     }
 }
 
 fn take_terminal_from(operation: ViewerOperation) -> Option<Terminal> {
     match operation {
-        ViewerOperation::Render { terminal, .. } => Some(*terminal),
+        ViewerOperation::Render { terminal, .. } | ViewerOperation::PageRender { terminal, .. } => {
+            Some(*terminal)
+        }
         _ => None,
     }
 }
@@ -1553,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_async_pages_return_navigation_then_render() {
+    fn sequential_compound_pages_return_one_rendered_result() {
         let mut bytes = Vec::new();
         for index in 0..7_000 {
             bytes.extend_from_slice(format!("line {index}\n").as_bytes());
@@ -1570,30 +1784,20 @@ mod tests {
             ViewerUpdate::RenderComplete
         ));
         for _ in 0..1_000 {
-            viewer.page(size.rows, true).unwrap();
+            viewer.page_render(size.rows, true, false, size).unwrap();
             let update = wait_update(&mut viewer, &mut terminal);
             assert!(
-                matches!(update, ViewerUpdate::NavigationComplete),
+                matches!(update, ViewerUpdate::RenderComplete),
                 "unexpected update: {update:?}"
             );
-            viewer.request_render(size).unwrap();
-            assert!(matches!(
-                wait_update(&mut viewer, &mut terminal),
-                ViewerUpdate::RenderComplete
-            ));
         }
         for _ in 0..1_000 {
-            viewer.page(size.rows, false).unwrap();
+            viewer.page_render(size.rows, false, false, size).unwrap();
             let update = wait_update(&mut viewer, &mut terminal);
             assert!(
-                matches!(update, ViewerUpdate::NavigationComplete),
+                matches!(update, ViewerUpdate::RenderComplete),
                 "unexpected update: {update:?}"
             );
-            viewer.request_render(size).unwrap();
-            assert!(matches!(
-                wait_update(&mut viewer, &mut terminal),
-                ViewerUpdate::RenderComplete
-            ));
         }
         viewer.close().unwrap();
         worker.shutdown();
@@ -1630,7 +1834,7 @@ mod tests {
             rows: 8,
         };
         let mut terminal = Terminal::new(size).unwrap();
-        viewer.page(size.rows, true).unwrap();
+        viewer.page_render(size.rows, true, false, size).unwrap();
         viewer.close().unwrap();
         assert!(viewer.poll(&mut terminal).unwrap().is_none());
         worker.shutdown();

@@ -1141,7 +1141,7 @@ Rules for every T29 implementation request:
     cancellation, resize, and bounded-cache coverage. The approved
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
 
-- [ ] **T29J — Combine page navigation and visible rendering safely**
+- [*] **T29J — Combine page navigation and visible rendering safely**
   - Recommended model: Luna Max.
   - Replace the avoidable Page Up/Page Down and half-page
     `NavigationComplete -> server render request -> RenderComplete` round trip with
@@ -1166,6 +1166,18 @@ Rules for every T29 implementation request:
     timing, rollback, replacement dispatch, and result-type ownership.
   - Done when: page movement has one worker round trip without weakening any T28
     responsiveness or ordering guarantee.
+  - Implementation: replaced separate page-navigation and render commands with
+    one generation-bound worker operation. The worker changes page state, yields
+    at a control boundary, then renders the requested Current frame; cancellation
+    rolls back an uncommitted page. The server commits the rendered terminal before
+    finishing the ViewerGate and dispatching its single changed-intent replacement.
+  - Evidence (2026-08-05): `cargo fmt` passed. `cargo test --locked viewer --no-fail-fast
+    -- --test-threads=1` passed with 97 tests, including 1,000 ordered page-down
+    and page-up compound operations, close cancellation, and render rollback.
+    `cargo test --locked server::tests::viewer_gate --no-fail-fast
+    -- --test-threads=1` passed with 6 tests. The approved
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    Native Windows/MSVC validation was not available in this Linux host.
 
 - [ ] **T29K — Run viewer-correction acceptance and update documentation**
   - Recommended model: Luna High.

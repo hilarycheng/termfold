@@ -134,13 +134,13 @@ impl ViewerGate {
 }
 
 impl ViewerIntent {
-    fn dispatch(self, viewer: &mut ViewerHandle) -> io::Result<()> {
+    fn dispatch(self, viewer: &mut ViewerHandle, size: Size) -> io::Result<()> {
         match self {
             Self::Scroll(amount) => viewer.move_lines(amount),
             Self::Horizontal(amount) => viewer.move_horizontal(amount),
             Self::Viewport(amount) => viewer.scroll_viewport(amount),
-            Self::Page { rows, forward } => viewer.page(rows, forward),
-            Self::HalfPage { rows, forward } => viewer.half_page(rows, forward),
+            Self::Page { rows, forward } => viewer.page_render(rows, forward, false, size),
+            Self::HalfPage { rows, forward } => viewer.page_render(rows, forward, true, size),
             Self::LineStart => viewer.line_start(),
             Self::LineEnd { columns } => viewer.line_end(columns),
             Self::Top => viewer.top(),
@@ -1544,6 +1544,7 @@ fn queue_viewer_search(
 }
 
 fn dispatch_navigation(pane: &mut PaneProcess, navigation: ViewerNavigation) -> Result<(), String> {
+    let size = pane.terminal.screen().size();
     let result = pane
         .viewer
         .as_mut()
@@ -1551,7 +1552,7 @@ fn dispatch_navigation(pane: &mut PaneProcess, navigation: ViewerNavigation) -> 
         .and_then(|viewer| {
             navigation
                 .intent
-                .dispatch(viewer)
+                .dispatch(viewer, size)
                 .map_err(|error| error.to_string())
         });
     match result {
