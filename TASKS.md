@@ -1179,7 +1179,7 @@ Rules for every T29 implementation request:
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T29K — Run viewer-correction acceptance and update documentation**
+- [*] **T29K — Run viewer-correction acceptance and update documentation**
   - Recommended model: Luna High.
   - Add deterministic acceptance coverage for completed-path Backspace, literal
     tilde safety, Vim-style horizontal movement, Viewer Help return state, no
@@ -1199,3 +1199,22 @@ Rules for every T29 implementation request:
   - Done when: all corrected behaviour is verified on authoritative environments,
     all resource and ordering limits still pass, and documentation matches the
     executable without claiming unavailable validation.
+  - Implementation: existing deterministic focused coverage now serves as the
+    T29K acceptance set; it covers prompt editing and literal tilde safety,
+    horizontal movement, Help return state, final-row rendering, worker wake,
+    current-before-prefetch delivery, compound paging, repeat gating, immediate
+    close, and the T28 cache/frame/work bounds. `README.md` now records the
+    verified viewer resource limits.
+  - Evidence (2026-08-05): `cargo fmt --check`, focused viewer (97), input (13),
+    server (15), and Help-render (1) tests passed. Full Linux validation passed
+    with `cargo test --locked -- --test-threads=1` (149 unit and 8 lifecycle
+    tests) and `cargo clippy --all-targets --all-features -- -D warnings`.
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed;
+    the result is an 873,200-byte stripped static PIE and `ldd` reports it is
+    statically linked. Current paging metrics at the existing 16x3 test size:
+    initial 139.8 ms, cold down 587.1 ms, warm up 667.6 ms, long line 159.9 ms;
+    peak cache 458,769 bytes. `cargo check --locked --target
+    x86_64-pc-windows-msvc` passed. Native Windows tests and the MSVC release
+    build are blocked here because `link.exe` is unavailable. No before/after
+    page-latency harness is present in this checkout, so no comparative claim
+    is made. README behaviour is limited to implemented and verified paths.

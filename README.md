@@ -192,8 +192,10 @@ Windows drive-root path. A literal `~` remains filter text and is never
 shell-expanded. Invalid selections show a short error and keep the prompt
 active; `Esc` or `Ctrl-c` cancels it.
 
-The viewer reads fixed-size blocks and keeps only the visible page, a small block
-cache, and bounded search offsets. Each open uses a fixed file snapshot; later
+The viewer reads fixed-size blocks and keeps only the visible page, at most eight
+64 KiB raw blocks (512 KiB), three page frames, and at most 256 KiB of source
+bytes per frame. Search and long-line work yields at 64 KiB. Each open uses a
+fixed file snapshot; later
 appends, truncation, replacement, or log rotation are not followed until the
 file is reopened. It has an editor-style cursor separate from
 the viewport. `Up`/`Down` and `j`/`k` move the cursor by file line, preserve its
