@@ -432,7 +432,6 @@ impl Viewer {
         self.navigation(|viewer| viewer.move_lines_inner(amount))
     }
 
-    #[allow(dead_code)]
     pub fn move_horizontal(&mut self, amount: i32) -> io::Result<()> {
         self.navigation(|viewer| {
             if viewer.mode == ViewerMode::Hex {
@@ -442,7 +441,6 @@ impl Viewer {
         })
     }
 
-    #[allow(dead_code)]
     fn move_text_tokens(&mut self, amount: i32) -> io::Result<()> {
         let line = self.line_start_at(self.position)?;
         let boundary = self.line_boundary(line)?;
@@ -567,7 +565,6 @@ impl Viewer {
         self.ensure_cursor_visible()
     }
 
-    #[allow(dead_code)]
     fn move_hex_bytes(&mut self, amount: i32) -> io::Result<()> {
         if self.length() == 0 {
             self.position = 0;

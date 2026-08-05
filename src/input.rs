@@ -52,6 +52,7 @@ pub enum Action {
     OpenViewer(Vec<u8>),
     ViewCancelled,
     ViewerScroll(i32),
+    ViewerHorizontal(i32),
     ViewerViewport(i32),
     ViewerPage(bool),
     ViewerHalfPage(bool),
@@ -526,6 +527,12 @@ impl Input {
                 let action = match sequence.as_slice() {
                     [b'k'] | [27, b'[', b'A'] | [27, b'O', b'A'] => Some(Action::ViewerScroll(-1)),
                     [b'j'] | [27, b'[', b'B'] | [27, b'O', b'B'] => Some(Action::ViewerScroll(1)),
+                    [b'h'] | [27, b'[', b'D'] | [27, b'O', b'D'] => {
+                        Some(Action::ViewerHorizontal(-1))
+                    }
+                    [b'l'] | [27, b'[', b'C'] | [27, b'O', b'C'] => {
+                        Some(Action::ViewerHorizontal(1))
+                    }
                     [27, b'[', b'5', b'~'] => Some(Action::ViewerPage(false)),
                     [27, b'[', b'6', b'~'] => Some(Action::ViewerPage(true)),
                     [21] => Some(Action::ViewerHalfPage(false)),
@@ -1062,6 +1069,32 @@ mod tests {
         assert_eq!(input.advance(b"\x02V"), vec![Action::ViewPrompt(true)]);
         assert_eq!(input.advance(b"\x03"), vec![Action::ViewCancelled]);
         assert_eq!(input.advance(b"j"), vec![Action::ViewerScroll(1)]);
+    }
+
+    #[test]
+    fn viewer_horizontal_navigation_consumes_all_arrow_encodings() {
+        let mut input = Input::new(2, false);
+        input.enter_viewer();
+
+        assert_eq!(
+            input.advance(b"hl\x1b[D\x1bOC"),
+            vec![
+                Action::ViewerHorizontal(-1),
+                Action::ViewerHorizontal(1),
+                Action::ViewerHorizontal(-1),
+                Action::ViewerHorizontal(1),
+            ]
+        );
+        assert!(input.advance(b"\x1b").is_empty());
+        assert_eq!(input.advance(b"[C"), vec![Action::ViewerHorizontal(1)]);
+        assert!(input.advance(b"\x1b").is_empty());
+        assert_eq!(input.advance(b"OD"), vec![Action::ViewerHorizontal(-1)]);
+        assert!(
+            !input
+                .advance(b"x")
+                .iter()
+                .any(|action| matches!(action, Action::Forward(_)))
+        );
     }
 
     #[test]

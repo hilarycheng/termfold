@@ -66,6 +66,7 @@ enum MouseCapture {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ViewerIntent {
     Scroll(i32),
+    Horizontal(i32),
     Viewport(i32),
     Page { rows: u16, forward: bool },
     HalfPage { rows: u16, forward: bool },
@@ -135,6 +136,7 @@ impl ViewerIntent {
     fn dispatch(self, viewer: &mut ViewerHandle) -> io::Result<()> {
         match self {
             Self::Scroll(amount) => viewer.move_lines(amount),
+            Self::Horizontal(amount) => viewer.move_horizontal(amount),
             Self::Viewport(amount) => viewer.scroll_viewport(amount),
             Self::Page { rows, forward } => viewer.page(rows, forward),
             Self::HalfPage { rows, forward } => viewer.half_page(rows, forward),
@@ -1298,6 +1300,7 @@ fn handle_action(
             return false;
         }
         Action::ViewerScroll(_)
+        | Action::ViewerHorizontal(_)
         | Action::ViewerViewport(_)
         | Action::ViewerPage(_)
         | Action::ViewerHalfPage(_)
@@ -1484,6 +1487,7 @@ fn viewer_intent(
     let viewer_size = active_viewer_size(input);
     Some(match action {
         Action::ViewerScroll(amount) => ViewerIntent::Scroll(*amount),
+        Action::ViewerHorizontal(amount) => ViewerIntent::Horizontal(*amount),
         Action::ViewerViewport(amount) => ViewerIntent::Viewport(*amount),
         Action::ViewerPage(forward) => ViewerIntent::Page {
             rows: viewer_size.unwrap_or(content_size).rows,
@@ -2719,6 +2723,38 @@ mod tests {
             ));
         }
         assert!(gate.replacement.is_none());
+    }
+
+    #[test]
+    fn viewer_gate_handles_horizontal_repeats_and_reversals() {
+        let left = ViewerIntent::Horizontal(-1);
+        let right = ViewerIntent::Horizontal(1);
+        let mut gate = ViewerGate::default();
+        gate.begin(left);
+
+        for _ in 0..1_000 {
+            assert!(matches!(
+                gate.accept(ViewerNavigation {
+                    intent: left,
+                    client_id: 1,
+                }),
+                ViewerGateDecision::Dropped
+            ));
+        }
+        assert!(matches!(
+            gate.accept(ViewerNavigation {
+                intent: right,
+                client_id: 1,
+            }),
+            ViewerGateDecision::Replaced
+        ));
+        assert_eq!(
+            gate.finish(),
+            Some(ViewerNavigation {
+                intent: right,
+                client_id: 1,
+            })
+        );
     }
 
     #[test]

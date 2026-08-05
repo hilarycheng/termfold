@@ -46,6 +46,7 @@ pub(super) enum ViewerCommand {
 
 pub(super) enum ViewerOperation {
     MoveLines(i32),
+    MoveHorizontal(i32),
     ScrollViewport(i32),
     Page { rows: u16, forward: bool },
     HalfPage { rows: u16, forward: bool },
@@ -477,6 +478,9 @@ impl ViewerHandle {
     pub(crate) fn move_lines(&mut self, amount: i32) -> io::Result<()> {
         self.dispatch(ViewerOperation::MoveLines(amount), true)
     }
+    pub(crate) fn move_horizontal(&mut self, amount: i32) -> io::Result<()> {
+        self.dispatch(ViewerOperation::MoveHorizontal(amount), true)
+    }
     pub(crate) fn scroll_viewport(&mut self, amount: i32) -> io::Result<()> {
         self.dispatch(ViewerOperation::ScrollViewport(amount), true)
     }
@@ -900,6 +904,7 @@ fn no_value(result: io::Result<()>) -> ExecResult {
 fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
     match operation {
         ViewerOperation::MoveLines(amount) => no_value(viewer.move_lines(amount)),
+        ViewerOperation::MoveHorizontal(amount) => no_value(viewer.move_horizontal(amount)),
         ViewerOperation::ScrollViewport(amount) => no_value(viewer.scroll_viewport(amount)),
         ViewerOperation::Page { rows, forward } => no_value(viewer.page(rows, forward)),
         ViewerOperation::HalfPage { rows, forward } => no_value(viewer.half_page(rows, forward)),
@@ -1475,6 +1480,44 @@ mod tests {
         viewer.page(size.rows, true).unwrap();
         viewer.close().unwrap();
         assert!(viewer.poll(&mut terminal).unwrap().is_none());
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn horizontal_navigation_runs_through_worker_and_can_be_cancelled() {
+        let (path, mut worker, mut viewer) = open("horizontal", b"abcdef");
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 8,
+        })
+        .unwrap();
+
+        viewer.move_horizontal(1).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+        viewer
+            .request_render(Size {
+                columns: 40,
+                rows: 8,
+            })
+            .unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+
+        viewer.move_horizontal(1).unwrap();
+        viewer.cancel().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::Stale
+        ));
+        assert!(viewer.poll(&mut terminal).unwrap().is_none());
+
+        viewer.close().unwrap();
         worker.shutdown();
         fs::remove_file(path).unwrap();
     }

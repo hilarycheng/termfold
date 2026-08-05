@@ -995,7 +995,7 @@ Rules for every T29 implementation request:
     socket test and eight lifecycle tests were blocked by sandbox
     `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
 
-- [ ] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
+- [*] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
   - Recommended model: Luna Max.
   - Add semantic horizontal actions for `h`, `l`, Left Arrow, and Right Arrow.
   - Preserve fragmented escape-prefixed Left/Right sequences in Viewer mode.
@@ -1013,6 +1013,15 @@ Rules for every T29 implementation request:
     handling, and absence of synchronous viewer reads in `server.rs`.
   - Done when: every accepted horizontal command commits one valid viewer frame
     and cannot create navigation backlog.
+  - Implementation: added semantic horizontal actions for `h`, `l`, CSI Left/Right,
+    and application-cursor Left/Right; routed them through `ViewerIntent`, the
+    generation-bound Viewer Worker, and the existing one-replacement ViewerGate.
+    Added focused input, gate, worker-render, cancellation, and stale-result checks.
+  - Evidence (2026-08-05): `cargo fmt --check`,
+    `cargo test --locked viewer --no-fail-fast` (90 tests), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    `server.rs` retains no viewer file I/O; horizontal navigation uses the
+    existing search cancellation, generation, and stale-result paths.
 
 - [ ] **T29F — Remove the phantom row above the status bar**
   - Recommended model: Luna High.
