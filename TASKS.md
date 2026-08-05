@@ -1075,7 +1075,7 @@ Rules for every T29 implementation request:
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
 
-- [ ] **T29H — Wake the Session Server on Viewer Worker results**
+- [*] **T29H — Wake the Session Server on Viewer Worker results**
   - Recommended model: Luna Max.
   - Add one bounded, non-blocking Viewer-ready notification into the existing
     central Server event path after a result is committed to the viewer result
@@ -1096,6 +1096,19 @@ Rules for every T29 implementation request:
     shutdown, and every path where a result is produced.
   - Done when: no valid viewer result requires the periodic listener timeout to
     become visible.
+  - Implementation: passed the existing bounded server-event sender into the
+    session-scoped Viewer Worker. Successful asynchronous result sends now issue
+    one coalesced non-blocking `ViewerReady` wake; the server clears the wake state
+    before its existing generation-checked result drain. Full event queues retain
+    results and only drop the redundant wake.
+  - Evidence (2026-08-05): `cargo fmt --check` passed. Focused
+    `cargo test --locked viewer::worker::
+    --no-fail-fast` passed with 15 tests, and
+    `cargo test --locked server::tests::viewer_ready_keeps_the_existing_idle_poll_delay
+    -- --exact` passed. Coverage includes idle wake, ordering, full-queue,
+    coalescing, two-viewer, stale-generation, shutdown, and unchanged polling
+    interval. The approved `cargo build --release --locked
+    --target x86_64-unknown-linux-musl` passed.
 
 - [ ] **T29I — Remove neighbour prefetch from the visible-frame critical path**
   - Recommended model: Luna Max.

@@ -30,14 +30,15 @@ const ENTER_MOUSE: &[u8] = b"\x1b[?1003h\x1b[?1006h";
 // ponytail: one event moves 256 cells; raise only if real terminals jump farther.
 const MAX_MOUSE_DRAG_CELLS: u16 = 256;
 
-enum ClientEvent {
+pub(crate) enum ClientEvent {
     Message(Message),
     Closed,
 }
 
-enum ServerEvent {
+pub(crate) enum ServerEvent {
     Client(u64, ClientEvent),
     PaneOutput(PaneId, Vec<u8>),
+    ViewerReady,
 }
 
 struct Client {
@@ -329,8 +330,8 @@ pub fn run(
         working_directory: context.working_directory().to_owned(),
     }];
     spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
-    let mut viewer_worker =
-        ViewerWorker::spawn().map_err(|error| format!("cannot start viewer worker: {error}"))?;
+    let mut viewer_worker = ViewerWorker::spawn(event_sender.clone())
+        .map_err(|error| format!("cannot start viewer worker: {error}"))?;
     let viewer_worker_handle = viewer_worker.handle();
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
@@ -399,6 +400,7 @@ pub fn run(
                         &mut full_dirty,
                     );
                 }
+                ServerEvent::ViewerReady => viewer_worker_handle.clear_ready(),
             }
         }
 
@@ -2695,6 +2697,11 @@ mod tests {
 
         assert_eq!(output, b"\x1b[1;1R\x1b[?1;2c");
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn viewer_ready_keeps_the_existing_idle_poll_delay() {
+        assert_eq!(LISTENER_POLL_DELAY, Duration::from_millis(50));
     }
 
     #[test]

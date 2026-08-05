@@ -4,19 +4,36 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
 };
 
-use crate::{session::Size, terminal::Terminal};
+use crate::{server::ServerEvent, session::Size, terminal::Terminal};
 
 use super::{SearchStart, SearchStep, SearchWork, Viewer, ViewerMode};
 
 pub(super) const VIEWER_COMMAND_CAPACITY: usize = 8;
 const VIEWER_RESULT_CAPACITY: usize = VIEWER_COMMAND_CAPACITY * 2;
 type ViewerId = u64;
+
+#[derive(Clone)]
+struct ViewerWake {
+    events: SyncSender<ServerEvent>,
+    pending: Arc<AtomicBool>,
+}
+
+impl ViewerWake {
+    fn send(&self, reply: &SyncSender<ViewerResult>, result: ViewerResult) {
+        if reply.send(result).is_ok()
+            && !self.pending.swap(true, Ordering::AcqRel)
+            && self.events.try_send(ServerEvent::ViewerReady).is_err()
+        {
+            self.pending.store(false, Ordering::Release);
+        }
+    }
+}
 
 pub(super) enum ViewerCommand {
     Open {
@@ -104,6 +121,7 @@ pub(crate) enum ViewerUpdate {
 pub(crate) struct ViewerWorkerHandle {
     sender: SyncSender<ViewerCommand>,
     next_id: Arc<AtomicU64>,
+    wake: ViewerWake,
 }
 
 pub(crate) struct ViewerHandle {
@@ -143,16 +161,22 @@ enum Work {
 }
 
 impl ViewerWorker {
-    pub(crate) fn spawn() -> io::Result<Self> {
+    pub(crate) fn spawn(events: SyncSender<ServerEvent>) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(VIEWER_COMMAND_CAPACITY);
+        let wake = ViewerWake {
+            events,
+            pending: Arc::new(AtomicBool::new(false)),
+        };
+        let worker_wake = wake.clone();
         let join = thread::Builder::new()
             .name("termfold-viewer".into())
-            .spawn(move || run(receiver))
+            .spawn(move || run(receiver, worker_wake))
             .map_err(io::Error::other)?;
         Ok(Self {
             handle: ViewerWorkerHandle {
                 sender,
                 next_id: Arc::new(AtomicU64::new(1)),
+                wake,
             },
             join: Some(join),
         })
@@ -177,6 +201,10 @@ impl Drop for ViewerWorker {
 }
 
 impl ViewerWorkerHandle {
+    pub(crate) fn clear_ready(&self) {
+        self.wake.pending.store(false, Ordering::Release);
+    }
+
     pub(crate) fn open(&self, path: PathBuf, tab_width: usize) -> io::Result<ViewerHandle> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let generation = 0;
@@ -523,7 +551,7 @@ impl ViewerHandle {
     }
 }
 
-fn run(receiver: Receiver<ViewerCommand>) {
+fn run(receiver: Receiver<ViewerCommand>, wake: ViewerWake) {
     let mut viewers = HashMap::<ViewerId, WorkerViewer>::new();
     let mut queue = VecDeque::new();
     let mut active = None;
@@ -551,19 +579,19 @@ fn run(receiver: Receiver<ViewerCommand>) {
                 split(command, &mut controls, &mut operations);
             }
             for command in controls {
-                if control(command, &mut viewers, &mut active, &mut queue) {
+                if control(command, &mut viewers, &mut active, &mut queue, &wake) {
                     return;
                 }
             }
             for command in operations {
-                enqueue(command, &mut viewers, &mut active, &mut queue);
+                enqueue(command, &mut viewers, &mut active, &mut queue, &wake);
             }
         }
         if active.is_none() {
             active = queue.pop_front();
         }
         if let Some(work) = active.take() {
-            if let Some(work) = step(work, &mut viewers) {
+            if let Some(work) = step(work, &mut viewers, &wake) {
                 queue.push_back(work);
             }
             active = queue.pop_front();
@@ -588,6 +616,7 @@ fn control(
     viewers: &mut HashMap<ViewerId, WorkerViewer>,
     active: &mut Option<Work>,
     queue: &mut VecDeque<Work>,
+    wake: &ViewerWake,
 ) -> bool {
     match command {
         ViewerCommand::Open {
@@ -600,7 +629,7 @@ fn control(
             Ok(viewer) => {
                 let path = viewer.path().to_owned();
                 viewers.insert(id, WorkerViewer { viewer, generation });
-                send(
+                send_direct(
                     &reply,
                     ViewerResult::Opened {
                         id,
@@ -609,7 +638,7 @@ fn control(
                     },
                 );
             }
-            Err(error) => send(
+            Err(error) => send_direct(
                 &reply,
                 ViewerResult::Error {
                     id,
@@ -624,7 +653,7 @@ fn control(
             generation,
             reply,
         } => {
-            cancel(id, active, queue);
+            cancel(id, active, queue, wake);
             let result = match viewers.get(&id) {
                 Some(viewer) if generation >= viewer.generation => {
                     viewers.remove(&id);
@@ -636,10 +665,10 @@ fn control(
                     terminal: None,
                 },
             };
-            send(&reply, result);
+            send_direct(&reply, result);
         }
         ViewerCommand::Cancel { id, generation } => {
-            cancel(id, active, queue);
+            cancel(id, active, queue, wake);
             if let Some(viewer) = viewers.get_mut(&id)
                 && generation >= viewer.generation
             {
@@ -647,7 +676,7 @@ fn control(
             }
         }
         ViewerCommand::Shutdown => {
-            cancel_all(active, queue);
+            cancel_all(active, queue, wake);
             return true;
         }
         ViewerCommand::Run { .. } => {}
@@ -660,6 +689,7 @@ fn enqueue(
     viewers: &mut HashMap<ViewerId, WorkerViewer>,
     active: &mut Option<Work>,
     queue: &mut VecDeque<Work>,
+    wake: &ViewerWake,
 ) {
     let ViewerCommand::Run {
         id,
@@ -671,7 +701,7 @@ fn enqueue(
         return;
     };
     let Some(viewer) = viewers.get_mut(&id) else {
-        send(
+        wake.send(
             &reply,
             ViewerResult::Stale {
                 id,
@@ -682,7 +712,7 @@ fn enqueue(
         return;
     };
     if generation < viewer.generation {
-        send(
+        wake.send(
             &reply,
             ViewerResult::Stale {
                 id,
@@ -693,10 +723,10 @@ fn enqueue(
         return;
     }
     if generation > viewer.generation {
-        cancel(id, active, queue);
+        cancel(id, active, queue, wake);
     }
     if queue.len() + usize::from(active.is_some()) >= VIEWER_COMMAND_CAPACITY {
-        send(
+        wake.send(
             &reply,
             ViewerResult::Error {
                 id,
@@ -711,7 +741,7 @@ fn enqueue(
     match operation {
         ViewerOperation::Search { query, forward } => {
             match viewer.viewer.begin_search_work(query, forward) {
-                SearchStart::Complete(value) => send(
+                SearchStart::Complete(value) => wake.send(
                     &reply,
                     ViewerResult::Done {
                         id,
@@ -731,7 +761,7 @@ fn enqueue(
         }
         ViewerOperation::RepeatSearch { same_direction } => {
             match viewer.viewer.begin_repeat_search_work(same_direction) {
-                Ok(SearchStart::Complete(value)) => send(
+                Ok(SearchStart::Complete(value)) => wake.send(
                     &reply,
                     ViewerResult::Done {
                         id,
@@ -747,7 +777,7 @@ fn enqueue(
                     work,
                     reply,
                 }),
-                Err(error) => send(
+                Err(error) => wake.send(
                     &reply,
                     ViewerResult::Error {
                         id,
@@ -767,7 +797,11 @@ fn enqueue(
     }
 }
 
-fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Work> {
+fn step(
+    work: Work,
+    viewers: &mut HashMap<ViewerId, WorkerViewer>,
+    wake: &ViewerWake,
+) -> Option<Work> {
     match work {
         Work::Search {
             id,
@@ -776,7 +810,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
             reply,
         } => {
             let Some(viewer) = viewers.get_mut(&id) else {
-                send(
+                wake.send(
                     &reply,
                     ViewerResult::Stale {
                         id,
@@ -787,7 +821,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                 return None;
             };
             if viewer.generation != generation {
-                send(
+                wake.send(
                     &reply,
                     ViewerResult::Stale {
                         id,
@@ -805,7 +839,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                     reply,
                 }),
                 Ok(SearchStep::Complete(value)) => {
-                    send(
+                    wake.send(
                         &reply,
                         ViewerResult::Done {
                             id,
@@ -818,7 +852,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                     None
                 }
                 Err(error) => {
-                    send(
+                    wake.send(
                         &reply,
                         ViewerResult::Error {
                             id,
@@ -838,7 +872,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
             reply,
         } => {
             let Some(viewer) = viewers.get_mut(&id) else {
-                send(
+                wake.send(
                     &reply,
                     ViewerResult::Error {
                         id,
@@ -854,7 +888,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                     "step stale id={id} command={generation} worker={}",
                     viewer.generation
                 );
-                send(
+                wake.send(
                     &reply,
                     ViewerResult::Stale {
                         id,
@@ -865,7 +899,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                 return None;
             }
             match execute(&mut viewer.viewer, operation) {
-                Ok((value, terminal)) => send(
+                Ok((value, terminal)) => wake.send(
                     &reply,
                     ViewerResult::Done {
                         id,
@@ -877,7 +911,7 @@ fn step(work: Work, viewers: &mut HashMap<ViewerId, WorkerViewer>) -> Option<Wor
                 ),
                 Err(error) => {
                     let (message, terminal) = *error;
-                    send(
+                    wake.send(
                         &reply,
                         ViewerResult::Error {
                             id,
@@ -987,14 +1021,14 @@ fn apply_hex_highlights(viewer: &mut Viewer, terminal: &mut Terminal) -> io::Res
     Ok(())
 }
 
-fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
+fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>, wake: &ViewerWake) {
     if active.as_ref().is_some_and(|work| work_id(work) == id) {
-        send_stale(active.take().unwrap());
+        send_stale(active.take().unwrap(), wake);
     }
     let mut keep = VecDeque::new();
     while let Some(work) = queue.pop_front() {
         if work_id(&work) == id {
-            send_stale(work)
+            send_stale(work, wake)
         } else {
             keep.push_back(work)
         }
@@ -1002,12 +1036,12 @@ fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
     *queue = keep;
 }
 
-fn cancel_all(active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
+fn cancel_all(active: &mut Option<Work>, queue: &mut VecDeque<Work>, wake: &ViewerWake) {
     if let Some(work) = active.take() {
-        send_stale(work);
+        send_stale(work, wake);
     }
     while let Some(work) = queue.pop_front() {
-        send_stale(work);
+        send_stale(work, wake);
     }
 }
 
@@ -1017,14 +1051,14 @@ fn work_id(work: &Work) -> ViewerId {
     }
 }
 
-fn send_stale(work: Work) {
+fn send_stale(work: Work, wake: &ViewerWake) {
     match work {
         Work::Run {
             id,
             generation,
             operation,
             reply,
-        } => send(
+        } => wake.send(
             &reply,
             ViewerResult::Stale {
                 id,
@@ -1037,7 +1071,7 @@ fn send_stale(work: Work) {
             generation,
             reply,
             ..
-        } => send(
+        } => wake.send(
             &reply,
             ViewerResult::Stale {
                 id,
@@ -1055,7 +1089,7 @@ fn take_terminal_from(operation: ViewerOperation) -> Option<Terminal> {
     }
 }
 
-fn send(reply: &SyncSender<ViewerResult>, result: ViewerResult) {
+fn send_direct(reply: &SyncSender<ViewerResult>, result: ViewerResult) {
     let _ = reply.send(result);
 }
 
@@ -1079,10 +1113,15 @@ mod tests {
         ))
     }
 
+    fn worker() -> ViewerWorker {
+        let (events, _notifications) = mpsc::sync_channel(1);
+        ViewerWorker::spawn(events).unwrap()
+    }
+
     fn open(label: &str, bytes: &[u8]) -> (PathBuf, ViewerWorker, ViewerHandle) {
         let path = path(label);
         fs::write(&path, bytes).unwrap();
-        let worker = ViewerWorker::spawn().unwrap();
+        let worker = worker();
         let viewer = worker.handle().open(path.clone(), 8).unwrap();
         (path, worker, viewer)
     }
@@ -1105,6 +1144,120 @@ mod tests {
         worker.shutdown();
         assert!(worker.join.is_none());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn result_wakes_an_idle_server_before_polling() {
+        let path = path("ready");
+        fs::write(&path, b"text").unwrap();
+        let (events, notifications) = mpsc::sync_channel(1);
+        let mut worker = ViewerWorker::spawn(events).unwrap();
+        let handle = worker.handle();
+        let mut viewer = handle.open(path.clone(), 8).unwrap();
+
+        viewer.top().unwrap();
+        assert!(matches!(
+            notifications.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ServerEvent::ViewerReady
+        ));
+        handle.clear_ready();
+        let mut terminal = Terminal::new(Size {
+            columns: 20,
+            rows: 4,
+        })
+        .unwrap();
+        assert!(matches!(
+            viewer.poll(&mut terminal).unwrap(),
+            Some(ViewerUpdate::NavigationComplete)
+        ));
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn full_event_queue_does_not_block_a_result() {
+        let path = path("ready-full");
+        fs::write(&path, b"text").unwrap();
+        let (events, notifications) = mpsc::sync_channel(1);
+        events.send(ServerEvent::ViewerReady).unwrap();
+        let mut worker = ViewerWorker::spawn(events).unwrap();
+        let viewer = worker.handle().open(path.clone(), 8).unwrap();
+        let (reply, result) = mpsc::sync_channel(1);
+        worker
+            .handle()
+            .sender
+            .send(ViewerCommand::Run {
+                id: viewer.id,
+                generation: viewer.generation,
+                operation: ViewerOperation::Top,
+                reply,
+            })
+            .unwrap();
+        assert!(matches!(
+            result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ViewerResult::Done { .. }
+        ));
+        assert!(matches!(
+            notifications.try_recv(),
+            Ok(ServerEvent::ViewerReady)
+        ));
+        assert!(notifications.try_recv().is_err());
+
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ready_wake_is_coalesced_across_viewers() {
+        let first_path = path("ready-first");
+        let second_path = path("ready-second");
+        fs::write(&first_path, b"first").unwrap();
+        fs::write(&second_path, b"second").unwrap();
+        let (events, notifications) = mpsc::sync_channel(2);
+        let mut worker = ViewerWorker::spawn(events).unwrap();
+        let handle = worker.handle();
+        let first = handle.open(first_path.clone(), 8).unwrap();
+        let second = handle.open(second_path.clone(), 8).unwrap();
+        let (first_reply, first_result) = mpsc::sync_channel(1);
+        let (second_reply, second_result) = mpsc::sync_channel(1);
+        handle
+            .sender
+            .send(ViewerCommand::Run {
+                id: first.id,
+                generation: first.generation,
+                operation: ViewerOperation::Top,
+                reply: first_reply,
+            })
+            .unwrap();
+        handle
+            .sender
+            .send(ViewerCommand::Run {
+                id: second.id,
+                generation: second.generation,
+                operation: ViewerOperation::Top,
+                reply: second_reply,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            first_result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ViewerResult::Done { id, .. } if id == first.id
+        ));
+        assert!(matches!(
+            second_result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ViewerResult::Done { id, .. } if id == second.id
+        ));
+        assert!(matches!(
+            notifications.try_recv(),
+            Ok(ServerEvent::ViewerReady)
+        ));
+        assert!(notifications.try_recv().is_err());
+
+        worker.shutdown();
+        fs::remove_file(first_path).unwrap();
+        fs::remove_file(second_path).unwrap();
     }
 
     #[test]
@@ -1184,7 +1337,7 @@ mod tests {
         let second_path = path("second");
         fs::write(&first_path, b"first").unwrap();
         fs::write(&second_path, b"second").unwrap();
-        let mut worker = ViewerWorker::spawn().unwrap();
+        let mut worker = worker();
         let handle = worker.handle();
         let first = handle.open(first_path.clone(), 8).unwrap();
         let second = handle.open(second_path.clone(), 8).unwrap();
@@ -1337,7 +1490,7 @@ mod tests {
         let second_path = path("search-second");
         fs::write(&first_path, vec![b'a'; 8 * 1024 * 1024]).unwrap();
         fs::write(&second_path, b"second").unwrap();
-        let mut worker = ViewerWorker::spawn().unwrap();
+        let mut worker = worker();
         let handle = worker.handle();
         let first = handle.open(first_path.clone(), 8).unwrap();
         let second = handle.open(second_path.clone(), 8).unwrap();
