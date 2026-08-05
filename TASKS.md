@@ -741,7 +741,7 @@ perform file I/O or file scanning.
     67 viewer tests; the x86_64-unknown-linux-musl release build passed.
     Native Windows/MSVC validation was not available in this Linux host.
 
-- [ ] **T28R — Add Hex-mode ASCII and exact-byte search**
+- [*] **T28R — Add Hex-mode ASCII and exact-byte search**
   - Use normal parsed text queries for ASCII case-insensitive search in Hex mode
     and parsed `hex:` queries for exact bytes.
   - Permit matches across displayed rows and raw block boundaries.
@@ -754,6 +754,14 @@ perform file I/O or file scanning.
   - Depends on: T28O, T28Q.
   - Done when: Text and Hex search share one bounded search engine and differ only
     by query interpretation and frame mapping.
+  - Implementation: reused the raw-byte incremental search engine for Hex mode,
+    added Hex/ASCII byte-span mapping with active-match styling, and covered
+    case-insensitive ASCII, exact bytes, row/block boundaries, and worker
+    rendering.
+  - Evidence: focused cargo test --locked viewer:: passed 72 viewer tests;
+    elevated cargo test --locked passed 134 unit tests and 8 lifecycle tests;
+    cargo build --release --locked --target x86_64-unknown-linux-musl passed.
+    Native Windows/MSVC validation was not available in this Linux host.
 
 - [*] **T28S — Wire mode switching, cancellation, and input actions**
   - Map `H` in Viewer mode to a semantic mode-toggle action.
@@ -779,7 +787,7 @@ perform file I/O or file scanning.
   - Evidence: `cargo fmt --check`, focused input/viewer/worker tests, elevated
     `cargo test --locked` (131 unit tests and 8 lifecycle tests), and
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
-    Native Windows/MSVC validation was not available; T28R remains open.
+    Native Windows/MSVC validation was not available.
 
 - [ ] **T28T — Remove superseded and duplicated viewer code**
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata

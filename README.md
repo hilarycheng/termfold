@@ -212,6 +212,9 @@ underlined, and wrapped searches report `wrapped`.
 Press `H` to toggle between Text and Hex mode without reopening the file; the
 current byte position is preserved where possible, and in-flight viewer work is
 cancelled before the new frame is rendered.
+In Hex mode, normal search queries match ASCII bytes case-insensitively; queries
+starting with `hex:` use exact space-separated bytes, such as `hex:00 FF 1B`.
+Matches may cross displayed rows and raw file blocks.
 
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
 stay with the preceding token, tabs expand to the next eight-cell stop, ASCII

@@ -136,6 +136,18 @@ fn hex_digit(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, path::PathBuf, time::SystemTime};
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn text_search_is_ascii_case_insensitive_only() {
@@ -197,5 +209,26 @@ mod tests {
     #[test]
     fn rejects_empty_text() {
         assert_eq!(SearchQuery::parse(b""), Err(SearchQueryError::Empty));
+    }
+
+    #[test]
+    fn visible_search_matches_case_and_raw_block_boundaries() {
+        let path = temp_path("termfold-search-hex-boundary");
+        let mut data = vec![b'x'; BLOCK_SIZE as usize + 8];
+        data[3..5].copy_from_slice(b"Ab");
+        data[BLOCK_SIZE as usize - 1..BLOCK_SIZE as usize + 2].copy_from_slice(&[0x00, 0xff, 0x1b]);
+        fs::write(&path, &data).unwrap();
+
+        let mut source = FileSource::open(path.clone()).unwrap();
+        let text = SearchQuery::parse(b"aB").unwrap();
+        assert_eq!(text.visible_matches(&mut source, 0..8).unwrap(), vec![3..5]);
+        let hex = SearchQuery::parse(b"hex:00 FF 1B").unwrap();
+        assert_eq!(
+            hex.visible_matches(&mut source, BLOCK_SIZE - 2..BLOCK_SIZE + 4)
+                .unwrap(),
+            vec![BLOCK_SIZE - 1..BLOCK_SIZE + 2]
+        );
+
+        fs::remove_file(path).unwrap();
     }
 }

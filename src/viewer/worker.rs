@@ -12,7 +12,7 @@ use std::{
 
 use crate::{session::Size, terminal::Terminal};
 
-use super::{SearchStart, SearchStep, SearchWork, Viewer};
+use super::{SearchStart, SearchStep, SearchWork, Viewer, ViewerMode};
 
 pub(super) const VIEWER_COMMAND_CAPACITY: usize = 8;
 const VIEWER_RESULT_CAPACITY: usize = VIEWER_COMMAND_CAPACITY * 2;
@@ -904,7 +904,10 @@ fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
         ViewerOperation::ToggleMode => no_value(viewer.toggle_mode()),
         ViewerOperation::Render { mut terminal, size } => {
             match viewer.render(&mut terminal, size) {
-                Ok(()) => Ok((None, Some(terminal))),
+                Ok(()) => match apply_hex_highlights(viewer, &mut terminal) {
+                    Ok(()) => Ok((None, Some(terminal))),
+                    Err(error) => Err((error.to_string(), Some(terminal))),
+                },
                 Err(error) => Err((error.to_string(), Some(terminal))),
             }
         }
@@ -913,6 +916,62 @@ fn execute(viewer: &mut Viewer, operation: ViewerOperation) -> ExecResult {
         }
     };
     result
+}
+
+fn apply_hex_highlights(viewer: &mut Viewer, terminal: &mut Terminal) -> io::Result<()> {
+    if viewer.mode != ViewerMode::Hex {
+        return Ok(());
+    }
+    let Some(frame) = viewer.current_frame() else {
+        return Ok(());
+    };
+    let Some(search) = viewer.search.as_ref() else {
+        return Ok(());
+    };
+    let source_range = frame.source_range.clone();
+    let query = search.query.clone();
+    let active_offset = search.offset;
+    let matches = query.visible_matches(&mut viewer.source, source_range)?;
+    if matches.is_empty() {
+        return Ok(());
+    }
+    let active = active_offset..active_offset.saturating_add(query.len() as u64);
+    let Some(page) = viewer.current_frame().and_then(|frame| frame.hex.as_ref()) else {
+        return Ok(());
+    };
+    let cursor = terminal.screen().cursor();
+    page.for_each_highlight(&matches, Some(&active), |span| {
+        let Some(row) = page.rows.get(span.row) else {
+            return;
+        };
+        let index = span.source.saturating_sub(row.offset) as usize;
+        let Some(&byte) = row.bytes.get(index) else {
+            return;
+        };
+        let text = if span.width == 2 {
+            format!("{byte:02X}")
+        } else {
+            char::from(if (0x20..=0x7e).contains(&byte) {
+                byte
+            } else {
+                b'.'
+            })
+            .to_string()
+        };
+        let style = if span.active { "7;4" } else { "7" };
+        terminal.advance(
+            format!(
+                "\x1b[{};{}H\x1b[{}m{}\x1b[0m",
+                span.row + 1,
+                span.column + 1,
+                style,
+                text
+            )
+            .as_bytes(),
+        );
+    });
+    terminal.advance(format!("\x1b[{};{}H", cursor.row + 1, cursor.column + 1).as_bytes());
+    Ok(())
 }
 
 fn cancel(id: ViewerId, active: &mut Option<Work>, queue: &mut VecDeque<Work>) {
@@ -1187,6 +1246,72 @@ mod tests {
         }
         assert!(saw_stale);
         assert!(switched);
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_search_highlights_ascii_and_exact_bytes_across_rows() {
+        let (path, mut worker, mut viewer) =
+            open("hex-search", &[b'a', b'b', b'c', 0x00, 0xff, 0x1b, b'X']);
+        let size = Size {
+            columns: 28,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+
+        viewer.toggle_mode().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+
+        assert_eq!(
+            viewer
+                .boolean(ViewerOperation::Search {
+                    query: b"aB".to_vec(),
+                    forward: true,
+                })
+                .unwrap(),
+            (true, false)
+        );
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        assert!(terminal.screen().rows()[0][10].attributes().inverse);
+        assert!(terminal.screen().rows()[0][10].attributes().underline);
+        assert!(terminal.screen().rows()[0][23].attributes().inverse);
+
+        assert_eq!(
+            viewer
+                .boolean(ViewerOperation::Search {
+                    query: b"hex:00 FF 1B".to_vec(),
+                    forward: true,
+                })
+                .unwrap(),
+            (true, false)
+        );
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        for (row, columns) in [(0, [19].as_slice()), (1, [10, 13].as_slice())] {
+            for &column in columns {
+                let attributes = terminal.screen().rows()[row][column].attributes();
+                assert!(attributes.inverse && attributes.underline);
+            }
+        }
+        for (row, columns) in [(0, [26].as_slice()), (1, [23, 24].as_slice())] {
+            for &column in columns {
+                let attributes = terminal.screen().rows()[row][column].attributes();
+                assert!(attributes.inverse && attributes.underline);
+            }
+        }
 
         viewer.close().unwrap();
         worker.shutdown();

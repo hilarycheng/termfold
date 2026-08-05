@@ -19,6 +19,15 @@ pub(super) struct HexPage {
     pub(super) narrow: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct HighlightSpan {
+    pub(super) source: u64,
+    pub(super) row: usize,
+    pub(super) column: usize,
+    pub(super) width: usize,
+    pub(super) active: bool,
+}
+
 pub(super) fn bytes_per_row(columns: usize) -> usize {
     match columns {
         80.. => 16,
@@ -113,6 +122,60 @@ impl HexPage {
         }));
         rendered
     }
+
+    pub(super) fn for_each_highlight(
+        &self,
+        matches: &[Range<u64>],
+        active: Option<&Range<u64>>,
+        mut visit: impl FnMut(HighlightSpan),
+    ) {
+        if self.narrow || matches.is_empty() {
+            return;
+        }
+        let mut match_index = 0;
+        for (row_index, row) in self.rows.iter().enumerate() {
+            for (byte_index, _) in row.bytes.iter().enumerate() {
+                let source = row.offset + byte_index as u64;
+                while matches
+                    .get(match_index)
+                    .is_some_and(|range| range.end <= source)
+                {
+                    match_index += 1;
+                }
+                let Some(range) = matches.get(match_index) else {
+                    return;
+                };
+                if range.start > source {
+                    continue;
+                }
+                let active = active.is_some_and(|range| range.contains(&source));
+                visit(HighlightSpan {
+                    source,
+                    row: row_index,
+                    column: row.hex_cells[byte_index].start,
+                    width: 2,
+                    active,
+                });
+                visit(HighlightSpan {
+                    source,
+                    row: row_index,
+                    column: self.ascii_column(row) + byte_index,
+                    width: 1,
+                    active,
+                });
+            }
+        }
+    }
+
+    fn ascii_column(&self, row: &HexRow) -> usize {
+        row.hex_cells
+            .first()
+            .map_or_else(
+                || format!("{:08X}", row.offset).len() + 2,
+                |cell| cell.start,
+            )
+            .saturating_add(self.bytes_per_row * 3 + 1)
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +255,51 @@ mod tests {
         let page = build(&mut source, 0, usize::MAX, 80, 256 * 1024).unwrap();
         assert_eq!(page.source_range.end - page.source_range.start, 256 * 1024);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn highlights_hex_and_ascii_cells_for_each_matching_byte() {
+        let row = HexRow::new(0, b"AbCD");
+        let page = HexPage {
+            bytes_per_row: 4,
+            rows: vec![row],
+            ..HexPage::default()
+        };
+        let mut spans = Vec::new();
+        page.for_each_highlight(&[1..3], Some(&(2..3)), |span| spans.push(span));
+
+        assert_eq!(
+            spans,
+            vec![
+                HighlightSpan {
+                    source: 1,
+                    row: 0,
+                    column: 13,
+                    width: 2,
+                    active: false,
+                },
+                HighlightSpan {
+                    source: 1,
+                    row: 0,
+                    column: 24,
+                    width: 1,
+                    active: false,
+                },
+                HighlightSpan {
+                    source: 2,
+                    row: 0,
+                    column: 16,
+                    width: 2,
+                    active: true,
+                },
+                HighlightSpan {
+                    source: 2,
+                    row: 0,
+                    column: 25,
+                    width: 1,
+                    active: true,
+                },
+            ]
+        );
     }
 }
