@@ -481,7 +481,7 @@ impl Input {
                 actions.push(Action::ViewCancelled);
             }
             Mode::ViewPrompt(path, _) if matches!(byte, 8 | 127) => {
-                if path.pop().is_some() {
+                if pop_view_prompt_character(path) {
                     actions.push(Action::ViewQuery(path.clone()));
                 } else {
                     actions.push(Action::ViewParent);
@@ -613,6 +613,18 @@ impl Input {
                 actions.push(Action::Status(viewer_search_status(*forward, query)));
             }
         }
+    }
+}
+
+fn pop_view_prompt_character(path: &mut Vec<u8>) -> bool {
+    if let Ok(text) = std::str::from_utf8(path) {
+        let Some((index, _)) = text.char_indices().next_back() else {
+            return false;
+        };
+        path.truncate(index);
+        true
+    } else {
+        path.pop().is_some()
     }
 }
 
@@ -932,6 +944,20 @@ mod tests {
             input.advance(b"\r"),
             vec![Action::ViewerSearch(b"q".to_vec(), true)]
         );
+    }
+
+    #[test]
+    fn completed_viewer_prompt_remains_editable() {
+        let mut input = Input::new(2, false);
+        assert_eq!(input.advance(b"\x02v"), vec![Action::ViewPrompt(false)]);
+        input.set_view_prompt("alpha".as_bytes().to_vec());
+        assert_eq!(
+            input.advance(b"\x08"),
+            vec![Action::ViewQuery(b"alph".to_vec())]
+        );
+        input.set_view_prompt("界".as_bytes().to_vec());
+        assert_eq!(input.advance(b"\x08"), vec![Action::ViewQuery(Vec::new())]);
+        assert!(matches!(input.mode, Mode::ViewPrompt(_, _)));
     }
 
     #[test]

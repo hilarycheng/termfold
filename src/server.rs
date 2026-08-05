@@ -1254,16 +1254,7 @@ fn handle_action(
                 .iter_mut()
                 .find(|client| client.id == client_id)
                 .and_then(|client| client.viewer_prompt.as_mut())
-                .map(|prompt| {
-                    let entries = viewer_entries(&prompt.directory, &prompt.filter);
-                    if entries.is_empty() {
-                        return Err("no matching entries".to_owned());
-                    }
-                    let index = prompt.selected % entries.len();
-                    prompt.selected = (index + 1) % entries.len();
-                    prompt.query = entries[index].name.as_bytes().to_vec();
-                    Ok(prompt.query.clone())
-                });
+                .map(complete_viewer_entry);
             match completion {
                 Some(Ok(query)) => {
                     if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
@@ -1871,6 +1862,22 @@ fn select_viewer_entry(prompt: &mut ViewerPrompt, amount: i32) -> Result<Vec<u8>
     };
     prompt.selected = selected;
     prompt.query = entries[selected].name.as_bytes().to_vec();
+    Ok(prompt.query.clone())
+}
+
+fn complete_viewer_entry(prompt: &mut ViewerPrompt) -> Result<Vec<u8>, String> {
+    let entries = viewer_entries(&prompt.directory, &prompt.filter);
+    if entries.is_empty() {
+        return Err("no matching entries".to_owned());
+    }
+    let index = entries
+        .iter()
+        .position(|entry| entry.name.as_bytes() == prompt.query.as_slice())
+        .map_or(prompt.selected % entries.len(), |index| {
+            (index + 1) % entries.len()
+        });
+    prompt.selected = index;
+    prompt.query = entries[index].name.as_bytes().to_vec();
     Ok(prompt.query.clone())
 }
 
@@ -2909,6 +2916,34 @@ mod tests {
             select_viewer_entry(&mut prompt, -1).unwrap(),
             b"beta".to_vec()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_completion_keeps_current_selection_synchronized() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "termfold-viewer-completion-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("alpha"), b"").unwrap();
+        fs::create_dir(directory.join("alpine")).unwrap();
+        let mut prompt = ViewerPrompt {
+            directory: directory.clone(),
+            query: b"al".to_vec(),
+            filter: b"al".to_vec(),
+            selected: 0,
+        };
+
+        assert_eq!(complete_viewer_entry(&mut prompt).unwrap(), b"alpha");
+        assert_eq!(prompt.selected, 0);
+        assert_eq!(complete_viewer_entry(&mut prompt).unwrap(), b"alpine");
+        assert_eq!(prompt.selected, 1);
+
         fs::remove_dir_all(directory).unwrap();
     }
 

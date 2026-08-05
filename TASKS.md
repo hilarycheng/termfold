@@ -919,7 +919,7 @@ Rules for every T29 implementation request:
   - Evidence: completed as a documentation-only change. `README.md`, Rust source,
     builds, tests, dependencies, and Git state were not changed.
 
-- [ ] **T29B — Keep Tab-completed viewer paths editable**
+- [*] **T29B — Keep Tab-completed viewer paths editable**
   - Recommended model: Luna High.
   - Keep the Input prompt buffer, server-side visible query, filter, and selected
     entry synchronized after `Tab` completion or keyboard entry selection.
@@ -935,6 +935,11 @@ Rules for every T29 implementation request:
   - Depends on: T29A.
   - Done when: completion changes only editable prompt state and Backspace behaves
     identically for typed and completed text.
+  - Evidence (2026-08-05): `cargo fmt --check`, `cargo test --locked
+    viewer_prompt`, `cargo test --locked viewer_completion`, and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    Full `cargo test --locked` had 135 passing tests and one unrelated runtime
+    socket test failed with sandbox `Operation not permitted`.
 
 - [ ] **T29C — Prevent literal-tilde path-prompt crashes**
   - Recommended model: Luna High.
@@ -1118,4 +1123,3 @@ Rules for every T29 implementation request:
   - Done when: all corrected behaviour is verified on authoritative environments,
     all resource and ordering limits still pass, and documentation matches the
     executable without claiming unavailable validation.
-
