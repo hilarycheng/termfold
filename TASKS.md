@@ -1566,12 +1566,12 @@ Rules for every T30 implementation request:
     `runtime::tests::socket_is_private_and_only_a_stale_socket_is_replaced` and
     one intermittent Worker timeout that passed when rerun in isolation.
 
-- [ ] **T30F — Preserve bounded worker search after cursor-anchor changes**
+- [x] **T30F — Preserve bounded worker search after cursor-anchor changes**
   - Recommended model: Luna Max.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Route the corrected repeat anchor through the existing generation-bound
     Viewer Worker and server dispatcher without adding synchronous server file
@@ -1597,6 +1597,16 @@ Rules for every T30 implementation request:
     cache/frame separation, and absence of server file reads.
   - Done when: `n`/`N` from a page-changed cursor remains responsive and bounded
     whether the needed block is cached or reloaded.
+  - Implementation: stale `Cancel` and `Close` controls now check the worker
+    generation before cancelling newer work. Added worker regressions for page
+    navigation and repeat anchoring, raw-block eviction and reload, cancellation
+    with query retention, navigation preemption, and stale controls.
+  - Evidence (2026-08-05): `cargo fmt --check`, focused Worker tests (20/20),
+    and focused server ViewerGate tests (6/6) passed. The Linux musl release
+    build passed; `file` and `ldd` confirmed a stripped static PIE. `cargo check
+    --locked --tests --target x86_64-pc-windows-msvc` passed as compile-only
+    evidence. Native Windows runtime tests and the MSVC release build remain
+    blocked because this environment has no native Windows runtime or `link.exe`.
 
 - [ ] **T30G — Build width-derived Hex row geometry**
   - Recommended model: Luna xHigh.

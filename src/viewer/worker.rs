@@ -703,9 +703,9 @@ fn control(
             generation,
             reply,
         } => {
-            cancel(id, active, queue, viewers, wake);
             let result = match viewers.get(&id) {
                 Some(viewer) if generation >= viewer.generation => {
+                    cancel(id, active, queue, viewers, wake);
                     viewers.remove(&id);
                     ViewerResult::Closed { id, generation }
                 }
@@ -718,11 +718,14 @@ fn control(
             send_direct(&reply, result);
         }
         ViewerCommand::Cancel { id, generation } => {
-            cancel(id, active, queue, viewers, wake);
-            if let Some(viewer) = viewers.get_mut(&id)
-                && generation >= viewer.generation
+            if viewers
+                .get(&id)
+                .is_some_and(|viewer| generation >= viewer.generation)
             {
-                viewer.generation = generation;
+                cancel(id, active, queue, viewers, wake);
+                if let Some(viewer) = viewers.get_mut(&id) {
+                    viewer.generation = generation;
+                }
             }
         }
         ViewerCommand::Shutdown => {
@@ -1313,7 +1316,7 @@ mod tests {
     use crate::{session::Size, terminal::Terminal};
     use std::{
         fs, thread,
-        time::{Duration, SystemTime},
+        time::{Duration, Instant, SystemTime},
     };
 
     fn path(label: &str) -> PathBuf {
@@ -1341,13 +1344,24 @@ mod tests {
     }
 
     fn wait_update(viewer: &mut ViewerHandle, terminal: &mut Terminal) -> ViewerUpdate {
-        for _ in 0..10_000 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
             if let Some(update) = viewer.poll(terminal).unwrap() {
                 return update;
             }
+            assert!(
+                Instant::now() < deadline,
+                "viewer worker did not return a result"
+            );
             thread::yield_now();
         }
-        panic!("viewer worker did not return a result");
+    }
+
+    fn row_text(terminal: &Terminal, row: usize) -> String {
+        terminal.screen().rows()[row]
+            .iter()
+            .map(|cell| cell.character())
+            .collect()
     }
 
     #[test]
@@ -1546,6 +1560,61 @@ mod tests {
     }
 
     #[test]
+    fn stale_cancel_and_close_do_not_preempt_newer_work() {
+        let path = path("stale-control");
+        fs::write(&path, b"text").unwrap();
+        let id = 1;
+        let viewer = Viewer::open(path.clone(), 8).unwrap();
+        let mut viewers = HashMap::from([(
+            id,
+            WorkerViewer {
+                viewer,
+                generation: 2,
+            },
+        )]);
+        let mut active = Some(Work::Run {
+            id,
+            generation: 2,
+            operation: ViewerOperation::Top,
+            reply: mpsc::sync_channel(1).0,
+        });
+        let mut queue = VecDeque::new();
+        let (events, _notifications) = mpsc::sync_channel(1);
+        let wake = ViewerWake {
+            events,
+            pending: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(!control(
+            ViewerCommand::Cancel { id, generation: 1 },
+            &mut viewers,
+            &mut active,
+            &mut queue,
+            &wake,
+        ));
+        assert!(active.is_some());
+        assert_eq!(viewers.get(&id).map(|viewer| viewer.generation), Some(2));
+
+        let (reply, result) = mpsc::sync_channel(1);
+        assert!(!control(
+            ViewerCommand::Close {
+                id,
+                generation: 1,
+                reply,
+            },
+            &mut viewers,
+            &mut active,
+            &mut queue,
+            &wake,
+        ));
+        assert!(active.is_some());
+        assert!(viewers.contains_key(&id));
+        assert!(matches!(result.try_recv(), Ok(ViewerResult::Stale { .. })));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn two_viewers_have_independent_ids() {
         let first_path = path("first");
         let second_path = path("second");
@@ -1593,6 +1662,183 @@ mod tests {
                 .unwrap(),
             ViewerResult::Closed { .. }
         ));
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn navigation_cancels_a_long_search_before_the_next_step() {
+        let (path, mut worker, mut viewer) =
+            open("search-navigation", &vec![b'a'; 8 * 1024 * 1024]);
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 8,
+        })
+        .unwrap();
+        viewer.start_search(vec![b'z'; 256], true).unwrap();
+        viewer.top().unwrap();
+
+        let mut saw_stale = false;
+        let mut saw_navigation = false;
+        for _ in 0..10_000 {
+            if let Some(update) = viewer.poll(&mut terminal).unwrap() {
+                match update {
+                    ViewerUpdate::Stale => saw_stale = true,
+                    ViewerUpdate::NavigationComplete => {
+                        saw_navigation = true;
+                        break;
+                    }
+                    other => panic!("unexpected update: {other:?}"),
+                }
+            } else {
+                thread::yield_now();
+            }
+        }
+        assert!(saw_stale);
+        assert!(saw_navigation);
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn page_navigation_and_repeat_use_the_committed_cursor() {
+        let bytes = b"zero\nhit one\nmiddle\nhit two\nlast\nhit four\n";
+        let (path, mut worker, mut viewer) = open("search-page-anchor", bytes);
+        let size = Size {
+            columns: 20,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        viewer.start_search(b"hit".to_vec(), true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+
+        viewer.page_render(size.rows, true, false, size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        viewer.start_repeat_search(true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        assert!(row_text(&terminal, terminal.screen().cursor().row).starts_with("hit four"));
+
+        viewer.page_render(size.rows, false, false, size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        viewer.start_repeat_search(true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+        viewer.request_render(size).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::RenderComplete
+        ));
+        assert!(row_text(&terminal, terminal.screen().cursor().row).starts_with("hit four"));
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeat_search_survives_raw_block_eviction_and_reload() {
+        let block_size = 64 * 1024;
+        let mut bytes = vec![b'x'; block_size * 10];
+        bytes[1..4].copy_from_slice(b"hit");
+        for block in 0..10 {
+            bytes[(block + 1) * block_size - 1] = b'\n';
+        }
+        let (path, mut worker, mut viewer) = open("search-reload", &bytes);
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 8,
+        })
+        .unwrap();
+
+        viewer.start_search(b"hit".to_vec(), true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+        viewer.bottom().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+        viewer.start_search(b"z".to_vec(), false).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: false, .. }
+        ));
+        viewer.start_repeat_search(false).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cancelled_search_keeps_the_last_query_for_repeat() {
+        let block_size = 64 * 1024;
+        let mut bytes = vec![b'x'; block_size * 4];
+        bytes[1..4].copy_from_slice(b"hit");
+        bytes[2 * block_size + 1..2 * block_size + 4].copy_from_slice(b"hit");
+        let (path, mut worker, mut viewer) = open("search-cancel-repeat", &bytes);
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 8,
+        })
+        .unwrap();
+
+        viewer.start_search(b"hit".to_vec(), true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+        viewer.start_search(vec![b'z'; 256], true).unwrap();
+        viewer.cancel().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::Stale
+        ));
+        viewer.start_repeat_search(true).unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete { found: true, .. }
+        ));
+
+        viewer.close().unwrap();
         worker.shutdown();
         fs::remove_file(path).unwrap();
     }
