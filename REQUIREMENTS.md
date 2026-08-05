@@ -175,6 +175,14 @@ block first-release acceptance.
   MUST NOT wait for an obsolete result before closing the pane.
 - A read or decode failure MUST preserve the last committed page and report a
   short actionable error.
+- A completed Viewer Worker result MUST wake the Session Server promptly. The
+  visible result path MUST NOT depend only on the periodic listener poll delay.
+- Delivery and commit of the new `Current` frame MUST NOT wait for optional
+  neighbour prefetch. Prefetch MAY run only after `Current` is visible and only
+  when no control or navigation command is waiting.
+- Page-navigation implementation MAY combine navigation and rendering into one
+  generation-bound operation, but it MUST retain every cancellation, ordering,
+  intermediate-page, and zero-repeat-backlog guarantee in this section.
 
 #### Raw block cache and page frames
 
@@ -205,6 +213,15 @@ block first-release acceptance.
 
 - Arrow Up/Down and `j`/`k` MUST move the logical cursor by one file line while
   preserving its preferred display-cell column where possible.
+- Left/Right Arrow and `h`/`l` MUST follow Vim's default horizontal semantics in
+  Text mode: move to the previous or next valid display-token start within the
+  current logical file line and stop at the line boundary without wrapping to an
+  adjacent line.
+- Text-mode horizontal movement MUST use the shared source-byte-to-display-cell
+  mapping. It MUST skip UTF-8 continuation bytes, combining continuations, wide
+  continuations, tab interiors, and EOL bytes as independent cursor positions.
+- In Hex mode, Left/Right Arrow and `h`/`l` MUST move by exactly one source byte,
+  MAY cross a displayed Hex row boundary, and MUST stop at snapshot BOF or EOF.
 - Home/End and `0`/`$` MUST move to the start/end of the current file line.
   `gg`/`G` and Ctrl-Home/Ctrl-End MUST move to the file start/end.
 - Page Up/Page Down and Ctrl-b/Ctrl-f MUST move by one page, where a page is the
@@ -311,11 +328,37 @@ block first-release acceptance.
   MUST be rejected without changing the previous successful query.
 - Hex matches MAY cross display rows and raw block boundaries.
 
+#### Viewer rendering and help
+
+- The viewer MUST render every available pane-content row directly above the
+  permanent status row. It MUST NOT leave a permanent blank row between viewer
+  content and the status row.
+- Rendering the final viewer row MUST NOT emit a trailing newline, automatic-wrap
+  sequence, or cursor movement that scrolls the virtual terminal and creates a
+  phantom blank row. This applies to Text, Hex, empty-file, and narrow-Hex views.
+- The configured prefix followed by `?` MUST open the key-reminder Help view from
+  an active viewer without first executing Page Up or reverse search.
+- Leaving Help with `q`, `Ctrl-c`, or `Esc` MUST return to the same active viewer
+  and preserve its committed frame, cursor, mode, search state, and generation.
+- Help MUST list all viewer navigation keys, Text/Hex mode switching, forward and
+  reverse search, `n`/`N`, normal ASCII search in Hex mode, exact `hex:` byte
+  syntax, viewer Help, and viewer close behaviour.
+
 #### Path prompt and closing
 
 - The path prompt MUST list only the current directory, filter as the user types,
   cycle or complete matches with `Tab`, enter directories or accept a file with
   `Enter`, and support parent navigation with `Backspace`.
+- A name inserted by `Tab` completion or entry selection MUST remain ordinary
+  editable prompt text. The next `Backspace` MUST remove the final prompt
+  character and update both the visible query and filtering state immediately.
+  Parent navigation MUST occur only when the prompt was already empty before the
+  `Backspace` key. Prompt editing MUST never delete or modify a filesystem entry.
+- A literal `~` in the path prompt MUST never panic, terminate the client, or
+  terminate the Session Server. For this milestone it remains ordinary literal
+  filter text; shell-style home-directory expansion is not implied. Entering
+  `~/` or `~\` without a matching directory MUST produce a short actionable
+  error and keep the prompt active.
 - The active directory MUST come from OSC 7 when available. Otherwise the prompt
   MUST fall back to the server startup directory and remain user-editable.
 - `Ctrl-b x` MUST close the viewer pane after confirmation. `q` and Esc MUST NOT

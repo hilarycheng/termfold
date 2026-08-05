@@ -11,6 +11,15 @@ This file tracks implementation work. Product behaviour remains authoritative in
   require explicit approval covering those actions.
 - Run Linux-specific validation in Linux or WSL.
 - Keep modules and dependencies to the minimum required by implemented behaviour.
+- New implementation subtasks MAY include `Recommended model:` with one of
+  `Luna Medium`, `Luna High`, or `Luna Max`. This is advisory execution metadata,
+  not product behaviour, permission to broaden scope, or permission to combine
+  tasks. The owner may tune the level after observing results.
+- Add `Platform:` only when behaviour or implementation depends on an
+  operating-system-specific API or code path. Accepted values are `Linux`,
+  `Windows`, or `Linux and Windows; separate implementations`. Omit the field for
+  shared source and shared behaviour. Cross-platform validation targets belong
+  under focused checks or evidence, not under `Platform:`.
 
 ## Tasks
 
@@ -223,6 +232,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
   - Done when: focused modal-input checks cover fragmented keys and Escape.
 
 - [ ] **T21 — Add native x86-64 Windows backend**
+  - Platform: Windows.
   - Use ConPTY for panes, current-user named pipes for IPC, job objects for
     child cleanup, and Win32 console-mode restoration and system metrics.
   - Requirement: Distribution and Dependency Contract; IPC and Filesystem
@@ -251,6 +261,7 @@ This file tracks implementation work. Product behaviour remains authoritative in
     history updates, including across tab switches and detach/reattach.
 
 - [*] **T23 — Fix immediate Windows session-server exit**
+  - Platform: Windows.
   - Diagnose and fix native Windows startup immediately reporting
     `termfold: session server exited with exit code: 0`.
   - Root causes:
@@ -866,3 +877,245 @@ perform file I/O or file scanning.
   their unchecked status is intentional until that validation is supplied.
 - T28A is documentation-only. T28U remains the acceptance gate for the missing
   native Windows validation and the final cross-platform claim.
+
+## T29 Execution Contract
+
+T29 corrects the bounded large-file viewer and its path prompt without changing
+unrelated PTY, ConPTY, session, pane, status-format, IPC-security, or terminal
+parser behaviour.
+
+Rules for every T29 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level; changing the
+  level does not change task scope.
+- Do not redesign the Viewer Worker, event loop, renderer, or input state machine
+  unless the named subtask explicitly requires that change.
+- Touch only the files named by the subtask, except for a required private type,
+  `mod` declaration, or focused test fixture in the same module.
+- Do not add dependencies.
+- Keep ordinary production changes below 300 changed lines per subtask.
+- Preserve all T28 limits, snapshot semantics, generation cancellation,
+  three-frame bound, zero-repeat backlog, and one-replacement rule.
+- Run only the focused checks named by the approved implementation request.
+- Stop after reporting changed files, focused results, risks, and blockers.
+- T29E, T29H, T29I, and T29J require review before the next dependent subtask.
+- Do not update `README.md` until T29K verifies the user-visible behaviour.
+
+## T29 Tasks
+
+- [*] **T29A — Define the viewer-correction contract and Luna execution plan**
+  - Recommended model: Luna High.
+  - Add the approved Vim-style horizontal movement, full Viewer Help, no-phantom-
+    row rendering, prompt-editing, literal-tilde safety, and page-latency contracts
+    to `REQUIREMENTS.md`.
+  - Add the T29 execution contract, model guidance, platform metadata rule,
+    dependencies, file ownership, checks, and review gates to `TASKS.md`.
+  - Allowed files: `REQUIREMENTS.md`, `TASKS.md`.
+  - Production files: none.
+  - Depends on: T28T.
+  - Done when: each remaining correction can be implemented by Luna without
+    inventing product behaviour, platform scope, ownership, or completion tests.
+  - Evidence: completed as a documentation-only change. `README.md`, Rust source,
+    builds, tests, dependencies, and Git state were not changed.
+
+- [ ] **T29B — Keep Tab-completed viewer paths editable**
+  - Recommended model: Luna High.
+  - Keep the Input prompt buffer, server-side visible query, filter, and selected
+    entry synchronized after `Tab` completion or keyboard entry selection.
+  - The first `Backspace` after completion MUST remove the final prompt character,
+    immediately refilter entries, and MUST NOT navigate to the parent directory.
+  - Parent navigation MUST occur only when the prompt buffer was empty before the
+    `Backspace` key.
+  - Prompt editing MUST never perform a filesystem delete or modification.
+  - Allowed production files: `src/input.rs`, `src/server.rs`.
+  - Focused tests: partial query then Tab then Backspace, completed file,
+    completed directory, repeated completion cycling, empty-query Backspace,
+    UTF-8 entry name, and client/server prompt-state equality after every action.
+  - Depends on: T29A.
+  - Done when: completion changes only editable prompt state and Backspace behaves
+    identically for typed and completed text.
+
+- [ ] **T29C — Prevent literal-tilde path-prompt crashes**
+  - Recommended model: Luna High.
+  - First add a focused reproduction for entering literal `~` in an empty and a
+    non-empty viewer path prompt; identify whether failure occurs in input,
+    prompt-state, status rendering, directory matching, or separator handling.
+  - Preserve the approved milestone behaviour: `~` is literal filter text and is
+    not expanded to a home directory.
+  - `~`, `~/`, and `~\\` MUST never panic, close the client, or terminate the
+    Session Server. Invalid directory selection MUST leave the prompt active and
+    report a short actionable error.
+  - Allowed production files: `src/input.rs`, `src/server.rs`; `src/render.rs`
+    only when the reproduction proves the crash is in shared status rendering.
+  - Focused tests: literal `~`, prefix plus `~`, `~/`, `~\\`, Backspace after
+    `~`, Tab after `~`, Enter after `~`, and unchanged prompt state after errors.
+  - Depends on: T29A.
+  - Done when: every tilde path-prompt case is non-panicking and deterministic,
+    without adding shell expansion or an external helper.
+
+- [ ] **T29D — Implement horizontal viewer cursor primitives**
+  - Recommended model: Luna High.
+  - In Text mode, implement previous/next valid display-token movement within the
+    current logical line. Stop at line boundaries and never wrap to another line.
+  - Use the existing source/cell spans so movement cannot stop inside UTF-8,
+    combining text, a wide continuation, a tab expansion, or EOL bytes.
+  - In Hex mode, move by one source byte, permit crossing a displayed row, and
+    clamp at snapshot BOF/EOF.
+  - Update preferred display-cell state and horizontal viewport adjustment only
+    through the existing viewer mapping.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/text.rs`,
+    `src/viewer/hex.rs`.
+  - Focused tests: ASCII, line start/end, empty line, CJK, combining text, tabs,
+    invalid bytes, hidden horizontal content, Hex row boundary, Hex block
+    boundary, BOF, and EOF.
+  - Depends on: T29A.
+  - Done when: direct core calls report valid source offsets and display cells for
+    every Text and Hex case without changing worker or input semantics.
+
+- [ ] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
+  - Recommended model: Luna Max.
+  - Add semantic horizontal actions for `h`, `l`, Left Arrow, and Right Arrow.
+  - Preserve fragmented escape-prefixed Left/Right sequences in Viewer mode.
+  - Route horizontal movement through the existing generation-bound Viewer Worker
+    and server-side ViewerGate; the Session Server MUST perform no file I/O.
+  - Navigation MUST cancel unfinished search before dispatch, discard stale
+    results, and retain zero repeat backlog plus one changed-intent replacement.
+  - Allowed production files: `src/input.rs`, `src/server.rs`,
+    `src/viewer/worker.rs`, `src/viewer/mod.rs`.
+  - Focused tests: `h`/`l`, both arrow encodings, fragmented arrows, same-intent
+    repeat dropping, direction reversal replacement, search cancellation, mode
+    switch cancellation, close during movement, and no input leakage to a PTY.
+  - Depends on: T29D.
+  - Review gate: inspect generation changes, gate intent equality, stale-result
+    handling, and absence of synchronous viewer reads in `server.rs`.
+  - Done when: every accepted horizontal command commits one valid viewer frame
+    and cannot create navigation backlog.
+
+- [ ] **T29F — Remove the phantom row above the status bar**
+  - Recommended model: Luna High.
+  - Render each viewer row without causing the virtual terminal to scroll after
+    the final pane-content row.
+  - Do not reduce the viewer height to hide the defect. Preserve the page-height
+    contract and use every pane-content row directly above the status bar.
+  - Account for both explicit trailing newlines and automatic wrap when a rendered
+    row exactly fills the terminal width.
+  - Allowed production files: `src/viewer/mod.rs`; a focused terminal fixture in
+    `src/terminal.rs` only when required to observe scrolling deterministically.
+  - Focused tests: full-height Text page, full-height Hex page, full-width final
+    row, empty file, short file, narrow Hex message, resize, and status row
+    immediately following the final viewer row.
+  - Depends on: T29A.
+  - Done when: Text and Hex views never retain a permanent blank content row above
+    the status bar and cursor placement remains correct.
+
+- [ ] **T29G — Make Viewer Help complete and return-safe**
+  - Recommended model: Luna High.
+  - Make configured-prefix `?` open Help from Viewer mode without first executing
+    the viewer prefix's Page Up fallback or the viewer's reverse-search action.
+  - Preserve the Help origin so `q`, `Ctrl-c`, or `Esc` returns to the same Viewer
+    rather than Normal mode or the child PTY.
+  - List every viewer navigation key, `H`, `/`, `?`, `n`/`N`, normal Hex ASCII
+    search, exact `hex:00 FF 1B` syntax, configured-prefix Help, and configured-
+    prefix close behaviour.
+  - Keep Help pagination, adaptive status reminder, configured prefix display,
+    and the permanent status row.
+  - Allowed production files: `src/input.rs`, `src/render.rs`, `src/server.rs`.
+  - Focused tests: Normal-to-Help-to-Normal, Viewer-to-Help-to-Viewer, configured
+    non-default prefix, no Page Up side effect, no reverse-search prompt side
+    effect, fragmented Escape exit, pagination, and all required Help strings.
+  - Depends on: T29E.
+  - Done when: Help accurately describes the implemented viewer and exits to its
+    exact calling mode without changing viewer state.
+
+- [ ] **T29H — Wake the Session Server on Viewer Worker results**
+  - Recommended model: Luna Max.
+  - Add one bounded, non-blocking Viewer-ready notification into the existing
+    central Server event path after a result is committed to the viewer result
+    channel.
+  - The notification MUST wake the Session Server immediately enough that visible
+    viewer progress does not wait for `LISTENER_POLL_DELAY`.
+  - A full central event queue MAY drop a redundant wake notification only when
+    the actual viewer result remains retained and a pending event already wakes
+    the server. Viewer results themselves MUST NOT be dropped or duplicated.
+  - Do not increase polling frequency, add a thread per viewer, add a dependency,
+    or bypass generation checks.
+  - Allowed production files: `src/viewer/worker.rs`, `src/server.rs`.
+  - Focused tests: idle listener wake, result-before-wake ordering, full event
+    queue, duplicate ready notifications, two viewer IDs, stale generation,
+    worker shutdown, and unchanged idle polling interval.
+  - Depends on: T29A.
+  - Review gate: inspect channel bounds, result ownership, wake coalescing, server
+    shutdown, and every path where a result is produced.
+  - Done when: no valid viewer result requires the periodic listener timeout to
+    become visible.
+
+- [ ] **T29I — Remove neighbour prefetch from the visible-frame critical path**
+  - Recommended model: Luna Max.
+  - Return and commit a completed `Current` frame before performing any optional
+    Previous/Next prefetch work.
+  - The smallest safe implementation MAY temporarily disable active prefetch while
+    preserving normal three-slot rotation and the exact three-frame bound.
+  - If prefetch remains enabled, it MUST run only as lower-priority bounded worker
+    work after checking that no control, navigation, search, resize, mode-switch,
+    or close command is waiting.
+  - Do not add a background thread, async runtime, fourth frame, second cache, or
+    new queue.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/frame.rs`,
+    `src/viewer/worker.rs`.
+  - Focused tests: Current result precedes prefetch, queued close wins, queued
+    navigation wins, alternating Page Up/Down rotation, invalid neighbour
+    rejection, resize invalidation, and never retaining a fourth frame.
+  - Depends on: T29H.
+  - Review gate: inspect frame ownership, commit/rollback boundaries, worker
+    priority, command-queue checks, and all prefetch call sites.
+  - Done when: optional neighbour preparation contributes no latency to delivery
+    of the requested visible page.
+
+- [ ] **T29J — Combine page navigation and visible rendering safely**
+  - Recommended model: Luna Max.
+  - Replace the avoidable Page Up/Page Down and half-page
+    `NavigationComplete -> server render request -> RenderComplete` round trip with
+    one generation-bound worker operation that returns the requested rendered
+    `Current` frame.
+  - Keep an explicit cancellation/control boundary between changing navigation
+    state and building the visible frame.
+  - One accepted page command MUST still create and commit exactly one intermediate
+    page. The server MUST apply and render that result before clearing in-flight
+    state and dispatching the single changed-intent replacement.
+  - Close, resize, new search, mode switch, and generation change MUST invalidate
+    the compound result exactly as before. Same-intent repeats MUST remain dropped.
+  - Do not combine unrelated line movement, search, or mode-switch operations.
+  - Allowed production files: `src/server.rs`, `src/viewer/worker.rs`,
+    `src/viewer/mod.rs`.
+  - Focused tests: one command/one page/one visible result, 1,000 ordered pages,
+    direction reversal, zero repeat backlog, release stops after current page,
+    close between phases, resize between phases, stale result discard, render
+    failure rollback, and no second worker round trip for page movement.
+  - Depends on: T29I.
+  - Review gate: inspect phase cancellation, page ordering, ViewerGate finish
+    timing, rollback, replacement dispatch, and result-type ownership.
+  - Done when: page movement has one worker round trip without weakening any T28
+    responsiveness or ordering guarantee.
+
+- [ ] **T29K — Run viewer-correction acceptance and update documentation**
+  - Recommended model: Luna High.
+  - Add deterministic acceptance coverage for completed-path Backspace, literal
+    tilde safety, Vim-style horizontal movement, Viewer Help return state, no
+    phantom row, immediate Viewer-ready wake, Current-before-prefetch ordering,
+    compound page rendering, zero repeat backlog, and immediate close.
+  - Verify all T28 runtime bounds remain unchanged: eight raw blocks / 512 KiB,
+    three frames, 256 KiB source bytes per frame, 64 KiB work steps, one in-flight
+    navigation, and one changed-intent replacement.
+  - Run focused and full checks on authoritative Linux/WSL and native Windows,
+    including Clippy, musl release build, MSVC release build, and a before/after
+    page-latency measurement using the same harness and terminal size.
+  - Update `README.md` only for behaviour that is implemented and verified. Record
+    concise evidence and unavailable-environment blockers in this task.
+  - Allowed files: focused tests, `README.md`, and this task entry after separate
+    in-scope approval.
+  - Depends on: T29B, T29C, T29E, T29F, T29G, T29J.
+  - Done when: all corrected behaviour is verified on authoritative environments,
+    all resource and ordering limits still pass, and documentation matches the
+    executable without claiming unavailable validation.
+
