@@ -716,7 +716,7 @@ perform file I/O or file scanning.
   - Verification note: repository-wide `cargo fmt` was applied and
     `cargo fmt --check` passed.
 
-- [ ] **T28Q — Implement Hex PageFrame rendering and navigation**
+- [x] **T28Q — Implement Hex PageFrame rendering and navigation**
   - Create `viewer/hex.rs` and add the `Text`/`Hex` mode enum to the viewer facade.
   - Render absolute offset, hex bytes, and printable ASCII side by side using
     16/8/4 bytes per row at the approved width thresholds.
@@ -733,6 +733,13 @@ perform file I/O or file scanning.
   - Depends on: T28J.
   - Done when: Hex mode is a bounded alternate frame builder sharing the same
     snapshot and cache.
+  - Implementation: added the ViewerMode enum, bounded Hex rows with
+    width-dependent 16/8/4-byte layouts, absolute offsets, printable ASCII,
+    narrow-view handling, byte cursor movement, and Hex-aware frame rotation
+    and prefetch using the existing FileSource.
+  - Evidence: cargo fmt --check passed; cargo test --locked viewer:: passed
+    67 viewer tests; the x86_64-unknown-linux-musl release build passed.
+    Native Windows/MSVC validation was not available in this Linux host.
 
 - [ ] **T28R — Add Hex-mode ASCII and exact-byte search**
   - Use normal parsed text queries for ASCII case-insensitive search in Hex mode

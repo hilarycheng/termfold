@@ -8,6 +8,8 @@ use std::{
 use crate::session::Size;
 
 use super::{
+    ViewerMode,
+    hex::{self, HexPage},
     line::{LineBoundary, LineScanner, ScanStep},
     search::SearchQuery,
     source::FileSource,
@@ -85,10 +87,17 @@ pub(super) struct PageFrame {
     pub(super) cursor_stops: Vec<CursorStop>,
     pub(super) visible_match_ranges: Vec<Range<u64>>,
     pub(super) active_match_range: Option<Range<u64>>,
+    pub(super) hex: Option<HexPage>,
 }
 
 impl PageFrame {
     pub(super) fn render_row(&self, row: usize, horizontal: u64, columns: usize) -> String {
+        if self.key.context.mode == ViewerMode::Hex as u8 {
+            return self
+                .hex
+                .as_ref()
+                .map_or_else(String::new, |page| page.render_row(row));
+        }
         let Some(decoded) = self.rows.get(row) else {
             return String::new();
         };
@@ -509,6 +518,40 @@ pub(super) fn build(
     active_offset: Option<u64>,
     context: FrameContext,
 ) -> io::Result<PageFrame> {
+    if context.mode == ViewerMode::Hex as u8 {
+        let page = hex::build(
+            source,
+            viewport.min(length),
+            usize::from(context.size.rows),
+            usize::from(context.size.columns),
+            MAX_FRAME_SOURCE_BYTES,
+        )?;
+        let mut frame = PageFrame {
+            key: FrameKey::new(context, page.source_range.start),
+            source_range: page.source_range.clone(),
+            hex: Some(page),
+            ..PageFrame::default()
+        };
+        if let Some(page) = frame.hex.as_ref() {
+            for (row, row_data) in page.rows.iter().enumerate() {
+                for (token, cells) in row_data.hex_cells.iter().enumerate() {
+                    let source = row_data.offset + token as u64..row_data.offset + token as u64 + 1;
+                    frame.source_cell_spans.push(SourceCellSpan {
+                        row,
+                        token,
+                        source: source.clone(),
+                        cells: cells.clone(),
+                    });
+                    frame.cursor_stops.push(CursorStop {
+                        row,
+                        source: source.start,
+                        cell: cells.start,
+                    });
+                }
+            }
+        }
+        return Ok(frame);
+    }
     let viewport = line_boundary(source, lines, length, viewport)?.start;
     let mut frame = PageFrame {
         key: FrameKey::new(context, viewport),

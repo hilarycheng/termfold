@@ -7,6 +7,7 @@ use std::{
 
 use crate::{session::Size, terminal::Terminal};
 mod frame;
+mod hex;
 mod line;
 mod search;
 mod source;
@@ -14,6 +15,7 @@ mod text;
 pub(super) mod worker;
 
 use frame::{FrameContext, FrameKey, FrameSlots, PageFrame};
+use hex::bytes_per_row;
 use line::{LineBoundary, LineScanner, ScanStep};
 use search::SearchQuery;
 use source::FileSource;
@@ -22,6 +24,14 @@ use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
 use text::DecodedText;
 
 const MAX_MATCH_OFFSETS: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub(super) enum ViewerMode {
+    #[default]
+    Text,
+    Hex,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SearchState {
@@ -72,7 +82,7 @@ pub struct Viewer {
     search: Option<SearchState>,
     search_wrapped: bool,
     frames: FrameSlots,
-    mode: u8,
+    mode: ViewerMode,
     generation: u64,
     pending_page_direction: Option<bool>,
     committed: ViewState,
@@ -99,7 +109,7 @@ impl Viewer {
             search: None,
             search_wrapped: false,
             frames: FrameSlots::default(),
-            mode: 0,
+            mode: ViewerMode::Text,
             generation: 0,
             pending_page_direction: None,
             committed,
@@ -122,7 +132,7 @@ impl Viewer {
     fn frame_context(&self, size: Size) -> FrameContext {
         FrameContext::new(
             self.length(),
-            self.mode,
+            self.mode as u8,
             size,
             self.tab_width,
             self.generation,
@@ -141,11 +151,23 @@ impl Viewer {
         let previous_direction = self.pending_page_direction;
         self.visible_rows = usize::from(size.rows).max(1);
         self.visible_columns = usize::from(size.columns).max(1);
+        let hex = self.mode == ViewerMode::Hex;
         let columns = usize::from(size.columns);
         let result = (|| {
-            self.position = self.position.min(self.length());
-            self.viewport = self.viewport.min(self.length());
-            self.viewport = self.line_start_at(self.viewport)?;
+            if hex {
+                let length = self.length();
+                self.position = if length == 0 {
+                    0
+                } else {
+                    self.position.min(length - 1)
+                };
+                self.viewport = self.hex_row_start(self.viewport);
+                self.ensure_cursor_visible()?;
+            } else {
+                self.position = self.position.min(self.length());
+                self.viewport = self.viewport.min(self.length());
+                self.viewport = self.line_start_at(self.viewport)?;
+            }
 
             let context = self.frame_context(size);
             let key = FrameKey::new(context, self.viewport);
@@ -182,18 +204,23 @@ impl Viewer {
                 self.build_page_at(size, self.viewport, context)?
             };
 
-            let cursor_line = self.line_start_at(self.position)?;
-            let cursor_row = frame.cursor_row(cursor_line);
-            let cursor_column = match cursor_row {
-                Some(_) => frame
-                    .cursor_column(cursor_line, self.position, self.horizontal, columns)
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "viewer frame has no cursor stop",
-                        )
-                    })?,
-                None => 0,
+            let (cursor_row, cursor_column) = if hex {
+                self.hex_cursor_position(&frame)
+            } else {
+                let cursor_line = self.line_start_at(self.position)?;
+                let cursor_row = frame.cursor_row(cursor_line);
+                let cursor_column = match cursor_row {
+                    Some(_) => frame
+                        .cursor_column(cursor_line, self.position, self.horizontal, columns)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "viewer frame has no cursor stop",
+                            )
+                        })?,
+                    None => 0,
+                };
+                (cursor_row.unwrap_or(0), cursor_column)
             };
 
             terminal.resize(size).map_err(io::Error::other)?;
@@ -218,14 +245,22 @@ impl Viewer {
             self.pending_page_direction = None;
 
             terminal.advance(b"\x1b[2J\x1b[H");
-            for row in 0..frame.rows.len() {
+            let row_count = if hex {
+                frame
+                    .hex
+                    .as_ref()
+                    .map_or(0, |page| page.rows.len().max(usize::from(page.narrow)))
+            } else {
+                frame.rows.len()
+            };
+            for row in 0..row_count {
                 terminal.advance(frame.render_row(row, self.horizontal, columns).as_bytes());
                 terminal.advance(b"\r\n");
             }
-            let (row, column) = match cursor_row {
-                Some(row) => (row.saturating_add(1), cursor_column.saturating_add(1)),
-                None => (1, 1),
-            };
+            let (row, column) = (
+                cursor_row.saturating_add(1),
+                cursor_column.saturating_add(1),
+            );
             terminal.advance(format!("\x1b[{row};{column}H").as_bytes());
 
             if direction.is_some() {
@@ -239,6 +274,29 @@ impl Viewer {
             self.pending_page_direction = previous_direction;
         }
         result
+    }
+
+    fn hex_cursor_position(&self, frame: &PageFrame) -> (usize, usize) {
+        let Some(page) = frame.hex.as_ref() else {
+            return (0, 0);
+        };
+        if page.narrow || page.bytes_per_row == 0 {
+            return (0, 0);
+        }
+        let row = self
+            .position
+            .saturating_sub(frame.source_range.start)
+            .checked_div(page.bytes_per_row as u64)
+            .unwrap_or(0) as usize;
+        let byte =
+            self.position.saturating_sub(frame.source_range.start) % page.bytes_per_row as u64;
+        (
+            row.min(page.rows.len().saturating_sub(1)),
+            page.rows
+                .get(row)
+                .and_then(|row| row.hex_cells.get(byte as usize))
+                .map_or(0, |cells| cells.start),
+        )
     }
 
     fn build_page_at(
@@ -272,6 +330,10 @@ impl Viewer {
     }
 
     fn prefetch_neighbour(&mut self, size: Size, forward: bool) {
+        if self.mode == ViewerMode::Hex {
+            self.prefetch_hex_neighbour(size, forward);
+            return;
+        }
         let Some(current_start) = self.current_frame().map(|frame| frame.key.source_start) else {
             return;
         };
@@ -310,7 +372,37 @@ impl Viewer {
         }
     }
 
+    fn prefetch_hex_neighbour(&mut self, size: Size, forward: bool) {
+        let Some(current_start) = self.current_frame().map(|frame| frame.key.source_start) else {
+            return;
+        };
+        let width = bytes_per_row(usize::from(size.columns)).max(1) as u64;
+        let rows = u64::from(size.rows.saturating_sub(2).max(1));
+        let distance = width.saturating_mul(rows);
+        let start = if forward {
+            current_start.saturating_add(distance)
+        } else {
+            current_start.saturating_sub(distance)
+        };
+        if (forward && start >= self.length()) || (!forward && start >= current_start) {
+            return;
+        }
+        let context = self.frame_context(size);
+        if self
+            .frames
+            .neighbour_matches(FrameKey::new(context, start), forward)
+        {
+            return;
+        }
+        if let Ok(frame) = self.build_page_at(size, start, context) {
+            self.frames.insert_neighbour(frame, forward);
+        }
+    }
+
     pub fn move_lines(&mut self, amount: i32) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            return self.navigation(|viewer| viewer.move_hex_rows(amount));
+        }
         self.navigation(|viewer| viewer.move_lines_inner(amount))
     }
 
@@ -377,7 +469,100 @@ impl Viewer {
         Ok(())
     }
 
+    fn hex_width(&self) -> u64 {
+        bytes_per_row(self.visible_columns).max(1) as u64
+    }
+
+    fn hex_row_start(&self, position: u64) -> u64 {
+        let width = self.hex_width();
+        position.min(self.length()) / width * width
+    }
+
+    fn move_hex_rows(&mut self, amount: i32) -> io::Result<()> {
+        if self.length() == 0 {
+            self.position = 0;
+            self.viewport = 0;
+            return Ok(());
+        }
+        let width = self.hex_width();
+        let last_row = (self.length() - 1) / width;
+        let current_row = (self.position.min(self.length() - 1)) / width;
+        let preferred = if self.preferred_column == 0 {
+            self.position % width
+        } else {
+            self.preferred_column.min(width - 1)
+        };
+        let target_row = if amount < 0 {
+            current_row.saturating_sub(amount.unsigned_abs() as u64)
+        } else {
+            current_row.saturating_add(amount as u64).min(last_row)
+        };
+        self.position = target_row
+            .saturating_mul(width)
+            .saturating_add(preferred)
+            .min(self.length() - 1);
+        self.preferred_column = self.position % width;
+        self.ensure_cursor_visible()
+    }
+
+    fn hex_bottom(&mut self) -> io::Result<()> {
+        if self.length() == 0 {
+            self.position = 0;
+            self.viewport = 0;
+            return Ok(());
+        }
+        self.position = self.length() - 1;
+        self.preferred_column = self.position % self.hex_width();
+        self.ensure_cursor_visible()
+    }
+
+    fn hex_line_start(&mut self) -> io::Result<()> {
+        self.position = self.hex_row_start(self.position);
+        self.preferred_column = 0;
+        self.ensure_cursor_visible()
+    }
+
+    fn hex_line_end(&mut self) -> io::Result<()> {
+        if self.length() == 0 {
+            self.position = 0;
+            self.viewport = 0;
+            return Ok(());
+        }
+        let width = self.hex_width();
+        self.position = self
+            .hex_row_start(self.position)
+            .saturating_add(width - 1)
+            .min(self.length() - 1);
+        self.preferred_column = self.position % width;
+        self.ensure_cursor_visible()
+    }
+
+    fn scroll_hex_viewport(&mut self, amount: i32) -> io::Result<()> {
+        let width = self.hex_width();
+        let last_row = self.length().saturating_sub(1) / width;
+        let row = self.viewport / width;
+        let target = if amount < 0 {
+            row.saturating_sub(amount.unsigned_abs() as u64)
+        } else {
+            row.saturating_add(amount as u64).min(last_row)
+        };
+        self.viewport = target.saturating_mul(width);
+        Ok(())
+    }
+
     pub fn page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            let result = self.navigation(|viewer| {
+                viewer.visible_rows = usize::from(rows).max(1);
+                let lines = usize::from(rows.saturating_sub(2).max(1));
+                let amount = i32::try_from(lines).unwrap_or(i32::MAX);
+                viewer.move_hex_rows(if forward { amount } else { -amount })
+            });
+            if result.is_ok() {
+                self.pending_page_direction = Some(forward);
+            }
+            return result;
+        }
         let result = self.navigation(|viewer| {
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1));
@@ -391,6 +576,18 @@ impl Viewer {
     }
 
     pub fn half_page(&mut self, rows: u16, forward: bool) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            let result = self.navigation(|viewer| {
+                viewer.visible_rows = usize::from(rows).max(1);
+                let lines = usize::from(rows.saturating_sub(2).max(1)) / 2;
+                let amount = i32::try_from(lines.max(1)).unwrap_or(i32::MAX);
+                viewer.move_hex_rows(if forward { amount } else { -amount })
+            });
+            if result.is_ok() {
+                self.pending_page_direction = Some(forward);
+            }
+            return result;
+        }
         let result = self.navigation(|viewer| {
             viewer.visible_rows = usize::from(rows).max(1);
             let lines = usize::from(rows.saturating_sub(2).max(1)) / 2;
@@ -404,6 +601,13 @@ impl Viewer {
     }
 
     pub fn top(&mut self) {
+        if self.mode == ViewerMode::Hex {
+            self.position = 0;
+            self.viewport = 0;
+            self.horizontal = 0;
+            self.preferred_column = 0;
+            return;
+        }
         self.position = 0;
         self.viewport = 0;
         self.horizontal = 0;
@@ -411,6 +615,9 @@ impl Viewer {
     }
 
     pub fn bottom(&mut self) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            return self.navigation(|viewer| viewer.hex_bottom());
+        }
         self.navigation(|viewer| {
             let line = viewer.last_line()?;
             let (position, cell) = viewer.cursor_at_cell(line, usize::MAX as u64)?;
@@ -422,6 +629,9 @@ impl Viewer {
     }
 
     pub fn line_start(&mut self) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            return self.navigation(|viewer| viewer.hex_line_start());
+        }
         self.navigation(|viewer| {
             let line = viewer.line_start_at(viewer.position)?;
             viewer.position = viewer.cursor_at_cell(line, 0)?.0;
@@ -432,6 +642,9 @@ impl Viewer {
     }
 
     pub fn line_end(&mut self, columns: usize) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            return self.navigation(|viewer| viewer.hex_line_end());
+        }
         self.navigation(|viewer| {
             let start = viewer.line_start_at(viewer.position)?;
             let (position, cell) = viewer.cursor_at_cell(start, usize::MAX as u64)?;
@@ -443,6 +656,9 @@ impl Viewer {
     }
 
     pub fn scroll_viewport(&mut self, amount: i32) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            return self.navigation(|viewer| viewer.scroll_hex_viewport(amount));
+        }
         self.navigation(|viewer| {
             let mut viewport = viewer.line_start_at(viewer.viewport)?;
             if amount > 0 {
@@ -821,6 +1037,17 @@ impl Viewer {
     }
 
     fn set_position(&mut self, position: u64) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            if self.length() == 0 {
+                self.position = 0;
+                self.viewport = 0;
+            } else {
+                self.position = position.min(self.length() - 1);
+                self.preferred_column = self.position % self.hex_width();
+                self.ensure_cursor_visible()?;
+            }
+            return Ok(());
+        }
         let requested = position.min(self.length());
         let line = self.line_start_at(requested)?;
         let boundary = self.line_boundary(line)?;
@@ -839,6 +1066,17 @@ impl Viewer {
     }
 
     fn cursor_at_cell(&mut self, line: u64, cell: u64) -> io::Result<(u64, u64)> {
+        if self.mode == ViewerMode::Hex {
+            if self.length() == 0 {
+                return Ok((0, 0));
+            }
+            let width = self.hex_width();
+            let position = self
+                .hex_row_start(line)
+                .saturating_add(cell.min(width - 1))
+                .min(self.length() - 1);
+            return Ok((position, position % width));
+        }
         let boundary = self.line_boundary(line)?;
         let decoded = self.decode_line(&boundary)?;
         let cell = cell.min(usize::MAX as u64) as usize;
@@ -848,6 +1086,9 @@ impl Viewer {
     }
 
     fn cursor_cell(&mut self, line: u64, position: u64) -> io::Result<usize> {
+        if self.mode == ViewerMode::Hex {
+            return Ok(position.saturating_sub(self.hex_row_start(line)) as usize);
+        }
         let boundary = self.line_boundary(line)?;
         let decoded = self.decode_line(&boundary)?;
         let source = position
@@ -857,6 +1098,10 @@ impl Viewer {
     }
 
     fn adjust_horizontal(&mut self) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            self.horizontal = 0;
+            return Ok(());
+        }
         let line = self.line_start_at(self.position)?;
         let column = self.cursor_cell(line, self.position)? as u64;
         let width = self.visible_columns.max(1) as u64;
@@ -869,6 +1114,23 @@ impl Viewer {
     }
 
     fn ensure_cursor_visible(&mut self) -> io::Result<()> {
+        if self.mode == ViewerMode::Hex {
+            if self.length() == 0 {
+                self.viewport = 0;
+                return Ok(());
+            }
+            let width = self.hex_width();
+            let cursor_row = self.position.min(self.length() - 1) / width;
+            let mut viewport_row = self.viewport / width;
+            let rows = self.visible_rows.max(1) as u64;
+            if cursor_row < viewport_row {
+                viewport_row = cursor_row;
+            } else if cursor_row >= viewport_row.saturating_add(rows) {
+                viewport_row = cursor_row.saturating_sub(rows - 1);
+            }
+            self.viewport = viewport_row.saturating_mul(width);
+            return Ok(());
+        }
         let cursor_line = self.line_start_at(self.position)?;
         self.viewport = self.line_start_at(self.viewport)?;
         if cursor_line < self.viewport {
@@ -910,10 +1172,19 @@ impl Viewer {
     }
 
     fn next_line(&mut self, start: u64) -> io::Result<u64> {
+        if self.mode == ViewerMode::Hex {
+            return Ok(self
+                .hex_row_start(start)
+                .saturating_add(self.hex_width())
+                .min(self.length()));
+        }
         Ok(self.line_boundary(start)?.next)
     }
 
     fn previous_line(&mut self, start: u64) -> io::Result<u64> {
+        if self.mode == ViewerMode::Hex {
+            return Ok(self.hex_row_start(start).saturating_sub(self.hex_width()));
+        }
         if start == 0 {
             return Ok(0);
         }
@@ -943,6 +1214,13 @@ impl Viewer {
     }
 
     fn last_line(&mut self) -> io::Result<u64> {
+        if self.mode == ViewerMode::Hex {
+            return Ok(self
+                .length()
+                .saturating_sub(1)
+                .checked_div(self.hex_width())
+                .map_or(0, |row| row.saturating_mul(self.hex_width())));
+        }
         if self.length() == 0 {
             return Ok(0);
         }
@@ -990,6 +1268,9 @@ impl Viewer {
     }
 
     fn line_start_at(&mut self, position: u64) -> io::Result<u64> {
+        if self.mode == ViewerMode::Hex {
+            return Ok(self.hex_row_start(position));
+        }
         let position = position.min(self.length());
         if self.lines.iter().any(|line| {
             !line.complete
@@ -1122,6 +1403,69 @@ mod tests {
             .current_frame()
             .expect("rendered frame")
             .render_row(row, viewer.horizontal, columns)
+    }
+
+    #[test]
+    fn hex_frame_renders_and_navigates_by_bytes() {
+        let path = temp_path("termfold-viewer-hex");
+        fs::write(&path, (0..40).collect::<Vec<_>>()).unwrap();
+        let size = Size {
+            columns: 80,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+
+        viewer.render(&mut terminal, size).unwrap();
+        let frame = viewer.current_frame().expect("hex frame");
+        let page = frame.hex.as_ref().expect("hex page");
+        assert_eq!(page.bytes_per_row, 16);
+        assert_eq!(frame.source_range, 0..40);
+        assert_eq!(frame.source_cell_spans.len(), 40);
+        assert_eq!(frame.cursor_stops.len(), 40);
+        assert_eq!(
+            page.render_row(0),
+            "00000000  00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  ................"
+        );
+
+        viewer.move_lines(1).unwrap();
+        assert_eq!(viewer.position, 16);
+        viewer.line_end(80).unwrap();
+        assert_eq!(viewer.position, 31);
+        viewer.page(size.rows, true).unwrap();
+        assert_eq!(viewer.position, 39);
+        viewer.top();
+        viewer.bottom().unwrap();
+        assert_eq!(viewer.position, 39);
+        assert!(viewer.lines.is_empty());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_narrow_render_preserves_byte_position() {
+        let path = temp_path("termfold-viewer-hex-narrow");
+        fs::write(&path, b"0123456789").unwrap();
+        let size = Size {
+            columns: 27,
+            rows: 3,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.mode = ViewerMode::Hex;
+        viewer.position = 5;
+
+        viewer.render(&mut terminal, size).unwrap();
+        assert_eq!(viewer.position, 5);
+        let frame = viewer.current_frame().expect("narrow frame");
+        assert_eq!(
+            frame.render_row(0, 0, usize::from(size.columns)),
+            hex::NARROW_MESSAGE
+        );
+        assert!(frame.hex.as_ref().expect("hex page").narrow);
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
