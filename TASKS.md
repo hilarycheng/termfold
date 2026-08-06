@@ -777,7 +777,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/search.rs` query parsing without scanning the file.
   - Text queries MUST be literal, ASCII case-insensitive, non-ASCII exact, and
     limited to 256 bytes.
@@ -794,14 +794,16 @@ perform file I/O or file scanning.
     case folding, exact non-ASCII and invalid-byte comparison, and invalid-query
     state preservation.
   - Evidence: `cargo test --locked viewer::` passed with 51 viewer tests; the
-    x86_64-unknown-linux-musl release build passed.
+    x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
+    validation on 2026-08-06 passed 96 viewer tests, 163 full-suite tests, and
+    the release build.
 
 - [x] **T28O — Implement incremental cancellable forward/reverse search**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Search Current from the cursor first, then the neighbour in the requested
     direction, then scan the snapshot in 64 KiB steps.
   - Support forward/reverse, `n`/`N`, matches crossing block boundaries, and one
@@ -821,14 +823,15 @@ perform file I/O or file scanning.
     strict repeat offsets, generation cancellation, and round-robin worker steps.
   - Evidence: `cargo test --locked viewer::` passed with 56 viewer tests; the
     x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
-    validation was not available in this Linux host.
+    validation on 2026-08-06 passed 96 viewer tests, 163 full-suite tests, and
+    the release build.
 
 - [x] **T28P — Highlight visible search matches**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Map every matching source range in Current to display-cell spans through the
     PageFrame mapping.
   - Render ordinary visible matches with an attribute-based highlight and the
@@ -851,7 +854,8 @@ perform file I/O or file scanning.
   - Evidence: `cargo test --locked viewer::` passed 60 tests; elevated
     `cargo test --locked` passed 121 unit tests and 8 lifecycle tests; the
     x86_64-unknown-linux-musl release build passed. Native Windows/MSVC
-    validation was not available in this Linux host.
+    validation on 2026-08-06 passed 96 viewer tests, 163 full-suite tests, and
+    the release build.
   - Verification note: repository-wide `cargo fmt` was applied and
     `cargo fmt --check` passed.
 
@@ -860,7 +864,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/hex.rs` and add the `Text`/`Hex` mode enum to the viewer facade.
   - Render absolute offset, hex bytes, and printable ASCII side by side using
     16/8/4 bytes per row at the approved width thresholds.
@@ -882,8 +886,9 @@ perform file I/O or file scanning.
     narrow-view handling, byte cursor movement, and Hex-aware frame rotation
     and prefetch using the existing FileSource.
   - Evidence: cargo fmt --check passed; cargo test --locked viewer:: passed
-    67 viewer tests; the x86_64-unknown-linux-musl release build passed.
-    Native Windows/MSVC validation was not available in this Linux host.
+    67 viewer tests; the x86_64-unknown-linux-musl release build passed. Native
+    Windows/MSVC validation on 2026-08-06 passed 96 viewer tests, 163 full-suite
+    tests, and the release build.
 
 - [x] **T28R — Add Hex-mode ASCII and exact-byte search**
   - Required validation: Linux and Native Windows.
@@ -1025,9 +1030,11 @@ perform file I/O or file scanning.
 ### T28 native Windows confirmation ledger
 
 - Confirmed: T28B, T28C, T28D, T28E, T28F, T28G, T28H, T28I, T28J, T28K,
-  T28L, and T28M each record native Windows/MSVC focused tests and release-build
-  evidence.
-- Not confirmed: T28N through T28T have Linux/WSL implementation evidence but
+  T28L, T28M, T28N, T28O, T28P, and T28Q each record native Windows/MSVC
+  focused tests and release-build evidence. The T28N-T28Q run passed 96 viewer
+  tests and 163 full-suite tests; the 571,392-byte release artifact has SHA-256
+  `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
+- Not confirmed: T28R through T28T have Linux/WSL implementation evidence but
   no recorded native Windows/MSVC focused test and build for their final code;
   their unchecked status is intentional until that validation is supplied.
 - T28A is platform independent. T28U implementation and Linux validation are
