@@ -2087,13 +2087,13 @@ Rules for every T31 implementation request:
     passed as a compile-only check; native MSVC runtime tests and release build
     are blocked because this environment is Linux.
 
-- [ ] **T31E — Wire `]` and `[` as direct Viewer search keys**
+- [x] **T31E — Wire `]` and `[` as direct Viewer search keys**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Extend Viewer input state with an explicit search mode and direction so `/`,
     `?`, `]`, and `[` each open one direct prompt using their own visible marker.
@@ -2115,6 +2115,18 @@ Rules for every T31 implementation request:
   - Depends on: T31D.
   - Done when: every trigger produces exactly one semantic search request with
     explicit mode and direction and no key conflict outside active Viewer mode.
+  - Implementation: carried explicit matching/non-matching mode and direction
+    through Viewer prompt, query, submission, and repeat actions; added direct
+    `]`/`[` prompts, successful-search repeat state, Hex rejection, and the
+    configured-prefix bracket guard. Added focused input regressions.
+  - Evidence (2026-08-06): Ubuntu 24.04 WSL `cargo fmt --all`, focused
+    `cargo test --locked input:: -- --test-threads=1` passed (16/16), and the
+    musl release build passed. The full Linux suite passed 181/182; the one
+    unrelated runtime socket test was blocked by sandbox `/tmp` socket
+    `Operation not permitted`. Windows `cargo check --locked --tests --target
+    x86_64-pc-windows-msvc` passed as compile-only evidence. Native Windows
+    focused tests and MSVC build remain blocked because this environment is
+    Linux.
 
 - [ ] **T31F — Reformat Viewer Help into grouped key rows**
   - Recommended model: Luna Medium.

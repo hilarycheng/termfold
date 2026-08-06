@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::{
     ipc::MAX_VIEW_PATH_BYTES,
     session::{Direction, Split},
-    viewer::MAX_QUERY_BYTES,
+    viewer::{MAX_QUERY_BYTES, SearchMode},
 };
 
 const MAX_FILENAME_BYTES: usize = 4096;
@@ -61,10 +61,10 @@ pub enum Action {
     ViewerTop,
     ViewerBottom,
     ViewerToggleMode,
-    ViewerSearchPrompt(bool),
-    ViewerSearchQuery(Vec<u8>, bool),
-    ViewerSearch(Vec<u8>, bool),
-    ViewerSearchNext(bool),
+    ViewerSearchPrompt(SearchMode, bool),
+    ViewerSearchQuery(Vec<u8>, SearchMode, bool),
+    ViewerSearch(Vec<u8>, SearchMode, bool),
+    ViewerSearchNext(SearchMode, bool),
     ViewerSearchCancelled,
     ClearScrollback,
     SaveScrollback(String),
@@ -86,7 +86,7 @@ enum Mode {
     Viewer(Vec<u8>),
     ViewerPrefix,
     ViewerG,
-    ViewerSearch(Vec<u8>, bool),
+    ViewerSearch(Vec<u8>, SearchMode, bool),
 }
 
 #[derive(Debug)]
@@ -96,6 +96,9 @@ pub struct Input {
     pending_mouse: Vec<u8>,
     pending_since: Option<Instant>,
     mode: Mode,
+    viewer_search_mode: SearchMode,
+    viewer_search_forward: bool,
+    viewer_hex: bool,
 }
 
 impl Input {
@@ -106,6 +109,9 @@ impl Input {
             pending_mouse: Vec::new(),
             pending_since: None,
             mode: Mode::Normal,
+            viewer_search_mode: SearchMode::Matching,
+            viewer_search_forward: true,
+            viewer_hex: false,
         }
     }
 
@@ -119,6 +125,14 @@ impl Input {
 
     pub fn enter_viewer(&mut self) {
         self.mode = Mode::Viewer(Vec::new());
+        self.viewer_search_mode = SearchMode::Matching;
+        self.viewer_search_forward = true;
+        self.viewer_hex = false;
+    }
+
+    pub fn record_viewer_search(&mut self, mode: SearchMode, forward: bool) {
+        self.viewer_search_mode = mode;
+        self.viewer_search_forward = forward;
     }
 
     pub fn set_view_prompt(&mut self, path: Vec<u8>) {
@@ -188,7 +202,7 @@ impl Input {
                         | Mode::ViewPrompt(_, _)
                         | Mode::Viewer(_)
                         | Mode::ViewerG
-                        | Mode::ViewerSearch(_, _)
+                        | Mode::ViewerSearch(_, _, _)
                 )
             {
                 self.pending_mouse.push(27);
@@ -253,7 +267,7 @@ impl Input {
                     self.mode = Mode::Viewer(Vec::new());
                     Vec::new()
                 }
-                Mode::ViewerSearch(_, _) => {
+                Mode::ViewerSearch(_, _, _) => {
                     self.mode = Mode::Viewer(Vec::new());
                     vec![Action::ViewerSearchCancelled]
                 }
@@ -283,7 +297,7 @@ impl Input {
                     | Mode::ViewPrompt(_, _)
                     | Mode::Viewer(_)
                     | Mode::ViewerG
-                    | Mode::ViewerSearch(_, _)
+                    | Mode::ViewerSearch(_, _, _)
             )
         {
             ESCAPE_SEQUENCE_TIMEOUT
@@ -305,6 +319,10 @@ impl Input {
             if matches!(byte, b'v' | b'V') {
                 self.mode = Mode::ViewPrompt(Vec::new(), true);
                 actions.push(Action::ViewPrompt(true));
+                return;
+            }
+            if matches!(byte, b'[' | b']') {
+                actions.push(Action::ViewerPage(false));
                 return;
             }
             if byte == b'?' {
@@ -572,10 +590,23 @@ impl Input {
                     }
                     [b'G'] => Some(Action::ViewerBottom),
                     [b'H'] => Some(Action::ViewerToggleMode),
-                    [b'/'] => Some(Action::ViewerSearchPrompt(true)),
-                    [b'?'] => Some(Action::ViewerSearchPrompt(false)),
-                    [b'n'] => Some(Action::ViewerSearchNext(true)),
-                    [b'N'] => Some(Action::ViewerSearchNext(false)),
+                    [b'/'] => Some(Action::ViewerSearchPrompt(SearchMode::Matching, true)),
+                    [b'?'] => Some(Action::ViewerSearchPrompt(SearchMode::Matching, false)),
+                    [b']'] if !self.viewer_hex => {
+                        Some(Action::ViewerSearchPrompt(SearchMode::NonMatching, true))
+                    }
+                    [b'['] if !self.viewer_hex => {
+                        Some(Action::ViewerSearchPrompt(SearchMode::NonMatching, false))
+                    }
+                    [b']' | b'['] => Some(Action::Status("viewer search is Text-only".into())),
+                    [b'n'] => Some(Action::ViewerSearchNext(
+                        self.viewer_search_mode,
+                        self.viewer_search_forward,
+                    )),
+                    [b'N'] => Some(Action::ViewerSearchNext(
+                        self.viewer_search_mode,
+                        !self.viewer_search_forward,
+                    )),
                     [27]
                     | [27, b'[']
                     | [27, b'O']
@@ -588,16 +619,15 @@ impl Input {
                     | [27, b'[', b'4', b';']
                     | [27, b'[', b'4', b';', b'5'] => None,
                     _ => Some(Action::Status(
-                        "viewer: j/k arrows Home/End gg/G H Ctrl-u/d Ctrl-b/f / ? n/N".into(),
+                        "viewer: j/k arrows Home/End gg/G H Ctrl-u/d Ctrl-b/f / ? ] [ n/N".into(),
                     )),
                 };
                 if let Some(action) = action {
-                    self.mode = if matches!(action, Action::ViewerSearchPrompt(_)) {
-                        if matches!(action, Action::ViewerSearchPrompt(true)) {
-                            Mode::ViewerSearch(Vec::new(), true)
-                        } else {
-                            Mode::ViewerSearch(Vec::new(), false)
-                        }
+                    if matches!(action, Action::ViewerToggleMode) {
+                        self.viewer_hex = !self.viewer_hex;
+                    }
+                    self.mode = if let Action::ViewerSearchPrompt(mode, forward) = &action {
+                        Mode::ViewerSearch(Vec::new(), *mode, *forward)
                     } else {
                         Mode::Viewer(Vec::new())
                     };
@@ -605,37 +635,37 @@ impl Input {
                 }
             }
             Mode::ViewerPrefix | Mode::ViewerG => unreachable!("viewer mode handled above"),
-            Mode::ViewerSearch(_, _) if matches!(byte, 3 | 27) => {
+            Mode::ViewerSearch(_, _, _) if matches!(byte, 3 | 27) => {
                 self.mode = Mode::Viewer(Vec::new());
                 actions.push(Action::ViewerSearchCancelled);
             }
-            Mode::ViewerSearch(query, forward) if matches!(byte, 8 | 127) => {
+            Mode::ViewerSearch(query, mode, forward) if matches!(byte, 8 | 127) => {
                 query.pop();
-                actions.push(Action::ViewerSearchQuery(query.clone(), *forward));
+                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *forward));
                 if query.is_empty() {
-                    actions.push(Action::Status(if *forward { "/" } else { "?" }.into()));
+                    actions.push(Action::Status(viewer_search_status(*mode, *forward, query)));
                 }
             }
-            Mode::ViewerSearch(query, forward) if matches!(byte, b'\r' | b'\n') => {
+            Mode::ViewerSearch(query, mode, forward) if matches!(byte, b'\r' | b'\n') => {
                 if query.is_empty() {
                     actions.push(Action::Status("viewer search is empty".into()));
                 } else {
-                    actions.push(Action::ViewerSearch(query.clone(), *forward));
+                    actions.push(Action::ViewerSearch(query.clone(), *mode, *forward));
                     self.mode = Mode::Viewer(Vec::new());
                 }
             }
-            Mode::ViewerSearch(query, _) if query.len() == MAX_QUERY_BYTES => {
+            Mode::ViewerSearch(query, _, _) if query.len() == MAX_QUERY_BYTES => {
                 actions.push(Action::Status("viewer search is too long".into()));
             }
-            Mode::ViewerSearch(_, _) if byte.is_ascii_control() => {
+            Mode::ViewerSearch(_, _, _) if byte.is_ascii_control() => {
                 actions.push(Action::Status(
                     "viewer search accepts printable text".into(),
                 ));
             }
-            Mode::ViewerSearch(query, forward) => {
+            Mode::ViewerSearch(query, mode, forward) => {
                 query.push(byte);
-                actions.push(Action::ViewerSearchQuery(query.clone(), *forward));
-                actions.push(Action::Status(viewer_search_status(*forward, query)));
+                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *forward));
+                actions.push(Action::Status(viewer_search_status(*mode, *forward, query)));
             }
         }
     }
@@ -812,12 +842,18 @@ fn search_status(query: &[u8]) -> Action {
     Action::Status(format!("/{visible}"))
 }
 
-pub(crate) fn viewer_search_status(forward: bool, query: &[u8]) -> String {
+pub(crate) fn viewer_search_status(mode: SearchMode, forward: bool, query: &[u8]) -> String {
     let visible: String = String::from_utf8_lossy(query)
         .chars()
         .filter(|character| !character.is_control())
         .collect();
-    format!("{}{visible}", if forward { "/" } else { "?" })
+    let marker = match (mode, forward) {
+        (SearchMode::Matching, true) => "/",
+        (SearchMode::Matching, false) => "?",
+        (SearchMode::NonMatching, true) => "]",
+        (SearchMode::NonMatching, false) => "[",
+    };
+    format!("{marker}{visible}")
 }
 
 fn push_forward(actions: &mut Vec<Action>, bytes: &mut Vec<u8>) {
@@ -960,14 +996,81 @@ mod tests {
                 Action::ViewerScroll(1),
                 Action::ViewerScroll(-1),
                 Action::ViewerBottom,
-                Action::ViewerSearchPrompt(true),
-                Action::ViewerSearchQuery(b"q".to_vec(), true),
+                Action::ViewerSearchPrompt(SearchMode::Matching, true),
+                Action::ViewerSearchQuery(b"q".to_vec(), SearchMode::Matching, true),
                 Action::Status("/q".into()),
             ]
         );
         assert_eq!(
             input.advance(b"\r"),
-            vec![Action::ViewerSearch(b"q".to_vec(), true)]
+            vec![Action::ViewerSearch(
+                b"q".to_vec(),
+                SearchMode::Matching,
+                true
+            )]
+        );
+    }
+
+    #[test]
+    fn viewer_search_markers_are_direct_and_keep_their_mode() {
+        let mut input = Input::new(2, false);
+        input.enter_viewer();
+        for (marker, mode, forward) in [
+            (b'/', SearchMode::Matching, true),
+            (b'?', SearchMode::Matching, false),
+            (b']', SearchMode::NonMatching, true),
+            (b'[', SearchMode::NonMatching, false),
+        ] {
+            assert_eq!(
+                input.advance(&[marker]),
+                vec![Action::ViewerSearchPrompt(mode, forward)]
+            );
+            assert_eq!(
+                input.advance(b"abc\x08\r"),
+                vec![
+                    Action::ViewerSearchQuery(b"a".to_vec(), mode, forward),
+                    Action::Status(viewer_search_status(mode, forward, b"a")),
+                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, forward),
+                    Action::Status(viewer_search_status(mode, forward, b"ab")),
+                    Action::ViewerSearchQuery(b"abc".to_vec(), mode, forward),
+                    Action::Status(viewer_search_status(mode, forward, b"abc")),
+                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, forward),
+                    Action::ViewerSearch(b"ab".to_vec(), mode, forward),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn viewer_non_matching_keys_reject_hex_and_prefix_is_not_direct_search() {
+        let mut input = Input::new(2, false);
+        input.enter_viewer();
+        assert_eq!(
+            input.advance(b"H]"),
+            vec![
+                Action::ViewerToggleMode,
+                Action::Status("viewer search is Text-only".into()),
+            ]
+        );
+        assert_eq!(
+            input.advance(b"/"),
+            vec![Action::ViewerSearchPrompt(SearchMode::Matching, true)]
+        );
+        assert_eq!(input.advance(b"\x03"), vec![Action::ViewerSearchCancelled]);
+        input.record_viewer_search(SearchMode::NonMatching, true);
+        assert_eq!(
+            input.advance(b"nN"),
+            vec![
+                Action::ViewerSearchNext(SearchMode::NonMatching, true),
+                Action::ViewerSearchNext(SearchMode::NonMatching, false),
+            ]
+        );
+        assert_eq!(input.advance(b"\x02["), vec![Action::ViewerPage(false)]);
+        assert!(
+            !input
+                .advance(b"]")
+                .iter()
+                .any(|action| matches!(action, Action::Forward(_)))
         );
     }
 

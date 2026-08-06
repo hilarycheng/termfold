@@ -1336,37 +1336,30 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchPrompt(forward) => {
+        Action::ViewerSearchPrompt(mode, forward) => {
             cancel_active_viewer(input);
             set_status(
                 clients,
                 client_id,
-                Some(if forward { "/" } else { "?" }.into()),
+                Some(input::viewer_search_status(mode, forward, &[])),
                 input.full_dirty,
             );
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchQuery(query, forward) => {
+        Action::ViewerSearchQuery(query, mode, forward) => {
             set_status(
                 clients,
                 client_id,
-                Some(input::viewer_search_status(forward, &query)),
+                Some(input::viewer_search_status(mode, forward, &query)),
                 input.full_dirty,
             );
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearch(query, forward) => {
-            let status = input::viewer_search_status(forward, &query);
-            match queue_viewer_search(
-                input,
-                client_id,
-                Some(query),
-                SearchMode::Matching,
-                forward,
-                false,
-            ) {
+        Action::ViewerSearch(query, mode, forward) => {
+            let status = input::viewer_search_status(mode, forward, &query);
+            match queue_viewer_search(input, client_id, Some(query), mode, forward, false) {
                 Ok(()) => set_status(clients, client_id, Some(status), input.full_dirty),
                 Err(error) => set_status(
                     clients,
@@ -1378,15 +1371,10 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchNext(same_direction) => {
-            if let Err(error) = queue_viewer_search(
-                input,
-                client_id,
-                None,
-                SearchMode::Matching,
-                same_direction,
-                true,
-            ) {
+        Action::ViewerSearchNext(mode, same_direction) => {
+            if let Err(error) =
+                queue_viewer_search(input, client_id, None, mode, same_direction, true)
+            {
                 set_status(
                     clients,
                     client_id,
@@ -1701,6 +1689,14 @@ fn apply_viewer_results(
                         );
                         set_status(clients, pending.client_id, Some(status), full_dirty);
                         continue;
+                    }
+                    if let Some(client) = clients
+                        .iter_mut()
+                        .find(|client| client.id == pending.client_id)
+                    {
+                        client
+                            .input
+                            .record_viewer_search(pending.mode, pending.forward);
                     }
                     if wrapped {
                         set_status(
