@@ -1244,7 +1244,7 @@ Rules for every T29 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - Render each viewer row without causing the virtual terminal to scroll after
     the final pane-content row.
@@ -1267,13 +1267,17 @@ Rules for every T29 implementation request:
     `cargo test --locked viewer --no-fail-fast -- --test-threads=1` (91 passed),
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): the target-specific viewer run passed 116 tests,
+    including the final-row Text, Hex, full-width, empty, narrow, and resize
+    regression. The MSVC release build passed.
 
 - [x] **T29G — Make Viewer Help complete and return-safe**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - Make configured-prefix `?` open Help from Viewer mode without first executing
     the viewer prefix's Page Up fallback or the viewer's reverse-search action.
@@ -1300,13 +1304,17 @@ Rules for every T29 implementation request:
     -- --exact` (1 passed),
     and `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): the target-specific viewer run passed 116 tests,
+    including Viewer-to-Help return and side-effect coverage; the exact Help
+    render test passed. The MSVC release build passed.
 
 - [x] **T29H — Wake the Session Server on Viewer Worker results**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Add one bounded, non-blocking Viewer-ready notification into the existing
     central Server event path after a result is committed to the viewer result
@@ -1340,13 +1348,18 @@ Rules for every T29 implementation request:
     coalescing, two-viewer, stale-generation, shutdown, and unchanged polling
     interval. The approved `cargo build --release --locked
     --target x86_64-unknown-linux-musl` passed.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): the target-specific viewer run passed 116 tests,
+    including idle wake, result ordering, full-queue retention, coalescing,
+    two-viewer, stale-generation, and shutdown coverage. The MSVC release build
+    passed.
 
 - [x] **T29I — Remove neighbour prefetch from the visible-frame critical path**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Return and commit a completed `Current` frame before performing any optional
     Previous/Next prefetch work.
@@ -1376,13 +1389,18 @@ Rules for every T29 implementation request:
     prefetch regression and existing frame rotation, invalid-neighbour,
     cancellation, resize, and bounded-cache coverage. The approved
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): the target-specific viewer run passed 116 tests,
+    including Current-before-prefetch delivery, frame rotation, invalid-neighbour,
+    cancellation, resize, and three-frame-bound coverage. The MSVC release build
+    passed.
 
 - [x] **T29J — Combine page navigation and visible rendering safely**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Replace the avoidable Page Up/Page Down and half-page
     `NavigationComplete -> server render request -> RenderComplete` round trip with
@@ -1419,6 +1437,10 @@ Rules for every T29 implementation request:
     -- --test-threads=1` passed with 6 tests. The approved
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Native Windows/MSVC validation was not available in this Linux host.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): the target-specific viewer run passed 116 tests,
+    including compound page rendering and cancellation; all 6 ViewerGate tests
+    passed in that run. The MSVC release build passed.
 
 - [x] **T29K — Run viewer-correction acceptance and update documentation**
   - Required validation: Linux and Native Windows.
@@ -1459,11 +1481,19 @@ Rules for every T29 implementation request:
     the result is an 873,200-byte stripped static PIE and `ldd` reports it is
     statically linked. Current paging metrics at the existing 16x3 test size:
     initial 139.8 ms, cold down 587.1 ms, warm up 667.6 ms, long line 159.9 ms;
-    peak cache 458,769 bytes. `cargo check --locked --target
-    x86_64-pc-windows-msvc` passed. Native Windows tests and the MSVC release
-    build are blocked here because `link.exe` is unavailable. No before/after
-    page-latency harness is present in this checkout, so no comparative claim
-    is made. README behaviour is limited to implemented and verified paths.
+    peak cache 458,769 bytes. README behaviour is limited to implemented and
+    verified paths.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): `cargo fmt --check`, 116 target-specific viewer tests,
+    the exact Help-render test, all 163 target-specific tests, and the MSVC
+    release build passed. The 571,392-byte artifact has SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74` and no
+    bundled DLL files. The 16x3 paging harness measured initial 100.467 ms, cold
+    down 423.715 ms, warm up 482.327 ms, long line 119.850 ms, and peak cache
+    458,769 bytes. Native Windows validation remains incomplete because Clippy
+    fails on existing `needless_borrow`, `manual_is_multiple_of`, and
+    `single_range_in_vec_init` findings, and no before/after latency baseline is
+    present for a comparative claim.
 
 ## T30 Execution Contract
 
