@@ -2406,3 +2406,333 @@ Rules for every T32 implementation request:
     compile-only evidence. Native Windows focused/full tests and MSVC release
     build are blocked in this Linux workspace; the latter reports missing
     `link.exe`, so Native Windows validation remains unchecked.
+
+## T33 Execution Contract
+
+T33 restores the complete Vim-style Viewer repeat-search contract across input,
+server dispatch, Viewer Worker state, bounded search, wrap reporting, and Help.
+It fixes the ambiguity where one boolean is currently interpreted as an actual
+forward/reverse direction in one layer and as same/opposite-to-recorded direction
+in another layer. It does not redesign the Viewer Worker, change query syntax,
+change non-matching-line selection rules beyond repeat/wrap consistency, or alter
+unrelated path prompt, Hex geometry, PTY, ConPTY, session, pane, renderer, IPC,
+or terminal-parser behaviour.
+
+Rules for every T33 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level. Tuning the
+  level does not broaden scope or combine tasks.
+- Every T33 implementation has `Implementation scope: Platform independent`.
+  Linux and Native Windows are validation environments, not separate feature
+  implementations.
+- Preserve the T28-T32 Viewer Worker ownership, generation cancellation, stale-
+  result rejection, zero repeat backlog, one changed-intent replacement, three-
+  frame bound, eight-block / 512 KiB raw cache, 256 KiB frame-source cap, 64 KiB
+  cooperative work step, and Current-before-prefetch ordering.
+- Treat recorded search direction, requested repeat relation, actual execution
+  direction, search mode, query, cursor anchor, active result, and wrapped status
+  as distinct state. Do not encode two of those meanings in one ambiguous
+  boolean.
+- `/`, `?`, `]`, and `[` are new-search commands. `n` and `N` are repeat commands.
+  A repeat MUST NOT become a new search merely because it succeeds.
+- Reuse the existing Viewer Worker, raw-block cache, universal line scanner,
+  matching engine, and non-matching-line engine. Do not add a full-file index,
+  second cache, background thread, async runtime, dependency, regex, shell
+  helper, or synchronous Viewer file I/O in `server.rs`.
+- Keep ordinary production changes below 350 changed lines per subtask. Split a
+  task further instead of broadening ownership or hiding a state migration.
+- Touch only the files named by the subtask, except for a required private type,
+  module declaration, or focused test fixture in the same module.
+- Run only the focused checks named by the approved implementation request.
+- T33C, T33D, and T33E require review before the next dependent subtask begins.
+- Do not update `README.md` until T33G records authoritative validation; T33H
+  performs the final mechanical publication.
+- Stop after reporting changed files, focused results, risks, and blockers.
+
+## T33 Tasks
+
+- [x] **T33A — Record the Vim repeat-direction regression and execution plan**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
+  - Record the intended Vim contract: a successful `/` or `]` records forward;
+    a successful `?` or `[` records reverse; `n` repeats that recorded direction;
+    `N` executes the opposite direction without replacing the recorded direction.
+  - Record the source-level root cause:
+    - `input.rs` currently converts `n` and `N` into an actual forward/reverse
+      boolean from client-side recorded state;
+    - `server.rs` names and forwards the same value as `same_direction`;
+    - `viewer/mod.rs` interprets it as same/opposite relative to Viewer-owned
+      recorded direction; and
+    - successful repeat completion calls `record_viewer_search()` with the
+      repeat's actual direction, so consecutive `N` commands can alternate.
+  - Record that T32 fixed nearest-match selection from a partial cache but did
+    not correct this cross-layer direction contract or repeat-state mutation.
+  - Define T33B through T33H with exact ownership, dependencies, Luna levels,
+    review gates, validation targets, and objective completion conditions.
+  - Allowed files: `TASKS.md`.
+  - Production files: none.
+  - Depends on: T31B, T31D, T32B.
+  - Done when: local Codex can correct the behaviour without guessing whether a
+    boolean means forward/reverse or same/opposite and without redesigning the
+    bounded search architecture.
+  - Evidence: approved task-plan update based on direct inspection of
+    `src/input.rs`, `src/server.rs`, `src/viewer/mod.rs`, and
+    `src/viewer/worker.rs`; no Rust source, tests, builds, dependencies,
+    `REQUIREMENTS.md`, or `README.md` were changed.
+
+- [ ] **T33B — Align the normative Viewer repeat and wrap contract with Vim**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent review complete.
+  - Clarify in `REQUIREMENTS.md` that only a successful new search started by
+    `/`, `?`, `]`, or `[` replaces the last query, search mode, and recorded
+    direction. A successful `n` or `N` repeat MUST preserve all three.
+  - Define `n` as same-as-recorded and `N` as opposite-to-recorded. Pressing `N`
+    repeatedly MUST continue in the same opposite execution direction; pressing
+    `n` afterward MUST resume the original recorded direction.
+  - Preserve strict current-cursor anchoring. The initial requested range MUST
+    exclude the current active result, but after one complete boundary wrap the
+    same result MAY be selected again when it is the only eligible result in the
+    snapshot. That wrapped success MUST not be reported as `no match`.
+  - Apply the same repeat-direction ownership to matching and Text-mode
+    non-matching-line searches. Non-matching-line search remains a Termfold
+    extension; only its repeat and one-wrap state follow the shared contract.
+  - Require exact directional wrap messages:
+    - forward wrap: `search hit BOTTOM, continuing at TOP`;
+    - reverse wrap: `search hit TOP, continuing at BOTTOM`.
+  - Failure, cancellation, stale generation, invalid Hex non-match request, and
+    read errors MUST preserve the last successful query, search mode, recorded
+    direction, cursor, committed frame, and active result as already required.
+  - Update the matching T33 task text only when needed to keep implementation and
+    acceptance criteria aligned with the normative wording.
+  - Allowed files: `REQUIREMENTS.md`, `TASKS.md`.
+  - Production files: none.
+  - Depends on: T33A.
+  - Done when: no implementation task must invent recorded-direction ownership,
+    single-result wrap behaviour, or the user-visible boundary message.
+
+- [ ] **T33C — Replace ambiguous repeat booleans with explicit direction types**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Introduce one explicit repeat relation such as `Same` / `Opposite` and one
+    explicit execution direction such as `Forward` / `Reverse`. Use names that
+    make conversion points unambiguous; do not add a generic boolean alias.
+  - Map Viewer input directly as `n -> Same` and `N -> Opposite`. Input MUST NOT
+    pre-convert those keys into an actual forward/reverse direction.
+  - Carry the repeat relation through `Action`, server command/pending state,
+    `ViewerHandle`, `ViewerOperation`, and Worker dispatch. Resolve the actual
+    execution direction only against the Viewer-owned recorded direction.
+  - Keep new-search `/ ? ] [` input as explicit execution direction because those
+    commands establish the recorded direction after success.
+  - Remove or rename every `same_direction`, `forward`, or equivalent field whose
+    meaning changes between layers. A field may remain only when its type and
+    name have one stable meaning at every call site.
+  - Preserve search mode, generation, cancellation, queue bounds, result ordering,
+    and all T32 nearest-match behaviour.
+  - Allowed production files: `src/input.rs`, `src/server.rs`,
+    `src/viewer/mod.rs`, `src/viewer/worker.rs`.
+  - Focused tests: input maps `n`/`N` to Same/Opposite after forward and reverse
+    searches; `/ -> n`, `/ -> N`, `? -> n`, `? -> N`; matching and non-matching
+    modes; Worker operation routing; cancellation; stale generation; and no PTY
+    input leakage.
+  - Depends on: T33B.
+  - Review gate: inspect every conversion between recorded direction, repeat
+    relation, and actual execution direction; reject any remaining boolean whose
+    meaning depends on the caller before T33D.
+  - Done when: the complete input-to-core path can be read without inferring a
+    direction boolean's meaning from surrounding code.
+
+- [ ] **T33D — Preserve recorded direction across every repeat result**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Separate new-search completion from repeat completion in pending server state
+    or result handling. Do not infer request kind from whether a query vector is
+    present when an explicit request-kind type is safer.
+  - On successful `/`, `?`, `]`, or `[` completion, record the new query, mode,
+    and initial direction in the existing owner required by current architecture.
+  - On successful `n` or `N` completion, update cursor, active result, frame, and
+    wrapped status only. Do not call `record_viewer_search()` with the repeat's
+    actual execution direction and do not replace Viewer-owned recorded state.
+  - A failed, cancelled, stale, or rejected new search or repeat MUST not mutate
+    the prior recorded query, mode, or direction.
+  - Ensure repeated opposite motion remains stable:
+    - `/foo`, `N`, `N`, `N` moves reverse each time;
+    - `?foo`, `N`, `N`, `N` moves forward each time;
+    - after either sequence, `n` resumes the original `/` or `?` direction.
+  - Apply the same state ownership to matching and non-matching-line modes, while
+    retaining Hex rejection for non-matching-line search.
+  - Preserve current per-client/session ownership; do not broaden this task into
+    a redesign of multi-client search sharing.
+  - Allowed production files: `src/input.rs`, `src/server.rs`;
+    `src/viewer/worker.rs` only when an explicit result request-kind or direction
+    field is required to avoid server inference.
+  - Focused tests: consecutive `N`; `N` then `n`; new search replacement; repeat
+    success; repeat no-match; cancellation; stale result; matching/non-matching
+    mode retention; Hex rejection; and initiating-client state unchanged on
+    failure.
+  - Depends on: T33C.
+  - Review gate: inspect every call to `record_viewer_search()`, every successful
+    search-result branch, pending request ownership, and stale-result path before
+    T33E.
+  - Done when: only successful new-search commands can change recorded direction,
+    and repeat direction cannot oscillate because of its own previous success.
+
+- [ ] **T33E — Complete bounded one-result and boundary-wrap semantics**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Keep the first requested search range strictly after or before the committed
+    cursor anchor so the current active result is not returned before reaching a
+    boundary.
+  - After the requested direction reaches EOF or BOF, wrap exactly once and scan
+    the complementary range. Permit the original active match range or original
+    non-matching line to succeed only after all other eligible source positions
+    have been examined and only when it is the nearest valid wrapped result.
+  - A snapshot with one matching occurrence MUST therefore behave as follows:
+    `n` or `N` returns the same occurrence as a wrapped success, leaves the cursor
+    at that occurrence, preserves recorded direction, and reports the proper
+    directional boundary message.
+  - A query with zero occurrences MUST still terminate after one complete scan
+    and report no match. Do not turn the single-result exception into an infinite
+    loop or a second wrap.
+  - Preserve nearest-match ordering from T32 for multiple matches, including
+    partial observed offsets, raw-block eviction/reload, and matches crossing raw
+    blocks or Hex rows.
+  - Keep matching and non-matching-line work cooperative: at most 64 KiB per
+    step, no full-file index, no retained complete long line, normal cancellation,
+    another viewer's control work serviced, and all cache/frame limits unchanged.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/search.rs`,
+    `src/viewer/line.rs`; `src/viewer/worker.rs` only for focused cooperative
+    result coverage or required wrapped-result propagation.
+  - Focused tests: one matching occurrence with `n` and `N`; one qualifying
+    non-matching line; zero result; two and three results; forward and reverse
+    wrap; original-anchor exclusion before wrap; T32 nearest ordering; raw-block
+    boundary; long line; cancellation; stale generation; fairness; and no second
+    wrap.
+  - Depends on: T33D.
+  - Review gate: inspect selected/wrap range construction, original-anchor
+    inclusion timing, termination conditions, one-wrap flag ownership, rollback,
+    64 KiB yielding, and absence of an index before T33F.
+  - Done when: single-result and multi-result repeats follow the same bounded
+    one-wrap state machine and cannot incorrectly return `no match` after a valid
+    wrapped result.
+
+- [ ] **T33F — Emit Vim-style directional wrap status and update Viewer Help**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Ensure a successful search result carries or can deterministically recover
+    the actual execution direction used for that operation. Do not use the
+    recorded direction when `N` executed the opposite direction.
+  - Replace the generic `wrapped` status with:
+    - `search hit BOTTOM, continuing at TOP` for an actual forward wrap;
+    - `search hit TOP, continuing at BOTTOM` for an actual reverse wrap.
+  - Use the same directional message for matching and non-matching-line wrapped
+    success. Non-wrapped success retains the ordinary Viewer status, and no-match
+    retains its existing query-aware error without mutating successful state.
+  - Update grouped Viewer Help to state that `n` repeats the recorded direction,
+    `N` uses the opposite direction, repeated `N` keeps moving opposite, and a
+    boundary wraps once with the directional message. Keep narrow-width
+    pagination, configured prefix substitution, permanent status row, and return
+    to the same Viewer state.
+  - Do not update `README.md` in this task.
+  - Allowed production files: `src/server.rs`, `src/viewer/worker.rs`,
+    `src/input.rs`, `src/render.rs`.
+  - Focused tests: exact forward/reverse message strings; `/` and `?` wraps;
+    `n` and `N` wraps; matching/non-matching modes; one-result wrap; no generic
+    `wrapped` fallback; Help headings and wording at 40/80/120 columns; configured
+    non-default prefix; and Viewer-to-Help-to-Viewer state preservation.
+  - Depends on: T33E.
+  - Done when: the status identifies the boundary and continuation direction
+    exactly, and Help describes the implemented repeat state without requiring
+    users to infer it.
+
+- [ ] **T33G — Run end-to-end Vim repeat and wrap acceptance**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add deterministic acceptance through the complete path:
+    input bytes -> semantic action -> server pending state -> ViewerHandle ->
+    Viewer Worker -> Viewer core -> result application -> client recorded state ->
+    status rendering.
+  - Cover the complete matching matrix `/ -> n`, `/ -> N`, `? -> n`, `? -> N`,
+    repeated `N`, `N -> n`, BOF/EOF wraps, exact directional messages, one
+    result, no result, and the T32 `/ -> G -> N -> N` nearest-match regression.
+  - Cover the equivalent repeat-direction matrix for `]` and `[` Text-mode
+    non-matching-line search, including Hex rejection without state loss.
+  - Reverify cursor anchoring after `gg`/`G`, Page Up/Page Down, line movement,
+    horizontal movement, Home/End, and viewport-only scrolling. Viewport-only
+    scrolling MUST not change the logical cursor anchor.
+  - Reverify cancellation, stale generations, close during work, new-search
+    replacement, another viewer's control fairness, raw-block eviction/reload,
+    Text/Hex matching, universal EOL handling, and long-line bounded work.
+  - Reverify all T28-T32 resource and ordering limits: eight raw blocks / 512 KiB,
+    three frames, 256 KiB source bytes per frame, 64 KiB work steps, one
+    navigation in flight, zero same-intent backlog, one changed-intent
+    replacement, and Current-before-prefetch delivery.
+  - Run authoritative Linux/WSL and Native Windows focused input/viewer/worker/
+    server/render tests, full test suites, formatting, Clippy with `-D warnings`,
+    musl release build, and MSVC release build. A Windows target check alone MUST
+    leave Native Windows validation unchecked.
+  - Do not update `README.md`. Record concise commands, environments, results,
+    resource observations, and blockers in this task.
+  - Allowed files: focused tests and this task entry after separate in-scope
+    approval. Production defects discovered here MUST return to T33C-T33F scope
+    rather than be hidden inside acceptance work.
+  - Depends on: T33F.
+  - Done when: both authoritative platforms prove the same recorded-direction,
+    opposite-repeat, nearest-match, one-wrap, and directional-message behaviour
+    without relying on direct-core tests alone.
+
+- [ ] **T33H — Publish verified Vim repeat and wrap behaviour**
+  - Recommended model: Luna Low.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent validation complete.
+  - After T33G completes the required authoritative validation, update only the
+    Large-file Viewer and key-reminder wording in `README.md`.
+  - State that `/` and `?` establish the recorded matching direction, `]` and `[`
+    establish the recorded Text-only non-matching direction, `n` repeats that
+    direction, and `N` uses the opposite direction without changing it.
+  - Document one-wrap behaviour and the exact BOTTOM-to-TOP / TOP-to-BOTTOM
+    messages, including the valid wrapped return to the same result when it is
+    the only occurrence.
+  - Do not copy implementation types, Worker ownership, cache details already
+    documented elsewhere, test commands, or unchecked platform claims.
+  - Allowed files: `README.md`, `TASKS.md` evidence for this task.
+  - Production files: none.
+  - Depends on: T33G.
+  - Done when: user-facing documentation matches the verified executable and no
+    future, partial, or compile-only behaviour is described as available.
