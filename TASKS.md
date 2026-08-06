@@ -638,7 +638,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Store exactly three optional frame slots in `viewer/frame.rs`.
   - Implement deterministic Page Up/Page Down rotation when the neighbour matches
     the current snapshot, mode, size, tab width, and expected source boundary.
@@ -657,14 +657,17 @@ perform file I/O or file scanning.
     rotate valid neighbours and perform one bounded directional prefetch.
   - Evidence: focused `cargo test --locked viewer::` passed with 37 tests; full
     elevated `cargo test --locked` passed with 94 unit tests and 8 lifecycle
-    tests; the x86_64 musl release build passed.
+    tests; the x86_64 musl release build passed. Native Windows MSVC
+    `cargo test --locked --target x86_64-pc-windows-msvc
+    viewer::frame::tests::` passed 4 tests, and `cargo build --release --locked
+    --target x86_64-pc-windows-msvc` passed.
 
 - [x] **T28K — Add the session-scoped Viewer Worker foundation**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/worker.rs` and one worker per Session Server, not one thread per
     viewer.
   - Define bounded `ViewerCommand` and `ViewerResult` messages containing viewer
@@ -690,14 +693,19 @@ perform file I/O or file scanning.
     search work after each 64 KiB step.
   - Evidence: focused `cargo test --locked viewer::worker::` passed with 5 tests;
     full elevated `cargo test --locked` passed with 99 unit tests and 8 lifecycle
-    tests; the x86_64 musl release build passed.
+    tests; the x86_64 musl release build passed. Native Windows MSVC
+    `cargo test --locked --target x86_64-pc-windows-msvc
+    viewer::worker::tests::` passed 22 tests, and `cargo build --release --locked
+    --target x86_64-pc-windows-msvc` passed. Review confirmed one bounded worker
+    owns viewer state, prioritizes controls, rejects stale generations, and shuts
+    down deterministically. Worker tests required elevated temporary-file access.
 
 - [x] **T28L — Move page and line navigation behind the Viewer Worker**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Convert line, page, half-page, viewport, start/end, and top/bottom actions into
     ViewerCommand messages.
   - Apply ViewerResult only when viewer ID and generation still match.
@@ -720,14 +728,18 @@ perform file I/O or file scanning.
   - Evidence: focused `cargo test --locked viewer::worker::` passed with 7 tests;
     elevated `cargo test --locked` passed with 101 unit tests and 8 lifecycle
     tests; the x86_64 musl release build passed and produced a stripped static PIE.
-    Native Windows/MSVC validation was not available in this Linux host.
+    Native Windows MSVC `cargo test --locked --target x86_64-pc-windows-msvc
+    viewer::worker::tests::` passed 22 tests, and `cargo build --release --locked
+    --target x86_64-pc-windows-msvc` passed. Review confirmed viewer navigation
+    file work remains behind the worker and accepted page results render before
+    replacement dispatch. Worker tests required elevated temporary-file access.
 
 - [x] **T28M — Enforce zero repeat backlog and one changed-intent replacement**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Add a server-side ViewerGate containing generation, in-flight state, current
     intent, and at most one replacement command.
   - Dispatch one navigation when idle. Drop same-intent repeats while in flight.
@@ -753,7 +765,12 @@ perform file I/O or file scanning.
   - Evidence: focused `cargo test --locked server::tests::viewer_gate` passed
     5 tests; elevated `cargo test --locked --no-fail-fast` passed 106 unit tests
     and 8 lifecycle tests; the x86_64 musl release build passed. Native
-    Windows/MSVC validation was not available in this Linux host.
+    Windows MSVC `cargo test --locked --target x86_64-pc-windows-msvc
+    server::tests::viewer_gate` passed 6 tests, and `cargo build --release
+    --locked --target x86_64-pc-windows-msvc` passed. Review confirmed zero
+    same-intent backlog and exactly one newest changed-intent replacement. The
+    Windows artifact is 571,392 bytes with SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
 
 - [x] **T28N — Define text and hex search query types**
   - Required validation: Linux and Native Windows.
@@ -1007,9 +1024,10 @@ perform file I/O or file scanning.
 
 ### T28 native Windows confirmation ledger
 
-- Confirmed: T28B, T28C, T28D, T28E, T28F, T28G, T28H, and T28I each record
-  native Windows/MSVC focused tests and release-build evidence.
-- Not confirmed: T28J through T28T have Linux/WSL implementation evidence but
+- Confirmed: T28B, T28C, T28D, T28E, T28F, T28G, T28H, T28I, T28J, T28K,
+  T28L, and T28M each record native Windows/MSVC focused tests and release-build
+  evidence.
+- Not confirmed: T28N through T28T have Linux/WSL implementation evidence but
   no recorded native Windows/MSVC focused test and build for their final code;
   their unchecked status is intentional until that validation is supplied.
 - T28A is platform independent. T28U implementation and Linux validation are
