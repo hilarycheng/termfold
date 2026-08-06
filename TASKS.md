@@ -568,7 +568,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Replace byte-column cursor movement with source offset plus preferred
     display-cell column.
   - Implement line start/end, Up/Down preferred-cell movement, top/bottom, and
@@ -589,14 +589,20 @@ perform file I/O or file scanning.
     uses the same mapping for line end, vertical movement, clipping, and cursor
     rendering.
   - Evidence: `cargo test --locked viewer::` passed with 30 viewer tests; the
-    x86_64 musl release build passed.
+    x86_64 musl release build passed. Native Windows MSVC
+    `cargo test --locked --target x86_64-pc-windows-msvc viewer::` passed with
+    96 tests, and `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed. The Windows release artifact is 571,392
+    bytes with SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
+    Native Windows tests and linking required elevated temporary-file access.
 
 - [x] **T28I — Introduce the Current PageFrame builder**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Create `viewer/frame.rs` with the approved PageFrame fields: source range,
     decoded rows, line boundaries, source/cell spans, valid cursor stops, and
     visible match ranges.
@@ -619,7 +625,13 @@ perform file I/O or file scanning.
     page buffer.
   - Evidence: focused `cargo test --locked viewer::` passed with 33 viewer tests;
     elevated full `cargo test --locked` passed with 90 unit tests and 8 lifecycle
-    tests; the x86_64 musl release build passed.
+    tests; the x86_64 musl release build passed. Native Windows MSVC
+    `cargo test --locked --target x86_64-pc-windows-msvc viewer::` passed with
+    96 tests, and `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed. The Windows release artifact is 571,392
+    bytes with SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
+    Native Windows tests and linking required elevated temporary-file access.
 
 - [x] **T28J — Add Previous/Current/Next frame rotation**
   - Required validation: Linux and Native Windows.
@@ -995,9 +1007,9 @@ perform file I/O or file scanning.
 
 ### T28 native Windows confirmation ledger
 
-- Confirmed: T28B, T28C, T28D, T28E, T28F, and T28G each record native
-  Windows/MSVC focused tests and release-build evidence.
-- Not confirmed: T28H through T28T have Linux/WSL implementation evidence but
+- Confirmed: T28B, T28C, T28D, T28E, T28F, T28G, T28H, and T28I each record
+  native Windows/MSVC focused tests and release-build evidence.
+- Not confirmed: T28J through T28T have Linux/WSL implementation evidence but
   no recorded native Windows/MSVC focused test and build for their final code;
   their unchecked status is intentional until that validation is supplied.
 - T28A is platform independent. T28U implementation and Linux validation are
