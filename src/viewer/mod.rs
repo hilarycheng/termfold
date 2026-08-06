@@ -97,6 +97,7 @@ enum NonMatchingStep {
 pub(super) enum SearchStart {
     Complete(bool),
     Work(SearchWork),
+    Error(String),
 }
 
 pub(super) enum SearchStep {
@@ -770,6 +771,7 @@ impl Viewer {
                     SearchStep::Complete(found) => break Ok(found),
                 }
             },
+            SearchStart::Error(message) => Err(io::Error::other(message)),
         })();
         if result.is_err() {
             self.restore_state(state);
@@ -796,6 +798,7 @@ impl Viewer {
                     SearchStep::Complete(found) => break Ok(found),
                 }
             },
+            SearchStart::Error(message) => Err(io::Error::other(message)),
         })();
         if result.is_err() {
             self.restore_state(state);
@@ -818,6 +821,7 @@ impl Viewer {
                     SearchStep::Complete(found) => break Ok(found),
                 }
             },
+            SearchStart::Error(message) => Err(io::Error::other(message)),
         })();
         if result.is_err() {
             self.restore_state(state);
@@ -827,6 +831,7 @@ impl Viewer {
         result
     }
 
+    #[cfg(test)]
     pub(super) fn begin_search_work(&mut self, input: Vec<u8>, forward: bool) -> SearchStart {
         self.begin_search_work_mode(input, SearchMode::Matching, forward)
     }
@@ -837,7 +842,9 @@ impl Viewer {
         mode: SearchMode,
         forward: bool,
     ) -> SearchStart {
-        self.search_wrapped = false;
+        if mode == SearchMode::NonMatching && self.mode == ViewerMode::Hex {
+            return SearchStart::Error("viewer search is Text-only".into());
+        }
         let query = match mode {
             SearchMode::Matching => SearchQuery::parse(&input),
             SearchMode::NonMatching => SearchQuery::parse_text(&input),
@@ -852,10 +859,12 @@ impl Viewer {
         &mut self,
         same_direction: bool,
     ) -> io::Result<SearchStart> {
-        self.search_wrapped = false;
         let Some(previous) = self.search.clone() else {
             return Ok(SearchStart::Complete(false));
         };
+        if previous.mode == SearchMode::NonMatching && self.mode == ViewerMode::Hex {
+            return Ok(SearchStart::Error("viewer search is Text-only".into()));
+        }
         let forward = if same_direction {
             previous.forward
         } else {
@@ -871,6 +880,7 @@ impl Viewer {
                 forward: previous.forward,
                 offset,
             });
+            self.search_wrapped = false;
             self.invalidate_frames();
             return Ok(SearchStart::Complete(true));
         }
@@ -997,7 +1007,10 @@ impl Viewer {
                     .expect("non-matching work exists"),
             )? {
                 NonMatchingStep::Continue => Ok(SearchStep::Continue),
-                NonMatchingStep::Complete => Ok(SearchStep::Complete(false)),
+                NonMatchingStep::Complete => {
+                    self.search_wrapped = false;
+                    Ok(SearchStep::Complete(false))
+                }
                 NonMatchingStep::Found { offset, wrapped } => {
                     self.set_line_start_position(offset)?;
                     self.matches.clear();
@@ -1090,6 +1103,10 @@ impl Viewer {
 
     pub(super) fn search_wrapped(&self) -> bool {
         self.search_wrapped
+    }
+
+    pub(super) fn search_mode(&self) -> Option<SearchMode> {
+        self.search.as_ref().map(|search| search.mode)
     }
 
     fn navigation<T, F>(&mut self, operation: F) -> io::Result<T>

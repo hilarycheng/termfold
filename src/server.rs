@@ -18,7 +18,10 @@ use crate::{
     runtime::{ClientStream, RuntimeDir, SessionSocket},
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
-    viewer::worker::{ViewerHandle, ViewerUpdate, ViewerWorker, ViewerWorkerHandle},
+    viewer::{
+        SearchMode,
+        worker::{ViewerHandle, ViewerUpdate, ViewerWorker, ViewerWorkerHandle},
+    },
 };
 
 // Two buffered frames plus one being written and one pending frame remain within
@@ -164,6 +167,7 @@ struct PaneProcess {
 struct PendingViewerSearch {
     client_id: u64,
     query: Option<Vec<u8>>,
+    mode: SearchMode,
     forward: bool,
 }
 
@@ -1355,7 +1359,14 @@ fn handle_action(
         }
         Action::ViewerSearch(query, forward) => {
             let status = input::viewer_search_status(forward, &query);
-            match queue_viewer_search(input, client_id, Some(query), forward, false) {
+            match queue_viewer_search(
+                input,
+                client_id,
+                Some(query),
+                SearchMode::Matching,
+                forward,
+                false,
+            ) {
                 Ok(()) => set_status(clients, client_id, Some(status), input.full_dirty),
                 Err(error) => set_status(
                     clients,
@@ -1368,7 +1379,14 @@ fn handle_action(
             return false;
         }
         Action::ViewerSearchNext(same_direction) => {
-            if let Err(error) = queue_viewer_search(input, client_id, None, same_direction, true) {
+            if let Err(error) = queue_viewer_search(
+                input,
+                client_id,
+                None,
+                SearchMode::Matching,
+                same_direction,
+                true,
+            ) {
                 set_status(
                     clients,
                     client_id,
@@ -1527,6 +1545,7 @@ fn queue_viewer_search(
     input: &mut InputContext<'_>,
     client_id: u64,
     query: Option<Vec<u8>>,
+    mode: SearchMode,
     forward: bool,
     repeat: bool,
 ) -> Result<(), String> {
@@ -1536,6 +1555,7 @@ fn queue_viewer_search(
             pending: PendingViewerSearch {
                 client_id,
                 query,
+                mode,
                 forward,
             },
             repeat,
@@ -1610,7 +1630,11 @@ fn dispatch_viewer_command(
                     .map_err(|error| error.to_string())?;
             } else {
                 viewer
-                    .start_search(pending.query.clone().unwrap_or_default(), pending.forward)
+                    .start_search_mode(
+                        pending.query.clone().unwrap_or_default(),
+                        pending.mode,
+                        pending.forward,
+                    )
                     .map_err(|error| error.to_string())?;
             }
             pane.pending_viewer_search = Some(pending);
@@ -1655,7 +1679,11 @@ fn apply_viewer_results(
             };
             let Some(update) = update else { break };
             match update {
-                ViewerUpdate::SearchComplete { found, wrapped } => {
+                ViewerUpdate::SearchComplete {
+                    found,
+                    wrapped,
+                    mode,
+                } => {
                     let Some(pending) = pane.pending_viewer_search.take() else {
                         continue;
                     };
@@ -1666,7 +1694,7 @@ fn apply_viewer_results(
                             |query| {
                                 format!(
                                     "no match: {}{}",
-                                    if pending.forward { "/" } else { "?" },
+                                    search_marker(mode, pending.forward),
                                     String::from_utf8_lossy(&query)
                                 )
                             },
@@ -1699,6 +1727,10 @@ fn apply_viewer_results(
                             format!("viewer render failed: {error}"),
                         );
                     }
+                }
+                ViewerUpdate::SearchError(message) => {
+                    pane.pending_viewer_search = None;
+                    report_viewer_error(clients, pane, full_dirty, message);
                 }
                 ViewerUpdate::NavigationComplete => {
                     let result = pane
@@ -1776,6 +1808,15 @@ fn set_viewer_status(clients: &mut [Client], client_id: u64, input: &mut InputCo
         .and_then(|active| input.panes.iter().find(|pane| pane.id == active))
         .and_then(|pane| viewer_status_message(clients, pane, client_id));
     set_status(clients, client_id, status, input.full_dirty);
+}
+
+fn search_marker(mode: SearchMode, forward: bool) -> &'static str {
+    match (mode, forward) {
+        (SearchMode::Matching, true) => "/",
+        (SearchMode::Matching, false) => "?",
+        (SearchMode::NonMatching, true) => "]",
+        (SearchMode::NonMatching, false) => "[",
+    }
 }
 
 fn viewer_status_message(clients: &[Client], pane: &PaneProcess, client_id: u64) -> Option<String> {

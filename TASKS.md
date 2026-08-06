@@ -2038,13 +2038,13 @@ Rules for every T31 implementation request:
     compile-only check; native MSVC runtime tests and release build are blocked
     because this environment is Linux.
 
-- [ ] **T31D — Integrate search mode with Worker state, repeat, and highlighting**
+- [x] **T31D — Integrate search mode with Worker state, repeat, and highlighting**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Carry search mode, query, and recorded direction through Viewer state,
     `ViewerOperation`, incremental `SearchWork`, `ViewerResult`,
@@ -2075,6 +2075,17 @@ Rules for every T31 implementation request:
     T31E.
   - Done when: matching and non-matching searches share one bounded Worker path
     while retaining distinct mode, direction, cursor, and highlight state.
+  - Implementation: carried explicit search mode through Worker operations,
+    results, pending server state, and repeat completion; retained mode and
+    direction in Viewer search state; added cooperative non-match result/error
+    delivery, Hex rejection, cancellation-safe rollback, and Worker highlight
+    regressions.
+  - Evidence (2026-08-06): Ubuntu 24.04 Linux `cargo fmt --check`,
+    `cargo test --locked viewer:: -- --test-threads=1` passed (108/108), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    Windows `cargo check --locked --tests --target x86_64-pc-windows-msvc`
+    passed as a compile-only check; native MSVC runtime tests and release build
+    are blocked because this environment is Linux.
 
 - [ ] **T31E — Wire `]` and `[` as direct Viewer search keys**
   - Recommended model: Luna High.
