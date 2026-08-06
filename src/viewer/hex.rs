@@ -47,7 +47,7 @@ fn offset_width(max_offset: u64) -> usize {
 }
 
 fn row_width(offset_width: usize, bytes_per_row: usize) -> Option<usize> {
-    let groups = bytes_per_row / 8 + usize::from(bytes_per_row % 8 != 0);
+    let groups = bytes_per_row / 8 + usize::from(!bytes_per_row.is_multiple_of(8));
     let hex_width = bytes_per_row
         .checked_mul(2)?
         .checked_add(bytes_per_row.checked_sub(groups)?)?
@@ -510,7 +510,9 @@ mod tests {
             ..HexPage::default()
         };
         let mut spans = Vec::new();
-        page.for_each_highlight(&[15..18], Some(&(16..18)), |span| spans.push(span));
+        page.for_each_highlight(std::slice::from_ref(&(15..18)), Some(&(16..18)), |span| {
+            spans.push(span)
+        });
 
         assert_eq!(spans.len(), 6);
         assert!(spans.iter().all(|span| {

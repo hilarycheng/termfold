@@ -1962,7 +1962,7 @@ fn resolve_prompt_directory(
         return Err("absolute path must start with the native separator".to_owned());
     }
     let entries = viewer_entries(&prompt.directory, &prompt.filter);
-    let selected = selected_viewer_entry(&prompt, &entries, query, true)
+    let selected = selected_viewer_entry(prompt, &entries, query, true)
         .ok_or_else(|| "select a matching directory before the path separator".to_owned())?;
     Ok(prompt.directory.join(&entries[selected].name))
 }

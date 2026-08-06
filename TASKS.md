@@ -1472,7 +1472,10 @@ Rules for every T29 implementation request:
     horizontal movement, Help return state, final-row rendering, worker wake,
     current-before-prefetch delivery, compound paging, repeat gating, immediate
     close, and the T28 cache/frame/work bounds. `README.md` now records the
-    verified viewer resource limits.
+    verified viewer resource limits. A later Rust 1.97.1 Clippy run exposed
+    three mechanical findings in the completed source; the redundant borrow,
+    remainder check, and single-range fixture were corrected without changing
+    viewer behaviour.
   - Evidence (2026-08-05): `cargo fmt --check`, focused viewer (97), input (13),
     server (15), and Help-render (1) tests passed. Full Linux validation passed
     with `cargo test --locked -- --test-threads=1` (149 unit and 8 lifecycle
@@ -1484,16 +1487,14 @@ Rules for every T29 implementation request:
     peak cache 458,769 bytes. README behaviour is limited to implemented and
     verified paths.
   - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
-    1.97.1, MSVC 14.44): `cargo fmt --check`, 116 target-specific viewer tests,
-    the exact Help-render test, all 163 target-specific tests, and the MSVC
-    release build passed. The 571,392-byte artifact has SHA-256
-    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74` and no
-    bundled DLL files. The 16x3 paging harness measured initial 100.467 ms, cold
-    down 423.715 ms, warm up 482.327 ms, long line 119.850 ms, and peak cache
-    458,769 bytes. Native Windows validation remains incomplete because Clippy
-    fails on existing `needless_borrow`, `manual_is_multiple_of`, and
-    `single_range_in_vec_init` findings, and no before/after latency baseline is
-    present for a comparative claim.
+    1.97.1, MSVC 14.44): `cargo fmt --check`, target-specific Clippy with
+    `-D warnings`, all 163 target-specific tests, the exact paging-metrics test,
+    and the MSVC release build passed. The 571,392-byte artifact has SHA-256
+    `F66BD3E155E2CFD99BC94CF5CC74B649C98B9A08D64AE20FBE4B4D73E805DCDC` and no
+    bundled DLL files. The 16x3 paging harness measured initial 114.176 ms, cold
+    down 473.2224 ms, warm up 535.196 ms, long line 135.7797 ms, and peak cache
+    458,769 bytes. Native Windows validation remains incomplete because no
+    before/after latency baseline is present for the required comparative claim.
 
 ## T30 Execution Contract
 
