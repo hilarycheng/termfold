@@ -2485,13 +2485,13 @@ Rules for every T33 implementation request:
     `src/viewer/worker.rs`; no Rust source, tests, builds, dependencies,
     `REQUIREMENTS.md`, or `README.md` were changed.
 
-- [ ] **T33B — Align the normative Viewer repeat and wrap contract with Vim**
+- [x] **T33B — Align the normative Viewer repeat and wrap contract with Vim**
   - Recommended model: Luna Medium.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent review complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
   - Clarify in `REQUIREMENTS.md` that only a successful new search started by
     `/`, `?`, `]`, or `[` replaces the last query, search mode, and recorded
     direction. A successful `n` or `N` repeat MUST preserve all three.
@@ -2518,6 +2518,14 @@ Rules for every T33 implementation request:
   - Depends on: T33A.
   - Done when: no implementation task must invent recorded-direction ownership,
     single-result wrap behaviour, or the user-visible boundary message.
+  - Evidence (2026-08-07): Updated `REQUIREMENTS.md` to make successful new
+    searches the only operation that replaces query/mode/direction; define
+    repeat preservation, one-wrap single-result eligibility, and exact forward
+    and reverse boundary messages. No production files changed. `cargo build
+    --locked` passed; focused Viewer tests passed (108/108). The full Linux
+    suite reached 181/182 under the sandbox because the runtime socket test
+    could not bind (`Operation not permitted`); its approved elevated rerun
+    passed (1/1), clearing that environment-only blocker.
 
 - [ ] **T33C — Replace ambiguous repeat booleans with explicit direction types**
   - Recommended model: Luna xHigh.

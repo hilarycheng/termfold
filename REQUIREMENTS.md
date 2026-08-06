@@ -290,8 +290,11 @@ block first-release acceptance.
   non-matching-line search. These are direct, unprefixed Viewer keys and MUST NOT
   change the configured-prefix `Ctrl-b [` scroll-view command outside Viewer
   mode.
-- `n` MUST repeat the last successful query using its recorded search mode and
-  direction. `N` MUST repeat the same mode in the opposite direction. Therefore:
+- Only a successful new search started by `/`, `?`, `]`, or `[` MUST replace the
+  last query, recorded search mode, and recorded direction. A successful `n` or
+  `N` repeat MUST preserve all three. `n` MUST repeat the last successful query
+  using its recorded search mode and direction. `N` MUST repeat the same mode in
+  the opposite direction. Therefore:
   - after `/` or `]`, `n` searches forward and `N` searches reverse;
   - after `?` or `[`, `n` searches reverse and `N` searches forward.
 - Matching search MUST select the first match strictly after the current cursor
@@ -337,8 +340,12 @@ block first-release acceptance.
   existing bounded raw-block cache rather than create a line index.
 - Forward search reaching EOF and reverse search reaching BOF MUST wrap exactly
   once. This applies to matching and non-matching-line modes. A search MUST stop
-  after returning to its original anchor and SHOULD report `wrapped` after a
-  wrapped success.
+  after returning to its original anchor. The initial requested range MUST
+  exclude the current active result, but after one complete boundary wrap the
+  same result MAY be selected again when it is the only eligible result in the
+  snapshot. That wrapped success MUST NOT be reported as `no match`.
+- A successful forward wrap MUST report `search hit BOTTOM, continuing at TOP`;
+  a successful reverse wrap MUST report `search hit TOP, continuing at BOTTOM`.
 - Full-file indexing is prohibited. Matching work, non-matching-line work, and
   long-line scanning MUST inspect at most 64 KiB before checking generation and
   yielding to control work. A complete long line MUST NOT be retained solely to
