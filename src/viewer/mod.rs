@@ -31,6 +31,24 @@ pub(super) enum SearchMode {
     NonMatching,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SearchDirection {
+    Forward,
+    Reverse,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepeatDirection {
+    Same,
+    Opposite,
+}
+
+impl SearchDirection {
+    fn is_forward(self) -> bool {
+        matches!(self, Self::Forward)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
 pub(super) enum ViewerMode {
@@ -43,15 +61,15 @@ pub(super) enum ViewerMode {
 struct SearchState {
     query: SearchQuery,
     mode: SearchMode,
-    forward: bool,
+    direction: SearchDirection,
     offset: u64,
 }
 
 pub(super) struct SearchWork {
     query: SearchQuery,
     mode: SearchMode,
-    forward: bool,
-    recorded_forward: bool,
+    direction: SearchDirection,
+    recorded_direction: SearchDirection,
     ranges: VecDeque<Range<u64>>,
     wrap_range: Range<u64>,
     non_matching: Option<NonMatchingWork>,
@@ -777,12 +795,17 @@ impl Viewer {
 
     #[cfg(test)]
     pub fn search_non_matching(&mut self, query: &str, forward: bool) -> io::Result<bool> {
+        let direction = if forward {
+            SearchDirection::Forward
+        } else {
+            SearchDirection::Reverse
+        };
         let state = self.state();
         let search = self.search.clone();
         let result = (|| match self.begin_search_work_mode(
             query.as_bytes().to_vec(),
             SearchMode::NonMatching,
-            forward,
+            direction,
         ) {
             SearchStart::Complete(found) => Ok(found),
             SearchStart::Work(mut work) => loop {
@@ -802,9 +825,14 @@ impl Viewer {
 
     #[cfg(test)]
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
+        let relation = if same_direction {
+            RepeatDirection::Same
+        } else {
+            RepeatDirection::Opposite
+        };
         let state = self.state();
         let search = self.search.clone();
-        let result = (|| match self.begin_repeat_search_work(same_direction)? {
+        let result = (|| match self.begin_repeat_search_work(relation)? {
             SearchStart::Complete(found) => Ok(found),
             SearchStart::Work(mut work) => loop {
                 match self.step_search_work(&mut work)? {
@@ -823,14 +851,19 @@ impl Viewer {
 
     #[cfg(test)]
     pub(super) fn begin_search_work(&mut self, input: Vec<u8>, forward: bool) -> SearchStart {
-        self.begin_search_work_mode(input, SearchMode::Matching, forward)
+        let direction = if forward {
+            SearchDirection::Forward
+        } else {
+            SearchDirection::Reverse
+        };
+        self.begin_search_work_mode(input, SearchMode::Matching, direction)
     }
 
     pub(super) fn begin_search_work_mode(
         &mut self,
         input: Vec<u8>,
         mode: SearchMode,
-        forward: bool,
+        direction: SearchDirection,
     ) -> SearchStart {
         if mode == SearchMode::NonMatching && self.mode == ViewerMode::Hex {
             return SearchStart::Error("viewer search is Text-only".into());
@@ -842,12 +875,12 @@ impl Viewer {
         let Ok(query) = query else {
             return SearchStart::Complete(false);
         };
-        self.search_work_at(query, mode, forward, forward, self.position)
+        self.search_work_at(query, mode, direction, direction, self.position)
     }
 
     pub(super) fn begin_repeat_search_work(
         &mut self,
-        same_direction: bool,
+        relation: RepeatDirection,
     ) -> io::Result<SearchStart> {
         let Some(previous) = self.search.clone() else {
             return Ok(SearchStart::Complete(false));
@@ -855,16 +888,18 @@ impl Viewer {
         if previous.mode == SearchMode::NonMatching && self.mode == ViewerMode::Hex {
             return Ok(SearchStart::Error("viewer search is Text-only".into()));
         }
-        let forward = if same_direction {
-            previous.forward
-        } else {
-            !previous.forward
+        let direction = match relation {
+            RepeatDirection::Same => previous.direction,
+            RepeatDirection::Opposite => match previous.direction {
+                SearchDirection::Forward => SearchDirection::Reverse,
+                SearchDirection::Reverse => SearchDirection::Forward,
+            },
         };
         Ok(self.search_work_at(
             previous.query,
             previous.mode,
-            forward,
-            previous.forward,
+            direction,
+            previous.direction,
             self.position,
         ))
     }
@@ -873,8 +908,8 @@ impl Viewer {
         &mut self,
         query: SearchQuery,
         mode: SearchMode,
-        forward: bool,
-        recorded_forward: bool,
+        direction: SearchDirection,
+        recorded_direction: SearchDirection,
         start: u64,
     ) -> SearchStart {
         if query.as_bytes().is_empty() {
@@ -883,7 +918,7 @@ impl Viewer {
         if mode == SearchMode::NonMatching {
             let length = self.length();
             let original_line = self.line_start_at(start).unwrap_or(start.min(length));
-            let non_matching = if forward {
+            let non_matching = if direction.is_forward() {
                 NonMatchingWork {
                     original_line,
                     length,
@@ -911,8 +946,8 @@ impl Viewer {
             return SearchStart::Work(SearchWork {
                 query,
                 mode,
-                forward,
-                recorded_forward,
+                direction,
+                recorded_direction,
                 ranges: VecDeque::new(),
                 wrap_range: 0..0,
                 non_matching: Some(non_matching),
@@ -924,7 +959,7 @@ impl Viewer {
         let query_len = query.len() as u64;
         let start = start.min(self.length());
         let limit = maximum.saturating_add(1);
-        let primary = if forward {
+        let primary = if direction.is_forward() {
             start.saturating_add(1).min(limit)..limit
         } else {
             0..start.min(limit)
@@ -935,7 +970,7 @@ impl Viewer {
             .and_then(|range| intersect_range(range, &primary));
         let neighbour = self
             .frames
-            .neighbour(forward)
+            .neighbour(direction.is_forward())
             .and_then(|frame| frame_candidate_range(frame.source_range.clone(), query_len))
             .and_then(|range| intersect_range(range, &primary));
 
@@ -943,28 +978,28 @@ impl Viewer {
         let mut selected = Vec::new();
         for priority in [current, neighbour].into_iter().flatten() {
             let mut pieces = subtract_range(priority, &selected);
-            order_ranges(&mut pieces, forward);
+            order_ranges(&mut pieces, direction.is_forward());
             selected.extend(pieces.iter().cloned());
             ranges.extend(pieces);
         }
         let mut remaining = subtract_range(primary, &selected);
-        order_ranges(&mut remaining, forward);
+        order_ranges(&mut remaining, direction.is_forward());
         ranges.extend(remaining);
 
-        let wrap = if forward {
+        let wrap = if direction.is_forward() {
             0..start.min(limit)
         } else {
             start.saturating_add(1).min(limit)..limit
         };
         let mut wrapped = subtract_range(wrap.clone(), &selected);
-        order_ranges(&mut wrapped, forward);
+        order_ranges(&mut wrapped, direction.is_forward());
         ranges.extend(wrapped);
 
         SearchStart::Work(SearchWork {
             query,
             mode,
-            forward,
-            recorded_forward,
+            direction,
+            recorded_direction,
             ranges,
             wrap_range: wrap,
             non_matching: None,
@@ -991,7 +1026,7 @@ impl Viewer {
                     self.search = Some(SearchState {
                         query: work.query.clone(),
                         mode: work.mode,
-                        forward: work.recorded_forward,
+                        direction: work.recorded_direction,
                         offset,
                     });
                     self.invalidate_frames();
@@ -1005,7 +1040,7 @@ impl Viewer {
         };
         let query_len = work.query.len();
         let candidate_limit = source::BLOCK_SIZE as usize - query_len + 1;
-        let (scan_start, scan_end) = if work.forward {
+        let (scan_start, scan_end) = if work.direction.is_forward() {
             let scan_end = range
                 .start
                 .saturating_add(candidate_limit as u64)
@@ -1024,7 +1059,7 @@ impl Viewer {
         let bytes = self.source.read_range(scan_start..read_end)?;
         let candidate_count = (scan_end - scan_start) as usize;
         let mut found = None;
-        if work.forward {
+        if work.direction.is_forward() {
             for offset in 0..candidate_count {
                 let end = offset.saturating_add(query_len);
                 if end <= bytes.len() && work.query.matches_bytes(&bytes[offset..end]) {
@@ -1041,7 +1076,7 @@ impl Viewer {
                 }
             }
         }
-        if work.forward {
+        if work.direction.is_forward() {
             if let Some(range) = work.ranges.front_mut() {
                 range.start = scan_end;
             }
@@ -1057,7 +1092,7 @@ impl Viewer {
             self.search = Some(SearchState {
                 query: work.query.clone(),
                 mode: work.mode,
-                forward: work.recorded_forward,
+                direction: work.recorded_direction,
                 offset,
             });
             self.invalidate_frames();
@@ -1077,6 +1112,10 @@ impl Viewer {
 
     pub(super) fn search_mode(&self) -> Option<SearchMode> {
         self.search.as_ref().map(|search| search.mode)
+    }
+
+    pub(super) fn search_direction(&self) -> Option<SearchDirection> {
+        self.search.as_ref().map(|search| search.direction)
     }
 
     fn navigation<T, F>(&mut self, operation: F) -> io::Result<T>

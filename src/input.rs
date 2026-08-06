@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::{
     ipc::MAX_VIEW_PATH_BYTES,
     session::{Direction, Split},
-    viewer::{MAX_QUERY_BYTES, SearchMode},
+    viewer::{MAX_QUERY_BYTES, RepeatDirection, SearchDirection, SearchMode},
 };
 
 const MAX_FILENAME_BYTES: usize = 4096;
@@ -61,10 +61,10 @@ pub enum Action {
     ViewerTop,
     ViewerBottom,
     ViewerToggleMode,
-    ViewerSearchPrompt(SearchMode, bool),
-    ViewerSearchQuery(Vec<u8>, SearchMode, bool),
-    ViewerSearch(Vec<u8>, SearchMode, bool),
-    ViewerSearchNext(SearchMode, bool),
+    ViewerSearchPrompt(SearchMode, SearchDirection),
+    ViewerSearchQuery(Vec<u8>, SearchMode, SearchDirection),
+    ViewerSearch(Vec<u8>, SearchMode, SearchDirection),
+    ViewerSearchNext(SearchMode, RepeatDirection),
     ViewerSearchCancelled,
     ClearScrollback,
     SaveScrollback(String),
@@ -86,7 +86,7 @@ enum Mode {
     Viewer(Vec<u8>),
     ViewerPrefix,
     ViewerG,
-    ViewerSearch(Vec<u8>, SearchMode, bool),
+    ViewerSearch(Vec<u8>, SearchMode, SearchDirection),
 }
 
 #[derive(Debug)]
@@ -97,7 +97,7 @@ pub struct Input {
     pending_since: Option<Instant>,
     mode: Mode,
     viewer_search_mode: SearchMode,
-    viewer_search_forward: bool,
+    viewer_search_direction: SearchDirection,
     viewer_hex: bool,
 }
 
@@ -110,7 +110,7 @@ impl Input {
             pending_since: None,
             mode: Mode::Normal,
             viewer_search_mode: SearchMode::Matching,
-            viewer_search_forward: true,
+            viewer_search_direction: SearchDirection::Forward,
             viewer_hex: false,
         }
     }
@@ -126,13 +126,13 @@ impl Input {
     pub fn enter_viewer(&mut self) {
         self.mode = Mode::Viewer(Vec::new());
         self.viewer_search_mode = SearchMode::Matching;
-        self.viewer_search_forward = true;
+        self.viewer_search_direction = SearchDirection::Forward;
         self.viewer_hex = false;
     }
 
-    pub fn record_viewer_search(&mut self, mode: SearchMode, forward: bool) {
+    pub fn record_viewer_search(&mut self, mode: SearchMode, direction: SearchDirection) {
         self.viewer_search_mode = mode;
-        self.viewer_search_forward = forward;
+        self.viewer_search_direction = direction;
     }
 
     pub fn set_view_prompt(&mut self, path: Vec<u8>) {
@@ -590,22 +590,34 @@ impl Input {
                     }
                     [b'G'] => Some(Action::ViewerBottom),
                     [b'H'] => Some(Action::ViewerToggleMode),
-                    [b'/'] => Some(Action::ViewerSearchPrompt(SearchMode::Matching, true)),
-                    [b'?'] => Some(Action::ViewerSearchPrompt(SearchMode::Matching, false)),
+                    [b'/'] => Some(Action::ViewerSearchPrompt(
+                        SearchMode::Matching,
+                        SearchDirection::Forward,
+                    )),
+                    [b'?'] => Some(Action::ViewerSearchPrompt(
+                        SearchMode::Matching,
+                        SearchDirection::Reverse,
+                    )),
                     [b']'] if !self.viewer_hex => {
-                        Some(Action::ViewerSearchPrompt(SearchMode::NonMatching, true))
+                        Some(Action::ViewerSearchPrompt(
+                            SearchMode::NonMatching,
+                            SearchDirection::Forward,
+                        ))
                     }
                     [b'['] if !self.viewer_hex => {
-                        Some(Action::ViewerSearchPrompt(SearchMode::NonMatching, false))
+                        Some(Action::ViewerSearchPrompt(
+                            SearchMode::NonMatching,
+                            SearchDirection::Reverse,
+                        ))
                     }
                     [b']' | b'['] => Some(Action::Status("viewer search is Text-only".into())),
                     [b'n'] => Some(Action::ViewerSearchNext(
                         self.viewer_search_mode,
-                        self.viewer_search_forward,
+                        RepeatDirection::Same,
                     )),
                     [b'N'] => Some(Action::ViewerSearchNext(
                         self.viewer_search_mode,
-                        !self.viewer_search_forward,
+                        RepeatDirection::Opposite,
                     )),
                     [27]
                     | [27, b'[']
@@ -626,8 +638,8 @@ impl Input {
                     if matches!(action, Action::ViewerToggleMode) {
                         self.viewer_hex = !self.viewer_hex;
                     }
-                    self.mode = if let Action::ViewerSearchPrompt(mode, forward) = &action {
-                        Mode::ViewerSearch(Vec::new(), *mode, *forward)
+                    self.mode = if let Action::ViewerSearchPrompt(mode, direction) = &action {
+                        Mode::ViewerSearch(Vec::new(), *mode, *direction)
                     } else {
                         Mode::Viewer(Vec::new())
                     };
@@ -639,18 +651,20 @@ impl Input {
                 self.mode = Mode::Viewer(Vec::new());
                 actions.push(Action::ViewerSearchCancelled);
             }
-            Mode::ViewerSearch(query, mode, forward) if matches!(byte, 8 | 127) => {
+            Mode::ViewerSearch(query, mode, direction) if matches!(byte, 8 | 127) => {
                 query.pop();
-                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *forward));
+                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *direction));
                 if query.is_empty() {
-                    actions.push(Action::Status(viewer_search_status(*mode, *forward, query)));
+                    actions.push(Action::Status(viewer_search_status(
+                        *mode, *direction, query,
+                    )));
                 }
             }
-            Mode::ViewerSearch(query, mode, forward) if matches!(byte, b'\r' | b'\n') => {
+            Mode::ViewerSearch(query, mode, direction) if matches!(byte, b'\r' | b'\n') => {
                 if query.is_empty() {
                     actions.push(Action::Status("viewer search is empty".into()));
                 } else {
-                    actions.push(Action::ViewerSearch(query.clone(), *mode, *forward));
+                    actions.push(Action::ViewerSearch(query.clone(), *mode, *direction));
                     self.mode = Mode::Viewer(Vec::new());
                 }
             }
@@ -662,10 +676,12 @@ impl Input {
                     "viewer search accepts printable text".into(),
                 ));
             }
-            Mode::ViewerSearch(query, mode, forward) => {
+            Mode::ViewerSearch(query, mode, direction) => {
                 query.push(byte);
-                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *forward));
-                actions.push(Action::Status(viewer_search_status(*mode, *forward, query)));
+                actions.push(Action::ViewerSearchQuery(query.clone(), *mode, *direction));
+                actions.push(Action::Status(viewer_search_status(
+                    *mode, *direction, query,
+                )));
             }
         }
     }
@@ -842,16 +858,20 @@ fn search_status(query: &[u8]) -> Action {
     Action::Status(format!("/{visible}"))
 }
 
-pub(crate) fn viewer_search_status(mode: SearchMode, forward: bool, query: &[u8]) -> String {
+pub(crate) fn viewer_search_status(
+    mode: SearchMode,
+    direction: SearchDirection,
+    query: &[u8],
+) -> String {
     let visible: String = String::from_utf8_lossy(query)
         .chars()
         .filter(|character| !character.is_control())
         .collect();
-    let marker = match (mode, forward) {
-        (SearchMode::Matching, true) => "/",
-        (SearchMode::Matching, false) => "?",
-        (SearchMode::NonMatching, true) => "]",
-        (SearchMode::NonMatching, false) => "[",
+    let marker = match (mode, direction) {
+        (SearchMode::Matching, SearchDirection::Forward) => "/",
+        (SearchMode::Matching, SearchDirection::Reverse) => "?",
+        (SearchMode::NonMatching, SearchDirection::Forward) => "]",
+        (SearchMode::NonMatching, SearchDirection::Reverse) => "[",
     };
     format!("{marker}{visible}")
 }
@@ -996,8 +1016,12 @@ mod tests {
                 Action::ViewerScroll(1),
                 Action::ViewerScroll(-1),
                 Action::ViewerBottom,
-                Action::ViewerSearchPrompt(SearchMode::Matching, true),
-                Action::ViewerSearchQuery(b"q".to_vec(), SearchMode::Matching, true),
+                Action::ViewerSearchPrompt(SearchMode::Matching, SearchDirection::Forward),
+                Action::ViewerSearchQuery(
+                    b"q".to_vec(),
+                    SearchMode::Matching,
+                    SearchDirection::Forward,
+                ),
                 Action::Status("/q".into()),
             ]
         );
@@ -1006,7 +1030,7 @@ mod tests {
             vec![Action::ViewerSearch(
                 b"q".to_vec(),
                 SearchMode::Matching,
-                true
+                SearchDirection::Forward
             )]
         );
     }
@@ -1015,27 +1039,27 @@ mod tests {
     fn viewer_search_markers_are_direct_and_keep_their_mode() {
         let mut input = Input::new(2, false);
         input.enter_viewer();
-        for (marker, mode, forward) in [
-            (b'/', SearchMode::Matching, true),
-            (b'?', SearchMode::Matching, false),
-            (b']', SearchMode::NonMatching, true),
-            (b'[', SearchMode::NonMatching, false),
+        for (marker, mode, direction) in [
+            (b'/', SearchMode::Matching, SearchDirection::Forward),
+            (b'?', SearchMode::Matching, SearchDirection::Reverse),
+            (b']', SearchMode::NonMatching, SearchDirection::Forward),
+            (b'[', SearchMode::NonMatching, SearchDirection::Reverse),
         ] {
             assert_eq!(
                 input.advance(&[marker]),
-                vec![Action::ViewerSearchPrompt(mode, forward)]
+                vec![Action::ViewerSearchPrompt(mode, direction)]
             );
             assert_eq!(
                 input.advance(b"abc\x08\r"),
                 vec![
-                    Action::ViewerSearchQuery(b"a".to_vec(), mode, forward),
-                    Action::Status(viewer_search_status(mode, forward, b"a")),
-                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, forward),
-                    Action::Status(viewer_search_status(mode, forward, b"ab")),
-                    Action::ViewerSearchQuery(b"abc".to_vec(), mode, forward),
-                    Action::Status(viewer_search_status(mode, forward, b"abc")),
-                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, forward),
-                    Action::ViewerSearch(b"ab".to_vec(), mode, forward),
+                    Action::ViewerSearchQuery(b"a".to_vec(), mode, direction),
+                    Action::Status(viewer_search_status(mode, direction, b"a")),
+                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, direction),
+                    Action::Status(viewer_search_status(mode, direction, b"ab")),
+                    Action::ViewerSearchQuery(b"abc".to_vec(), mode, direction),
+                    Action::Status(viewer_search_status(mode, direction, b"abc")),
+                    Action::ViewerSearchQuery(b"ab".to_vec(), mode, direction),
+                    Action::ViewerSearch(b"ab".to_vec(), mode, direction),
                 ]
             );
         }
@@ -1054,15 +1078,18 @@ mod tests {
         );
         assert_eq!(
             input.advance(b"/"),
-            vec![Action::ViewerSearchPrompt(SearchMode::Matching, true)]
+            vec![Action::ViewerSearchPrompt(
+                SearchMode::Matching,
+                SearchDirection::Forward,
+            )]
         );
         assert_eq!(input.advance(b"\x03"), vec![Action::ViewerSearchCancelled]);
-        input.record_viewer_search(SearchMode::NonMatching, true);
+        input.record_viewer_search(SearchMode::NonMatching, SearchDirection::Forward);
         assert_eq!(
             input.advance(b"nN"),
             vec![
-                Action::ViewerSearchNext(SearchMode::NonMatching, true),
-                Action::ViewerSearchNext(SearchMode::NonMatching, false),
+                Action::ViewerSearchNext(SearchMode::NonMatching, RepeatDirection::Same),
+                Action::ViewerSearchNext(SearchMode::NonMatching, RepeatDirection::Opposite),
             ]
         );
         assert_eq!(input.advance(b"\x02["), vec![Action::ViewerPage(false)]);
@@ -1072,6 +1099,22 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, Action::Forward(_)))
         );
+    }
+
+    #[test]
+    fn viewer_repeats_keep_the_relation_after_either_recorded_direction() {
+        for direction in [SearchDirection::Forward, SearchDirection::Reverse] {
+            let mut input = Input::new(2, false);
+            input.enter_viewer();
+            input.record_viewer_search(SearchMode::Matching, direction);
+            assert_eq!(
+                input.advance(b"nN"),
+                vec![
+                    Action::ViewerSearchNext(SearchMode::Matching, RepeatDirection::Same),
+                    Action::ViewerSearchNext(SearchMode::Matching, RepeatDirection::Opposite),
+                ]
+            );
+        }
     }
 
     #[test]

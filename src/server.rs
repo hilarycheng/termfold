@@ -19,7 +19,7 @@ use crate::{
     session::{CloseResult, Direction, PaneId, Rect, Session, Size},
     terminal::{MAX_SCREEN_CELLS, MouseMode, Terminal},
     viewer::{
-        SearchMode,
+        RepeatDirection, SearchDirection, SearchMode,
         worker::{ViewerHandle, ViewerUpdate, ViewerWorker, ViewerWorkerHandle},
     },
 };
@@ -168,18 +168,14 @@ struct PendingViewerSearch {
     client_id: u64,
     query: Option<Vec<u8>>,
     mode: SearchMode,
-    forward: bool,
+    direction: Option<SearchDirection>,
+    repeat: Option<RepeatDirection>,
 }
 
 enum ViewerCommand {
     Navigate(ViewerNavigation),
-    ToggleMode {
-        client_id: u64,
-    },
-    Search {
-        pending: PendingViewerSearch,
-        repeat: bool,
-    },
+    ToggleMode { client_id: u64 },
+    Search { pending: PendingViewerSearch },
 }
 
 #[derive(Clone)]
@@ -1336,30 +1332,30 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchPrompt(mode, forward) => {
+        Action::ViewerSearchPrompt(mode, direction) => {
             cancel_active_viewer(input);
             set_status(
                 clients,
                 client_id,
-                Some(input::viewer_search_status(mode, forward, &[])),
+                Some(input::viewer_search_status(mode, direction, &[])),
                 input.full_dirty,
             );
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchQuery(query, mode, forward) => {
+        Action::ViewerSearchQuery(query, mode, direction) => {
             set_status(
                 clients,
                 client_id,
-                Some(input::viewer_search_status(mode, forward, &query)),
+                Some(input::viewer_search_status(mode, direction, &query)),
                 input.full_dirty,
             );
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearch(query, mode, forward) => {
-            let status = input::viewer_search_status(mode, forward, &query);
-            match queue_viewer_search(input, client_id, Some(query), mode, forward, false) {
+        Action::ViewerSearch(query, mode, direction) => {
+            let status = input::viewer_search_status(mode, direction, &query);
+            match queue_viewer_search(input, client_id, Some(query), mode, Some(direction), None) {
                 Ok(()) => set_status(clients, client_id, Some(status), input.full_dirty),
                 Err(error) => set_status(
                     clients,
@@ -1371,9 +1367,9 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchNext(mode, same_direction) => {
+        Action::ViewerSearchNext(mode, relation) => {
             if let Err(error) =
-                queue_viewer_search(input, client_id, None, mode, same_direction, true)
+                queue_viewer_search(input, client_id, None, mode, None, Some(relation))
             {
                 set_status(
                     clients,
@@ -1534,8 +1530,8 @@ fn queue_viewer_search(
     client_id: u64,
     query: Option<Vec<u8>>,
     mode: SearchMode,
-    forward: bool,
-    repeat: bool,
+    direction: Option<SearchDirection>,
+    repeat: Option<RepeatDirection>,
 ) -> Result<(), String> {
     dispatch_viewer_command(
         input,
@@ -1544,9 +1540,9 @@ fn queue_viewer_search(
                 client_id,
                 query,
                 mode,
-                forward,
+                direction,
+                repeat,
             },
-            repeat,
         },
     )
 }
@@ -1605,23 +1601,25 @@ fn dispatch_viewer_command(
                 .map_err(|error| error.to_string())?;
             pane.pending_viewer_client = Some(client_id);
         }
-        ViewerCommand::Search { pending, repeat } => {
+        ViewerCommand::Search { pending } => {
             pane.cancel_viewer();
             let client_id = pending.client_id;
             let viewer = pane
                 .viewer
                 .as_mut()
                 .ok_or_else(|| "active pane is not a viewer".to_owned())?;
-            if repeat {
+            if let Some(relation) = pending.repeat {
                 viewer
-                    .start_repeat_search(pending.forward)
+                    .start_repeat_search(relation)
                     .map_err(|error| error.to_string())?;
             } else {
                 viewer
                     .start_search_mode(
                         pending.query.clone().unwrap_or_default(),
                         pending.mode,
-                        pending.forward,
+                        pending
+                            .direction
+                            .ok_or_else(|| "viewer search direction is missing".to_owned())?,
                     )
                     .map_err(|error| error.to_string())?;
             }
@@ -1671,6 +1669,7 @@ fn apply_viewer_results(
                     found,
                     wrapped,
                     mode,
+                    direction,
                 } => {
                     let Some(pending) = pane.pending_viewer_search.take() else {
                         continue;
@@ -1682,7 +1681,7 @@ fn apply_viewer_results(
                             |query| {
                                 format!(
                                     "no match: {}{}",
-                                    search_marker(mode, pending.forward),
+                                    search_marker(mode, direction),
                                     String::from_utf8_lossy(&query)
                                 )
                             },
@@ -1694,9 +1693,7 @@ fn apply_viewer_results(
                         .iter_mut()
                         .find(|client| client.id == pending.client_id)
                     {
-                        client
-                            .input
-                            .record_viewer_search(pending.mode, pending.forward);
+                        client.input.record_viewer_search(pending.mode, direction);
                     }
                     if wrapped {
                         set_status(
@@ -1806,12 +1803,12 @@ fn set_viewer_status(clients: &mut [Client], client_id: u64, input: &mut InputCo
     set_status(clients, client_id, status, input.full_dirty);
 }
 
-fn search_marker(mode: SearchMode, forward: bool) -> &'static str {
-    match (mode, forward) {
-        (SearchMode::Matching, true) => "/",
-        (SearchMode::Matching, false) => "?",
-        (SearchMode::NonMatching, true) => "]",
-        (SearchMode::NonMatching, false) => "[",
+fn search_marker(mode: SearchMode, direction: SearchDirection) -> &'static str {
+    match (mode, direction) {
+        (SearchMode::Matching, SearchDirection::Forward) => "/",
+        (SearchMode::Matching, SearchDirection::Reverse) => "?",
+        (SearchMode::NonMatching, SearchDirection::Forward) => "]",
+        (SearchMode::NonMatching, SearchDirection::Reverse) => "[",
     }
 }
 

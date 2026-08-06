@@ -12,7 +12,10 @@ use std::{
 
 use crate::{server::ServerEvent, session::Size, terminal::Terminal};
 
-use super::{SearchMode, SearchStart, SearchStep, SearchWork, Viewer, ViewerMode};
+use super::{
+    RepeatDirection, SearchDirection, SearchMode, SearchStart, SearchStep, SearchWork, Viewer,
+    ViewerMode,
+};
 
 pub(super) const VIEWER_COMMAND_CAPACITY: usize = 8;
 const VIEWER_RESULT_CAPACITY: usize = VIEWER_COMMAND_CAPACITY * 2;
@@ -82,10 +85,10 @@ pub(super) enum ViewerOperation {
     Search {
         query: Vec<u8>,
         mode: SearchMode,
-        forward: bool,
+        direction: SearchDirection,
     },
     RepeatSearch {
-        same_direction: bool,
+        relation: RepeatDirection,
     },
     Render {
         terminal: Box<Terminal>,
@@ -114,6 +117,7 @@ pub(super) enum ViewerResult {
         id: ViewerId,
         generation: u64,
         mode: SearchMode,
+        direction: SearchDirection,
         found: bool,
         wrapped: bool,
     },
@@ -143,6 +147,7 @@ pub(crate) enum ViewerUpdate {
         found: bool,
         wrapped: bool,
         mode: SearchMode,
+        direction: SearchDirection,
     },
     SearchError(String),
     RenderComplete,
@@ -538,6 +543,7 @@ impl ViewerHandle {
                 id,
                 generation,
                 mode,
+                direction,
                 found,
                 wrapped,
             } if id == self.id && generation == self.generation => {
@@ -545,6 +551,7 @@ impl ViewerHandle {
                     found,
                     wrapped,
                     mode,
+                    direction,
                 }))
             }
             ViewerResult::SearchError {
@@ -568,6 +575,7 @@ impl ViewerHandle {
                     found,
                     wrapped,
                     mode: SearchMode::Matching,
+                    direction: SearchDirection::Forward,
                 }))
             }
             ViewerResult::Done {
@@ -645,39 +653,54 @@ impl ViewerHandle {
 
     #[cfg(test)]
     pub(crate) fn start_search(&mut self, query: Vec<u8>, forward: bool) -> io::Result<()> {
-        self.start_search_mode(query, SearchMode::Matching, forward)
+        let direction = if forward {
+            SearchDirection::Forward
+        } else {
+            SearchDirection::Reverse
+        };
+        self.start_search_mode(query, SearchMode::Matching, direction)
     }
 
     pub(crate) fn start_search_mode(
         &mut self,
         query: Vec<u8>,
         mode: SearchMode,
-        forward: bool,
+        direction: SearchDirection,
     ) -> io::Result<()> {
         self.dispatch(
             ViewerOperation::Search {
                 query,
                 mode,
-                forward,
+                direction,
             },
             true,
         )
     }
 
-    pub(crate) fn start_repeat_search(&mut self, same_direction: bool) -> io::Result<()> {
-        self.dispatch(ViewerOperation::RepeatSearch { same_direction }, true)
+    pub(crate) fn start_repeat_search(&mut self, relation: RepeatDirection) -> io::Result<()> {
+        self.dispatch(ViewerOperation::RepeatSearch { relation }, true)
     }
     #[cfg(test)]
     pub(crate) fn search(&mut self, query: &str, forward: bool) -> io::Result<(bool, bool)> {
+        let direction = if forward {
+            SearchDirection::Forward
+        } else {
+            SearchDirection::Reverse
+        };
         self.boolean(ViewerOperation::Search {
             query: query.as_bytes().to_vec(),
             mode: SearchMode::Matching,
-            forward,
+            direction,
         })
     }
     #[cfg(test)]
     pub(crate) fn repeat_search(&mut self, same_direction: bool) -> io::Result<(bool, bool)> {
-        self.boolean(ViewerOperation::RepeatSearch { same_direction })
+        let relation = if same_direction {
+            RepeatDirection::Same
+        } else {
+            RepeatDirection::Opposite
+        };
+        self.boolean(ViewerOperation::RepeatSearch { relation })
     }
 }
 
@@ -878,14 +901,15 @@ fn enqueue(
         ViewerOperation::Search {
             query,
             mode,
-            forward,
-        } => match viewer.viewer.begin_search_work_mode(query, mode, forward) {
+            direction,
+        } => match viewer.viewer.begin_search_work_mode(query, mode, direction) {
             SearchStart::Complete(value) => wake.send(
                 &reply,
                 ViewerResult::Search {
                     id,
                     generation,
                     mode,
+                    direction,
                     found: value,
                     wrapped: false,
                 },
@@ -906,14 +930,18 @@ fn enqueue(
                 },
             ),
         },
-        ViewerOperation::RepeatSearch { same_direction } => {
-            match viewer.viewer.begin_repeat_search_work(same_direction) {
+        ViewerOperation::RepeatSearch { relation } => {
+            match viewer.viewer.begin_repeat_search_work(relation) {
                 Ok(SearchStart::Complete(value)) => wake.send(
                     &reply,
                     ViewerResult::Search {
                         id,
                         generation,
                         mode: viewer.viewer.search_mode().unwrap_or(SearchMode::Matching),
+                        direction: viewer
+                            .viewer
+                            .search_direction()
+                            .unwrap_or(SearchDirection::Forward),
                         found: value,
                         wrapped: false,
                     },
@@ -1019,6 +1047,7 @@ fn step(
                             id,
                             generation,
                             mode,
+                            direction: work.direction,
                             found: value,
                             wrapped: viewer.viewer.search_wrapped(),
                         },
@@ -1597,7 +1626,7 @@ mod tests {
                 operation: ViewerOperation::Search {
                     query: vec![b'z'; 256],
                     mode: SearchMode::Matching,
-                    forward: true,
+                    direction: SearchDirection::Forward,
                 },
                 reply,
             })
@@ -1741,7 +1770,7 @@ mod tests {
                 operation: ViewerOperation::Search {
                     query: vec![b'z'; 256],
                     mode: SearchMode::Matching,
-                    forward: true,
+                    direction: SearchDirection::Forward,
                 },
                 reply: search_reply,
             })
@@ -1832,7 +1861,7 @@ mod tests {
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::RenderComplete
         ));
-        viewer.start_repeat_search(true).unwrap();
+        viewer.start_repeat_search(RepeatDirection::Same).unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete { found: true, .. }
@@ -1849,7 +1878,7 @@ mod tests {
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::RenderComplete
         ));
-        viewer.start_repeat_search(true).unwrap();
+        viewer.start_repeat_search(RepeatDirection::Same).unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete { found: true, .. }
@@ -1896,7 +1925,9 @@ mod tests {
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete { found: false, .. }
         ));
-        viewer.start_repeat_search(false).unwrap();
+        viewer
+            .start_repeat_search(RepeatDirection::Opposite)
+            .unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete { found: true, .. }
@@ -1931,7 +1962,7 @@ mod tests {
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::Stale
         ));
-        viewer.start_repeat_search(true).unwrap();
+        viewer.start_repeat_search(RepeatDirection::Same).unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete { found: true, .. }
@@ -2010,7 +2041,11 @@ mod tests {
         );
 
         viewer
-            .start_search_mode(b"hit".to_vec(), SearchMode::NonMatching, true)
+            .start_search_mode(
+                b"hit".to_vec(),
+                SearchMode::NonMatching,
+                SearchDirection::Forward,
+            )
             .unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
@@ -2034,18 +2069,23 @@ mod tests {
                 .any(|cell| cell.attributes().inverse || cell.attributes().underline)
         );
 
-        viewer.start_repeat_search(true).unwrap();
+        viewer.start_repeat_search(RepeatDirection::Same).unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
             ViewerUpdate::SearchComplete {
                 found: true,
                 mode: SearchMode::NonMatching,
                 wrapped: true,
+                ..
             }
         ));
 
         viewer
-            .start_search_mode(b"hit".to_vec(), SearchMode::Matching, true)
+            .start_search_mode(
+                b"hit".to_vec(),
+                SearchMode::Matching,
+                SearchDirection::Forward,
+            )
             .unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
@@ -2062,7 +2102,11 @@ mod tests {
             ViewerUpdate::NavigationComplete
         ));
         viewer
-            .start_search_mode(b"hit".to_vec(), SearchMode::NonMatching, true)
+            .start_search_mode(
+                b"hit".to_vec(),
+                SearchMode::NonMatching,
+                SearchDirection::Forward,
+            )
             .unwrap();
         assert!(matches!(
             wait_update(&mut viewer, &mut terminal),
@@ -2100,7 +2144,7 @@ mod tests {
                 .boolean(ViewerOperation::Search {
                     query: b"aB".to_vec(),
                     mode: SearchMode::Matching,
-                    forward: true,
+                    direction: SearchDirection::Forward,
                 })
                 .unwrap(),
             (true, true)
@@ -2119,7 +2163,7 @@ mod tests {
                 .boolean(ViewerOperation::Search {
                     query: b"hex:00 FF 1B".to_vec(),
                     mode: SearchMode::Matching,
-                    forward: true,
+                    direction: SearchDirection::Forward,
                 })
                 .unwrap(),
             (true, false)
@@ -2258,7 +2302,7 @@ mod tests {
                 operation: ViewerOperation::Search {
                     query: vec![b'z'; 256],
                     mode: SearchMode::Matching,
-                    forward: true,
+                    direction: SearchDirection::Forward,
                 },
                 reply: search_reply,
             })

@@ -2527,13 +2527,13 @@ Rules for every T33 implementation request:
     could not bind (`Operation not permitted`); its approved elevated rerun
     passed (1/1), clearing that environment-only blocker.
 
-- [ ] **T33C — Replace ambiguous repeat booleans with explicit direction types**
+- [x] **T33C — Replace ambiguous repeat booleans with explicit direction types**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Introduce one explicit repeat relation such as `Same` / `Opposite` and one
     explicit execution direction such as `Forward` / `Reverse`. Use names that
@@ -2562,6 +2562,14 @@ Rules for every T33 implementation request:
     meaning depends on the caller before T33D.
   - Done when: the complete input-to-core path can be read without inferring a
     direction boolean's meaning from surrounding code.
+  - Evidence (2026-08-07): Added `RepeatDirection::{Same, Opposite}` and
+    `SearchDirection::{Forward, Reverse}` across input, server pending state,
+    Viewer operations, and Worker dispatch/results. Linux checks passed:
+    `cargo fmt -- --check`; focused input, Viewer, and Worker tests (17/17,
+    45/45, and 24/24); `cargo build --locked`; and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`.
+    Native Windows validation is blocked because this workspace has no native
+    Windows/MSVC runtime environment; no Windows result is inferred.
 
 - [ ] **T33D — Preserve recorded direction across every repeat result**
   - Recommended model: Luna xHigh.
