@@ -12,13 +12,21 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - Run Linux-specific validation in Linux or WSL.
 - Keep modules and dependencies to the minimum required by implemented behaviour.
 - New implementation subtasks MAY include `Recommended model:` with one of
-  `Luna Medium`, `Luna High`, `Luna xHigh`, or `Luna Max`. This is advisory
-  execution metadata, not product behaviour, permission to broaden scope, or
-  permission to combine tasks. Use the lowest level that can safely complete the
-  bounded task; the owner may tune it after observing results.
-- T28 and every later task MUST declare `Required validation:` as
-  `Platform independent`, `Linux`, `Native Windows`, or `Linux and Native
-  Windows`.
+  `Luna Low`, `Luna Medium`, `Luna High`, `Luna xHigh`, or `Luna Max`. This is
+  advisory execution metadata, not product behaviour, permission to broaden
+  scope, or permission to combine tasks. Use the lowest level that can safely
+  complete the bounded task; task size alone does not justify `Luna Max`.
+- T28 through T30 retain their recorded historical platform format.
+- T31 and every later task MUST declare `Implementation scope:` separately from
+  `Required validation:`. Accepted implementation scopes are `Platform
+  independent`, `Linux`, and `Native Windows`.
+- One shared feature MUST remain one platform-independent implementation task.
+  Do not duplicate the feature as separate Linux and Windows tasks. Create a
+  Linux or Native Windows task only for an unavoidable platform-specific API or
+  intentionally platform-only behaviour.
+- A platform-independent implementation MAY still require `Linux and Native
+  Windows` validation when terminal, input, rendering, filesystem, threading,
+  process, or platform-library runtime behaviour can differ.
 - T28 and every later task MUST record separate completion checkboxes for task
   implementation and every required validation environment. Missing Windows
   validation leaves only the Windows checkbox open; it does not undo completed
@@ -26,9 +34,8 @@ This file tracks implementation work. Product behaviour remains authoritative in
 - From T28 onward, `[x]` in a task heading means implementation exists and `[ ]`
   means it does not. Do not use `[*]` for new tasks. Platform completion is shown
   only by the task's explicit completion checklist.
-- Shared source is not automatically platform independent. Compile-only target
-  checks do not complete native Windows validation. Follow `AGENTS.md` for the
-  authoritative platform and evidence rules.
+- A compile-only target check does not complete native Windows validation. Follow
+  `AGENTS.md` for the authoritative scope, platform, and evidence rules.
 
 ## Tasks
 
@@ -1872,3 +1879,278 @@ Rules for every T30 implementation request:
     viewer run hit temporary-file `Access is denied`; the elevated native rerun
     passed. Clippy was not run because it was outside the approved build/test
     scope.
+
+## T31 Execution Contract
+
+T31 corrects Viewer matching-search direction and wrap behaviour, adds direct
+single-key non-matching-line search, and replaces the dense Viewer Help paragraph
+with grouped key rows. It does not change unrelated path-prompt, Hex geometry,
+PTY, ConPTY, session, pane, status-format, IPC-security, terminal-parser,
+snapshot, or resource-limit behaviour.
+
+Rules for every T31 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level. Tuning the
+  level does not broaden scope or combine tasks.
+- Every T31 implementation has `Implementation scope: Platform independent`.
+  Do not create separate Linux and Windows versions of search, key handling, or
+  Help. Platform checkboxes are validation targets, not separate features.
+- Preserve the T28-T30 Viewer Worker ownership, generation cancellation, zero
+  repeat backlog, one changed-intent replacement, three-frame bound, eight-block
+  cache, 256 KiB frame-source cap, 64 KiB work step, and Current-before-prefetch
+  ordering.
+- Reuse the universal line scanner, existing raw-block cache, existing query
+  comparison, and existing Viewer Worker. Do not add a full-file match or line
+  index, second cache, background thread, async runtime, dependency, regex, shell
+  helper, or command language.
+- `[` and `]` are unprefixed Viewer keys only. Do not change `Ctrl-b [` scroll-view
+  entry or the path prompt's bracket handling.
+- Keep ordinary production changes below 350 changed lines per subtask. If the
+  bounded non-match implementation cannot fit, split the named task rather than
+  broadening ownership.
+- Run only the focused checks named by the approved implementation request.
+- Stop after reporting changed files, focused results, risks, and blockers.
+- T31C and T31D require review before the next dependent subtask.
+- Do not update `README.md` until T31G completes the required authoritative
+  validation; T31H performs the final mechanical documentation update.
+
+## T31 Tasks
+
+- [x] **T31A — Define Viewer search modes, Help layout, and execution plan**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
+  - Add `Luna Low` through `Luna Max` guidance and separate implementation scope
+    from validation targets in `AGENTS.md` and the `TASKS.md` workflow.
+  - Define `/`, `?`, `n`, and `N` direction and wrap behaviour, direct `]` and `[`
+    non-matching-line search, Text-only non-match semantics, and grouped Viewer
+    Help in `REQUIREMENTS.md`.
+  - Define T31B through T31H with bounded ownership, dependencies, review gates,
+    model levels, platform classification, and objective completion conditions.
+  - Allowed files: `AGENTS.md`, `REQUIREMENTS.md`, `TASKS.md`.
+  - Production files: none.
+  - Depends on: T30I.
+  - Done when: each implementation task can be executed without inventing search
+    mode, direction, wrap, line-selection, Help layout, model level, or platform
+    ownership.
+  - Evidence: approved documentation-only change; Rust source and `README.md`
+    remain unchanged.
+
+- [ ] **T31B — Lock the matching-search direction and wrap matrix**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - First add an end-to-end reproduction for the reported `/` then `N` case before
+    changing logic. Inspect cached-match selection, cursor anchoring, worker
+    repeat dispatch, server `same_direction` routing, and wrapped-status delivery.
+  - Enforce the complete matrix: `/` records forward, `?` records reverse, `n`
+    keeps the recorded direction, and `N` reverses it.
+  - From the first match, reverse repeat MUST wrap from BOF to the final match.
+    From the final match, forward repeat MUST wrap from EOF to the first match.
+  - Preserve strict current-cursor anchoring after line, page, horizontal,
+    start/end, top/bottom, and viewport-only movement rules from T30.
+  - A cached result MUST be the nearest valid result in the requested direction;
+    a cache miss MUST fall through to the bounded one-wrap scan rather than
+    reporting no match early.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/worker.rs`,
+    `src/server.rs`; `src/input.rs` only if the reproduction proves the boolean
+    direction mapping is wrong there.
+  - Focused tests: `/ -> n`, `/ -> N`, `? -> n`, `? -> N`, BOF-to-EOF wrap,
+    EOF-to-BOF wrap, one-match no-self-repeat, cached and uncached paths, cursor
+    movement before repeat, wrapped status, cancellation, stale result, and no
+    input leakage to a PTY.
+  - Depends on: T30F, T31A.
+  - Done when: the same direction/wrap matrix passes through the Viewer core,
+    Worker handle, and server action path without changing query or cursor state
+    on failure.
+
+- [ ] **T31C — Implement bounded non-matching-line search primitives**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add an explicit search mode that distinguishes byte-match search from
+    non-matching logical-line search without overloading the direction flag.
+  - Reuse the existing Text query comparison and universal LF/CRLF/lone-CR line
+    scanner. In non-match mode, `hex:` remains literal Text rather than exact-byte
+    syntax.
+  - Forward work starts at the next logical line; reverse work starts at the
+    previous logical line. The original cursor line is excluded from the one-wrap
+    search.
+  - A candidate qualifies only after its complete content, excluding EOL bytes,
+    has been scanned without the query. Empty lines qualify. Query matches may
+    cross raw-block boundaries but never logical line boundaries.
+  - Long lines and reverse scans MUST use resumable state and yield after at most
+    one 64 KiB source step. Do not retain the complete long line or a full-file
+    list of line starts or qualifying lines.
+  - On success, move to the first valid cursor stop of the selected line; an empty
+    line uses column zero. Preserve the last successful search when parsing,
+    reading, or scanning fails.
+  - Allowed production files: `src/viewer/line.rs`, `src/viewer/search.rs`,
+    `src/viewer/mod.rs`.
+  - Focused tests: forward/reverse, LF/CRLF/CR/mixed EOL, empty line,
+    unterminated final line, pattern at line start/end, pattern crossing a raw
+    block, pattern split by EOL, line longer than eight blocks, BOF/EOF wrap once,
+    original-line exclusion, cancellation step boundary, error rollback, and no
+    unbounded retained line state.
+  - Depends on: T28D, T28N, T28O, T30F, T31A.
+  - Review gate: inspect line-boundary ownership, reverse resumable state,
+    64 KiB yielding, wrap termination, source-cache bounds, and absence of a
+    second line index before T31D.
+  - Done when: core calls deterministically find the nearest non-matching line in
+    either direction while preserving all Viewer memory and fairness limits.
+
+- [ ] **T31D — Integrate search mode with Worker state, repeat, and highlighting**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Carry search mode, query, and recorded direction through Viewer state,
+    `ViewerOperation`, incremental `SearchWork`, `ViewerResult`,
+    `PendingViewerSearch`, and repeat dispatch without encoding mode in an
+    unrelated boolean.
+  - `n` MUST repeat the recorded mode and direction; `N` MUST change direction
+    only. Navigation before repeat MUST use the current logical cursor line or
+    byte position as the new anchor.
+  - Non-match work MUST run cooperatively in the existing Viewer Worker, obey
+    generation cancellation, discard stale results, and never wait behind repeat
+    backlog or block close, resize, mode switch, or new search.
+  - Matching search retains normal visible and active highlights. Non-matching-line
+    success MUST clear byte-match highlighting and use only the normal cursor at
+    the selected line start.
+  - Reject non-matching-line search in Hex mode before starting worker work and
+    preserve the prior successful query, frame, cursor, and generation-valid
+    committed state.
+  - Allowed production files: `src/viewer/mod.rs`, `src/viewer/worker.rs`,
+    `src/viewer/frame.rs`, `src/server.rs`.
+  - Focused tests: mode retained by `n`, direction-only reversal by `N`, match to
+    non-match and non-match to match replacement, no-match result, wrapped result,
+    Hex rejection, highlight clearing, one 64 KiB worker step, another viewer
+    receives service, navigation cancellation, new-search cancellation, stale
+    generation, immediate close, and unchanged queue/cache/frame bounds.
+  - Depends on: T31B, T31C.
+  - Review gate: inspect search-mode ownership, generation changes, worker queue
+    fairness, error rollback, highlight state, and every repeat call site before
+    T31E.
+  - Done when: matching and non-matching searches share one bounded Worker path
+    while retaining distinct mode, direction, cursor, and highlight state.
+
+- [ ] **T31E — Wire `]` and `[` as direct Viewer search keys**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Extend Viewer input state with an explicit search mode and direction so `/`,
+    `?`, `]`, and `[` each open one direct prompt using their own visible marker.
+  - Map `]` to forward non-matching-line search and `[` to reverse
+    non-matching-line search. Do not require `!`, `:`, the configured prefix, or a
+    second trigger key.
+  - Preserve fragmented escape-sequence handling, configured-prefix Viewer Help,
+    `Ctrl-b [` scroll-view entry outside Viewer mode, query length limits,
+    Backspace editing, Enter submission, Esc/Ctrl-c cancellation, and no input
+    leakage to the child PTY.
+  - In Hex mode, `[` and `]` MUST produce the approved short Text-only error and
+    return to Viewer mode without entering a misleading prompt or cancelling the
+    last successful search.
+  - Allowed production files: `src/input.rs`, `src/server.rs`.
+  - Focused tests: all four prompt markers, typed query, Backspace, empty Enter,
+    maximum length, cancellation, `/ ? ] [` followed by `n/N`, Hex rejection,
+    configured prefix before `[`, fragmented Escape, batched input, and no PTY
+    forwarding.
+  - Depends on: T31D.
+  - Done when: every trigger produces exactly one semantic search request with
+    explicit mode and direction and no key conflict outside active Viewer mode.
+
+- [ ] **T31F — Reformat Viewer Help into grouped key rows**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent validation complete.
+  - Replace the dense Viewer sentences with labelled `Navigation`, `Search`,
+    `Hex Search`, and `Viewer` groups using one aligned key column and one short
+    action column.
+  - Combine only true aliases for one action. Do not place line, horizontal,
+    page, mode, search, Help, and close actions in one paragraph-style row.
+  - Explain `/` forward match, `?` reverse match, `]` forward non-match, `[`
+    reverse non-match, `n` continue direction, `N` reverse direction, and one-wrap
+    file-boundary behaviour.
+  - Keep the exact `hex:00 FF 1B` example, Text-only note for non-match, dynamic
+    configured-prefix Help/close text, pagination, permanent status row, and the
+    short adaptive Help footer.
+  - Allowed production files: `src/render.rs`; `src/input.rs` only for the
+    unknown-key Viewer reminder string.
+  - Focused tests: required headings and keys, configured non-default prefix,
+    no hard-coded `Ctrl-b`, 40/80/120-column rendering, pagination count, footer,
+    Viewer-to-Help-to-Viewer state preservation, and absence of the old dense
+    sentence strings.
+  - Depends on: T29G, T31A.
+  - Done when: Viewer Help is scannable by category at normal widths and remains
+    navigable without truncation or state loss at narrow widths.
+
+- [ ] **T31G — Run matching, non-matching, and Help acceptance**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add deterministic acceptance coverage for the complete `/ ? n N` direction
+    matrix, BOF/EOF wrap, cursor re-anchoring after every navigation class,
+    forward/reverse non-matching-line search, direct `]`/`[` prompts, Hex
+    rejection, grouped Help, and exact return-to-Viewer state.
+  - Include LF, CRLF, lone CR, mixed EOL, empty and unterminated lines, a line
+    longer than the cache, raw-block crossing, no-result, wrapped-result,
+    cancellation, stale generation, immediate close, and two-viewer fairness.
+  - Reverify all T28-T30 bounds: eight raw blocks / 512 KiB, three frames,
+    256 KiB source bytes per frame, 64 KiB work steps, one navigation in flight,
+    one changed-intent replacement, and Current-before-prefetch delivery.
+  - Run approved focused and full Linux/WSL checks, Clippy, musl release build,
+    native Windows focused/full checks, and MSVC release build. A Windows target
+    check alone MUST leave Native Windows validation unchecked.
+  - Do not update `README.md` in this task. Record concise commands, results,
+    environments, resource observations, and unavailable-platform blockers here.
+  - Allowed files: focused tests and this task entry after separate in-scope
+    approval.
+  - Depends on: T30I, T31B, T31C, T31D, T31E, T31F.
+  - Done when: implementation and each authoritative platform checkbox reflect
+    actual execution evidence and no wrap, repeat, line-scan, Help, or
+    cross-platform claim relies on compile-only validation.
+
+- [ ] **T31H — Publish verified Viewer search and Help keys**
+  - Recommended model: Luna Low.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent validation complete.
+  - Update only the implemented Large-file Viewer and key-reminder sections in
+    `README.md` after T31G records the required validation.
+  - Document `/`, `?`, `]`, `[`, `n`, `N`, one-wrap behaviour, Text-only
+    non-matching-line search, Hex ASCII and `hex:` search, grouped Help, and the
+    configured-prefix Help/close behaviour without copying implementation detail
+    or unverified platform claims.
+  - Allowed files: `README.md`, `TASKS.md` evidence for this task.
+  - Production files: none.
+  - Depends on: T31G.
+  - Done when: user-facing documentation matches the verified executable and no
+    future or unchecked behaviour is presented as available.

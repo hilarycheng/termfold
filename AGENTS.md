@@ -145,6 +145,7 @@ Do not:
 Implementation subtasks MAY include one advisory starting level:
 
 ```text
+Luna Low
 Luna Medium
 Luna High
 Luna xHigh
@@ -153,14 +154,24 @@ Luna Max
 
 Choose the lowest level that can complete the bounded task safely:
 
-- `Luna Medium`: mechanical documentation, isolated edits, or narrow local logic
-  with explicit expected output.
-- `Luna High`: one or two modules, clear state changes, focused tests, and no
-  concurrency or architecture decision.
-- `Luna xHigh`: cross-module state or cross-platform behaviour requiring careful
-  invariants, but with the architecture already fixed.
-- `Luna Max`: worker ownership, cancellation, generation handling, ordering,
-  concurrency, rollback, or a review-gated integration task.
+- `Luna Low`: exact mechanical edits with no design choice, such as one-file
+  wording changes, checkbox or evidence updates, and already-specified README
+  publication after validation.
+- `Luna Medium`: bounded documentation design, one-module implementation, or
+  isolated tests with explicit state and expected output.
+- `Luna High`: two or three modules with clear state transitions, input-to-action
+  wiring, rendering changes, or focused integration tests where ownership and
+  concurrency are already fixed.
+- `Luna xHigh`: cross-module state, cooperative bounded work, cancellation,
+  generation handling, cache/frame invariants, or cross-platform runtime
+  behaviour within an already-approved architecture.
+- `Luna Max`: architecture or ownership must be decided or changed, concurrent
+  ordering or rollback spans major components, or a review-gated integration
+  cannot be safely decomposed further.
+
+Task length alone does not justify `Luna Max`. A task that uses an existing
+worker, generation, cancellation, or queue design SHOULD use `Luna xHigh` when
+its ownership and invariants are already fixed.
 
 The model field is execution guidance only. It does not authorize broader scope,
 combine tasks, change product behaviour, or replace an `APPROVE` gate.
@@ -169,7 +180,24 @@ combine tasks, change product behaviour, or replace an `APPROVE` gate.
 
 The following status format is mandatory for T28 and every later task.
 
-A task MUST declare one of these validation sets:
+T28 through T30 MAY retain their existing historical platform format. T31 and
+every later task MUST separate where implementation differs from where the same
+implementation must be validated:
+
+```text
+Implementation scope: Platform independent
+Required validation: Linux and Native Windows
+```
+
+Accepted implementation scopes are:
+
+```text
+Platform independent
+Linux
+Native Windows
+```
+
+Accepted validation sets are:
 
 ```text
 Platform independent
@@ -178,9 +206,17 @@ Native Windows
 Linux and Native Windows
 ```
 
-Shared Rust source is not automatically platform independent. Require both Linux
-and Native Windows when filesystem, terminal, input, rendering, threading,
-process, or platform-library behaviour can differ at runtime.
+Use `Platform independent` implementation scope for shared product behaviour and
+shared Rust logic. Do not create separate Linux and Native Windows feature tasks
+merely because both platforms require validation. Use a Linux or Native Windows
+implementation scope only for an unavoidable platform API, materially different
+native lifecycle or security semantics, or intentionally platform-only behaviour.
+
+Platform-independent implementation does not mean one-platform validation is
+enough. Require Linux and Native Windows validation when filesystem, terminal,
+input, rendering, threading, process, or platform-library runtime behaviour may
+differ. Platform checkboxes are validation evidence, not separate product
+features.
 
 Each task MUST record implementation separately from required validation:
 
@@ -196,8 +232,11 @@ For a platform-independent task, use:
 ```text
 Completion status:
 - [x] Task implementation complete
-- [x] Platform-independent review complete
+- [x] Platform-independent validation complete
 ```
+
+A documentation-only task MAY label the second item
+`Platform-independent review complete`.
 
 Rules:
 

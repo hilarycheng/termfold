@@ -284,41 +284,74 @@ block first-release acceptance.
 
 #### Text search
 
-- `/` MUST start forward search and `?` reverse search. `n` MUST repeat the last
-  successful query in its recorded direction and `N` MUST repeat it in the
-  opposite direction.
+- `/` MUST start forward matching search and `?` MUST start reverse matching
+  search.
+- `]` MUST start forward non-matching-line search and `[` MUST start reverse
+  non-matching-line search. These are direct, unprefixed Viewer keys and MUST NOT
+  change the configured-prefix `Ctrl-b [` scroll-view command outside Viewer
+  mode.
+- `n` MUST repeat the last successful query using its recorded search mode and
+  direction. `N` MUST repeat the same mode in the opposite direction. Therefore:
+  - after `/` or `]`, `n` searches forward and `N` searches reverse;
+  - after `?` or `[`, `n` searches reverse and `N` searches forward.
+- Matching search MUST select the first match strictly after the current cursor
+  anchor when searching forward and strictly before it when searching reverse.
+  The current active match MUST not be selected again merely because the cursor
+  is still at that match.
+- Non-matching-line search is Text-mode only. It MUST select the nearest logical
+  file line whose complete content does not contain the query using the same
+  literal ASCII-case-insensitive comparison as matching Text search. In Hex mode,
+  `[` and `]` MUST report a short Text-only error without changing the prior
+  successful query, cursor, committed frame, or active match.
+- Forward non-matching-line search MUST begin with the next logical line; reverse
+  non-matching-line search MUST begin with the previous logical line. The cursor's
+  original line is excluded until a one-wrap search has examined every other
+  line.
+- Non-matching-line evaluation MUST exclude LF, CRLF, and lone-CR terminators.
+  Empty lines qualify. A query occurrence MAY cross a raw block boundary but MUST
+  NOT cross a logical line boundary. In this mode, text beginning with `hex:` is
+  ordinary literal Text input, not exact-byte syntax.
+- Successful non-matching-line search MUST place the cursor at the first valid
+  cursor stop of the selected line; an empty line uses column zero. It MUST clear
+  byte-match highlighting rather than highlighting every byte that differs from
+  the query.
 - Every new or repeated search MUST use the logical cursor position at the time
   the search command is accepted as its anchor. It MUST NOT continue from a
   retained previous-match offset after Page Up, Page Down, line movement,
   horizontal movement, line start/end, or file start/end changes the cursor.
-- Forward search MUST select the first match strictly after the current cursor
-  anchor; reverse search MUST select the first match strictly before it. The
-  current active match MUST not be selected again merely because the cursor is
-  still at that match.
 - Viewport-only `Ctrl-e`/`Ctrl-y` scrolling does not move the logical cursor and
   therefore does not change the next search anchor.
-- The last query, its recorded direction, the current cursor, and the active
-  highlighted match MUST remain distinct state. Cached match offsets MAY speed
-  selection only when the nearest valid match is chosen relative to the current
-  cursor anchor.
-- Text search MUST be literal and simple case-insensitive: ASCII letters MUST
-  compare without case; non-ASCII UTF-8 and invalid bytes MUST compare exactly.
-  Regex, smart-case, locale-sensitive folding, and full Unicode case folding are
-  out of scope.
+- The last query, recorded search mode, recorded direction, current cursor, and
+  active highlighted match MUST remain distinct state. Cached offsets MAY speed
+  matching search only when the nearest valid match is chosen relative to the
+  current cursor anchor. Failure or cancellation MUST preserve the last
+  successful search state.
+- Text query comparison MUST be literal and simple case-insensitive: ASCII letters
+  MUST compare without case; non-ASCII UTF-8 and invalid bytes MUST compare
+  exactly. Regex, smart-case, locale-sensitive folding, and full Unicode case
+  folding are out of scope.
 - A search query MUST contain at most 256 bytes.
-- Search MUST examine the visible `Current` frame from the cursor first, then the
-  nearby frame in the requested direction, then continue through the snapshot.
+- Matching search MUST examine the visible `Current` frame from the cursor first,
+  then the nearby frame in the requested direction, then continue through the
+  snapshot. Non-matching-line search MUST reuse the universal line scanner and
+  existing bounded raw-block cache rather than create a line index.
 - Forward search reaching EOF and reverse search reaching BOF MUST wrap exactly
-  once. A search MUST stop after returning to its original start position.
-- Full-file indexing is prohibited. A search step MUST inspect at most 64 KiB
-  before checking its generation and yielding to control work.
+  once. This applies to matching and non-matching-line modes. A search MUST stop
+  after returning to its original anchor and SHOULD report `wrapped` after a
+  wrapped success.
+- Full-file indexing is prohibited. Matching work, non-matching-line work, and
+  long-line scanning MUST inspect at most 64 KiB before checking generation and
+  yielding to control work. A complete long line MUST NOT be retained solely to
+  decide whether it is non-matching.
 - Any navigation command, new search, text/hex mode change, resize, or viewer
   close MUST cancel an unfinished search.
-- The last successful query MUST remain available to `n` and `N` until replaced.
-- All visible matches on `Current` MUST be highlighted. The active match MUST be
-  distinct from other matches using inverse plus underline. Highlighting MUST
-  not rely on colour alone and MUST not trigger a full-file scan.
-- A wrapped successful search SHOULD report `wrapped` in the temporary status.
+- The last successful query, mode, and recorded direction MUST remain available
+  to `n` and `N` until replaced by another successful search.
+- For matching search, all visible matches on `Current` MUST be highlighted and
+  the active match MUST be distinct using inverse plus underline. Highlighting
+  MUST not rely on colour alone or trigger a full-file scan. Non-matching-line
+  search uses the normal cursor at the selected line start and no byte-match
+  highlight.
 
 #### Hex mode
 
@@ -356,6 +389,8 @@ block first-release acceptance.
 - Normal search input in Hex mode MUST perform ASCII case-insensitive byte
   search. A query beginning with `hex:` MUST parse space-separated two-digit
   hexadecimal bytes, for example `hex:00 FF 1B`, and search those bytes exactly.
+- `[` and `]` non-matching-line search MUST be rejected in Hex mode with a
+  short Text-only error and MUST NOT replace the last successful search.
 - Empty hex input, odd nibbles, non-hex characters, or values wider than one byte
   MUST be rejected without changing the previous successful query.
 - Hex matches MAY cross display rows and raw block boundaries.
@@ -372,9 +407,17 @@ block first-release acceptance.
   an active viewer without first executing Page Up or reverse search.
 - Leaving Help with `q`, `Ctrl-c`, or `Esc` MUST return to the same active viewer
   and preserve its committed frame, cursor, mode, search state, and generation.
-- Help MUST list all viewer navigation keys, Text/Hex mode switching, forward and
-  reverse search, `n`/`N`, normal ASCII search in Hex mode, exact `hex:` byte
-  syntax, viewer Help, and viewer close behaviour.
+- Help MUST present Viewer keys as grouped, aligned key/action rows rather than
+  dense paragraph-style sentences. The groups MUST include `Navigation`,
+  `Search`, `Hex Search`, and `Viewer`.
+- Help MUST list every viewer navigation key, Text/Hex mode switching, `/` and
+  `?` matching search, `]` and `[` Text-only non-matching-line search, `n` and
+  `N` direction behaviour, one-wrap file-boundary behaviour, normal ASCII search
+  in Hex mode, exact `hex:00 FF 1B` syntax, configured-prefix Help, and
+  configured-prefix close confirmation.
+- Only true aliases for the same action MAY share one Help row. Help pagination,
+  configured-prefix substitution, the permanent status row, and the short
+  adaptive footer MUST remain available at narrow widths.
 
 #### Path prompt and closing
 
