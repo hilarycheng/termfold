@@ -2235,3 +2235,158 @@ Rules for every T31 implementation request:
     `cargo test --locked input:: -- --test-threads=1` (16/16), and
     `cargo test --locked render:: -- --test-threads=1` (13/13) passed; README
     wording was checked against T31G acceptance evidence.
+
+## T32 Execution Contract
+
+T32 fixes one matching-search repeat regression: a partial set of previously
+observed match offsets MUST NOT be treated as a complete index after the logical
+cursor moves. It does not change the approved search keys, query syntax,
+non-matching-line semantics, Hex geometry, path prompt, Viewer Worker ownership,
+or public documentation.
+
+Rules for every T32 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level. Tuning the
+  level does not broaden scope or combine tasks.
+- Every T32 implementation has `Implementation scope: Platform independent`.
+  Linux and Native Windows are validation environments, not separate feature
+  implementations.
+- Preserve strict current-cursor anchoring, recorded search direction, `n`/`N`
+  direction behaviour, one-wrap termination, generation cancellation, stale-
+  result rejection, and the distinction between query, search mode, cursor, and
+  active match.
+- Preserve the existing Viewer Worker, eight-block / 512 KiB raw cache, three
+  frame slots, 256 KiB source bytes per frame, 64 KiB cooperative work step,
+  one navigation in flight, zero same-intent backlog, and one changed-intent
+  replacement.
+- Do not add a full-file match index, match-count queue, second cache, background
+  thread, async runtime, dependency, regex, or synchronous Viewer file I/O in
+  `server.rs`.
+- Do not change `REQUIREMENTS.md` or `README.md`; both already describe the
+  required current-cursor repeat behaviour.
+- Touch only the files named by the subtask, except for a focused test fixture in
+  the same module.
+- Run only the focused checks named by the approved implementation request.
+- T32B requires review before T32C begins.
+- Stop after reporting changed files, focused results, risks, and blockers.
+
+## T32 Tasks
+
+- [x] **T32A — Record the partial-match-cache regression and correction plan**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
+  - Record the reproduction as matching search followed by file-end navigation
+    and repeated reverse search: `/ query`, `G`, `N`, `N`.
+  - Root-cause conclusion: `begin_repeat_search_work()` may complete a matching
+    repeat from `cached_match()`, but `self.matches` contains only offsets
+    discovered by earlier bounded work and carries no proof that the source range
+    between the current cursor and the cached candidate was fully searched. A
+    cached offset can therefore skip a nearer uncached match.
+  - Keep the existing normative contract unchanged: every repeated search uses
+    the logical cursor at command acceptance as its strict anchor, and a cached
+    result is valid only when it is proven to be the nearest match in the
+    requested direction.
+  - Define T32B and T32C with exact ownership, Luna levels, platform validation,
+    focused regressions, review conditions, and completion criteria.
+  - Allowed files: `TASKS.md`.
+  - Production files: none.
+  - Depends on: T31B, T31D.
+  - Done when: local Codex can implement the correction without inventing cache
+    completeness, changing public behaviour, or redesigning the Worker.
+  - Evidence: approved documentation-only task definition; no Rust source,
+    tests, builds, dependencies, `REQUIREMENTS.md`, or `README.md` were changed.
+
+- [ ] **T32B — Remove unsafe partial-cache completion from matching repeat**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Before changing production logic, add a failing regression with a file larger
+    than two 64 KiB raw blocks and at least three occurrences of one query: an
+    early match, a middle match, and a late match in separate scan regions.
+  - The regression MUST first perform a forward matching search that discovers
+    the early match, then move the logical cursor to EOF with `G`. Consecutive
+    reverse repeats using `N` MUST select the late, middle, and early matches in
+    that order; the next `N` MUST wrap once to the late match and report wrapped.
+  - In `begin_repeat_search_work()`, a matching repeat MUST NOT return
+    `SearchStart::Complete(true)` solely because `cached_match()` found an offset
+    on the requested side of the current cursor. Existing match offsets are a
+    partial observation set, not a coverage-complete index.
+  - Use the current logical cursor as the strict anchor and dispatch the existing
+    bounded `search_work_at()` path with the prior query and search mode, the
+    direction selected by `n` or `N`, and the unchanged recorded direction.
+  - Keep strict exclusion of the cursor's current match. Preserve the last
+    successful query, mode, recorded direction, cursor, and active match on
+    parse, read, cancellation, stale-generation, or no-result failure according
+    to the existing contract.
+  - Remove `cached_match()` and its isolated ordering test only if they have no
+    remaining safe caller. Do not remove or redesign unrelated visible-match
+    highlighting or bounded search state merely to clean up unused storage.
+  - A future cache fast path is outside this task unless it records explicit
+    query/mode/snapshot/generation coverage proving that every candidate between
+    the current cursor and returned offset was examined.
+  - Allowed production files: `src/viewer/mod.rs`.
+  - Allowed focused-test files: `src/viewer/mod.rs`, `src/viewer/worker.rs`.
+    `src/server.rs` MAY be changed only if an end-to-end reproduction proves its
+    existing `n`/`N` direction routing is incorrect.
+  - Focused tests: the exact `/ -> G -> N -> N` regression; three matches across
+    raw blocks; nearest reverse ordering; nearest forward ordering from BOF;
+    fourth-repeat one-wrap status; one-match no-self-repeat; cached and uncached
+    starting states; query and recorded-direction retention; Worker-handle
+    result ordering; cancellation; stale result; and no PTY input leakage.
+  - Depends on: T32A.
+  - Review gate: inspect the repeat anchor, direction matrix, removal or
+    containment of the cache shortcut, one-wrap ranges, rollback state,
+    generation handling, 64 KiB yielding, and absence of a full-file index or
+    synchronous server read before T32C.
+  - Done when: matching `n` and `N` always return the nearest valid match relative
+    to the committed current cursor, regardless of which offsets earlier bounded
+    searches happened to observe.
+
+- [ ] **T32C — Run cursor-anchored repeat-search acceptance**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Run deterministic acceptance for the full `/`, `?`, `n`, and `N` direction
+    matrix, including the exact `/ -> G -> N -> N` report and the symmetric
+    `? -> gg -> N -> N` path.
+  - Verify early, middle, and late matches in separate raw-block regions; nearest
+    cached and uncached candidates; raw-block eviction and reload; Text and Hex
+    matching search; one match; no match; BOF/EOF one-wrap status; and strict
+    exclusion of the active cursor match.
+  - Reverify cursor re-anchoring after `gg`/`G`, Page Up/Page Down, line movement,
+    horizontal movement, Home/End, and viewport-only scrolling. Viewport-only
+    scrolling MUST retain the same logical cursor anchor.
+  - Reverify that navigation or a new search cancels obsolete work, stale
+    generations cannot commit, close remains immediate, another viewer receives
+    service during a long search, and non-matching-line search behaviour remains
+    unchanged.
+  - Reverify all existing bounds: eight raw blocks / 512 KiB, three frames,
+    256 KiB source bytes per frame, 64 KiB search steps, one navigation in flight,
+    zero same-intent backlog, one changed-intent replacement, and Current-before-
+    prefetch delivery.
+  - Run authoritative Linux/WSL and Native Windows focused Viewer/Worker/server
+    tests, the full test suite, Clippy with `-D warnings`, the musl release build,
+    and the MSVC release build. A Windows target check alone MUST leave Native
+    Windows validation unchecked.
+  - Do not change `README.md`; this task restores already documented behaviour.
+  - Allowed files: focused tests and this task entry after separate in-scope
+    approval. Production corrections discovered here MUST return to T32B scope
+    rather than be hidden inside acceptance work.
+  - Depends on: T32B.
+  - Done when: implementation and both authoritative platform checkboxes contain
+    actual execution evidence, and no repeat-search result depends on treating a
+    partial match list as complete coverage.
+
