@@ -62,6 +62,10 @@ impl LineScanner {
         matches!(self.direction, Direction::Forward)
     }
 
+    pub(super) fn content_end(self) -> u64 {
+        self.segment_end
+    }
+
     pub(super) fn step(&mut self, source: &mut FileSource) -> io::Result<ScanStep> {
         match self.direction {
             Direction::Forward => self.step_forward(source),
@@ -102,55 +106,50 @@ impl LineScanner {
     }
 
     fn step_reverse(&mut self, source: &mut FileSource) -> io::Result<ScanStep> {
-        loop {
-            if self.cursor <= self.limit {
-                return Ok(ScanStep::Done {
-                    position: self.cursor.max(self.limit),
-                });
-            }
+        if self.cursor <= self.limit {
+            return Ok(ScanStep::Done {
+                position: self.cursor.max(self.limit),
+            });
+        }
 
-            let block_offset = (self.cursor - 1) / BLOCK_SIZE * BLOCK_SIZE;
-            let first = self.limit.max(block_offset);
-            let last = self.cursor.min(block_offset.saturating_add(BLOCK_SIZE));
-            let bytes = read_chunk(source, first, last)?;
-            let mut offset = last;
-            let next_cursor = first;
-            let mut resume_before_block = false;
-            while offset > first {
-                offset -= 1;
-                let index = (offset - first) as usize;
-                let Some((start, end)) = reverse_eol(source, &bytes, index, offset)? else {
-                    continue;
-                };
-                if self.skip_boundary && end == self.initial {
-                    self.skip_boundary = false;
-                    self.segment_end = start;
-                    if start < first {
-                        self.cursor = start;
-                        resume_before_block = true;
-                        break;
-                    }
-                    offset = start;
-                    continue;
+        let block_offset = (self.cursor - 1) / BLOCK_SIZE * BLOCK_SIZE;
+        let first = self.limit.max(block_offset);
+        let last = self.cursor.min(block_offset.saturating_add(BLOCK_SIZE));
+        let bytes = read_chunk(source, first, last)?;
+        let mut offset = last;
+        while offset > first {
+            offset -= 1;
+            let index = (offset - first) as usize;
+            let Some((start, end)) = reverse_eol(source, &bytes, index, offset)? else {
+                continue;
+            };
+            if self.skip_boundary && end == self.initial {
+                self.skip_boundary = false;
+                self.segment_end = start;
+                if start < first {
+                    self.cursor = start;
+                    return Ok(ScanStep::Yield {
+                        position: start,
+                        content_end: self.segment_end,
+                    });
                 }
-                self.cursor = start;
-                return Ok(ScanStep::Boundary { start, end });
-            }
-
-            if resume_before_block {
+                offset = start;
                 continue;
             }
-            self.cursor = next_cursor;
-            return if self.cursor <= self.limit {
-                Ok(ScanStep::Done {
-                    position: self.cursor,
-                })
-            } else {
-                Ok(ScanStep::Yield {
-                    position: self.cursor,
-                    content_end: self.segment_end,
-                })
-            };
+            self.cursor = start;
+            return Ok(ScanStep::Boundary { start, end });
+        }
+
+        self.cursor = first;
+        if self.cursor <= self.limit {
+            Ok(ScanStep::Done {
+                position: self.cursor,
+            })
+        } else {
+            Ok(ScanStep::Yield {
+                position: self.cursor,
+                content_end: self.segment_end,
+            })
         }
     }
 }

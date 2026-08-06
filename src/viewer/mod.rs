@@ -26,6 +26,12 @@ use text::DecodedText;
 const MAX_MATCH_OFFSETS: usize = 4096;
 pub(crate) const MAX_QUERY_BYTES: usize = 256;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SearchMode {
+    Matching,
+    NonMatching,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
 pub(super) enum ViewerMode {
@@ -37,17 +43,55 @@ pub(super) enum ViewerMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SearchState {
     query: SearchQuery,
+    mode: SearchMode,
     forward: bool,
     offset: u64,
 }
 
 pub(super) struct SearchWork {
     query: SearchQuery,
+    mode: SearchMode,
     forward: bool,
     recorded_forward: bool,
     ranges: VecDeque<Range<u64>>,
     wrap_range: Range<u64>,
     matches: Vec<u64>,
+    non_matching: Option<NonMatchingWork>,
+}
+
+struct NonMatchingWork {
+    original_line: u64,
+    length: u64,
+    wrapped: bool,
+    phase: NonMatchingPhase,
+}
+
+enum NonMatchingPhase {
+    ForwardSkip(LineScanner),
+    ForwardCandidate(ForwardLineWork),
+    ReverseCandidate(ReverseLineWork),
+    Done,
+}
+
+struct ForwardLineWork {
+    start: u64,
+    cursor: u64,
+    scanner: LineScanner,
+    matched: bool,
+    window: VecDeque<u8>,
+}
+
+struct ReverseLineWork {
+    scanner: LineScanner,
+    scan_end: Option<u64>,
+    matched: bool,
+    window: VecDeque<u8>,
+}
+
+enum NonMatchingStep {
+    Continue,
+    Complete,
+    Found { offset: u64, wrapped: bool },
 }
 
 pub(super) enum SearchStart {
@@ -359,12 +403,16 @@ impl Viewer {
     }
 
     fn build_page_at(&mut self, viewport: u64, context: FrameContext) -> io::Result<PageFrame> {
+        let matching_search = self
+            .search
+            .as_ref()
+            .filter(|search| search.mode == SearchMode::Matching);
         frame::build(
             &mut self.source,
             &mut self.lines,
             viewport,
-            self.search.as_ref().map(|search| &search.query),
-            self.search.as_ref().map(|search| search.offset),
+            matching_search.map(|search| &search.query),
+            matching_search.map(|search| search.offset),
             context,
         )
     }
@@ -732,6 +780,32 @@ impl Viewer {
     }
 
     #[cfg(test)]
+    pub fn search_non_matching(&mut self, query: &str, forward: bool) -> io::Result<bool> {
+        let state = self.state();
+        let matches = self.matches.clone();
+        let search = self.search.clone();
+        let result = (|| match self.begin_search_work_mode(
+            query.as_bytes().to_vec(),
+            SearchMode::NonMatching,
+            forward,
+        ) {
+            SearchStart::Complete(found) => Ok(found),
+            SearchStart::Work(mut work) => loop {
+                match self.step_search_work(&mut work)? {
+                    SearchStep::Continue => continue,
+                    SearchStep::Complete(found) => break Ok(found),
+                }
+            },
+        })();
+        if result.is_err() {
+            self.restore_state(state);
+            self.matches = matches;
+            self.search = search;
+        }
+        result
+    }
+
+    #[cfg(test)]
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
         let state = self.state();
         let matches = self.matches.clone();
@@ -754,11 +828,24 @@ impl Viewer {
     }
 
     pub(super) fn begin_search_work(&mut self, input: Vec<u8>, forward: bool) -> SearchStart {
+        self.begin_search_work_mode(input, SearchMode::Matching, forward)
+    }
+
+    pub(super) fn begin_search_work_mode(
+        &mut self,
+        input: Vec<u8>,
+        mode: SearchMode,
+        forward: bool,
+    ) -> SearchStart {
         self.search_wrapped = false;
-        let Ok(query) = SearchQuery::parse(&input) else {
+        let query = match mode {
+            SearchMode::Matching => SearchQuery::parse(&input),
+            SearchMode::NonMatching => SearchQuery::parse_text(&input),
+        };
+        let Ok(query) = query else {
             return SearchStart::Complete(false);
         };
-        self.search_work_at(query, forward, forward, self.position)
+        self.search_work_at(query, mode, forward, forward, self.position)
     }
 
     pub(super) fn begin_repeat_search_work(
@@ -774,28 +861,77 @@ impl Viewer {
         } else {
             !previous.forward
         };
-        if let Some(offset) = self.cached_match(self.position, forward) {
+        if previous.mode == SearchMode::Matching
+            && let Some(offset) = self.cached_match(self.position, forward)
+        {
             self.set_position(offset)?;
             self.search = Some(SearchState {
                 query: previous.query,
+                mode: previous.mode,
                 forward: previous.forward,
                 offset,
             });
             self.invalidate_frames();
             return Ok(SearchStart::Complete(true));
         }
-        Ok(self.search_work_at(previous.query, forward, previous.forward, self.position))
+        Ok(self.search_work_at(
+            previous.query,
+            previous.mode,
+            forward,
+            previous.forward,
+            self.position,
+        ))
     }
 
     fn search_work_at(
         &mut self,
         query: SearchQuery,
+        mode: SearchMode,
         forward: bool,
         recorded_forward: bool,
         start: u64,
     ) -> SearchStart {
         if query.as_bytes().is_empty() {
             return SearchStart::Complete(false);
+        }
+        if mode == SearchMode::NonMatching {
+            let length = self.length();
+            let original_line = self.line_start_at(start).unwrap_or(start.min(length));
+            let non_matching = if forward {
+                NonMatchingWork {
+                    original_line,
+                    length,
+                    wrapped: false,
+                    phase: NonMatchingPhase::ForwardSkip(LineScanner::forward(
+                        original_line,
+                        length,
+                    )),
+                }
+            } else if original_line == 0 {
+                NonMatchingWork {
+                    original_line,
+                    length,
+                    wrapped: true,
+                    phase: reverse_candidate(length),
+                }
+            } else {
+                NonMatchingWork {
+                    original_line,
+                    length,
+                    wrapped: false,
+                    phase: reverse_candidate(original_line),
+                }
+            };
+            return SearchStart::Work(SearchWork {
+                query,
+                mode,
+                forward,
+                recorded_forward,
+                ranges: VecDeque::new(),
+                wrap_range: 0..0,
+                matches: Vec::new(),
+                non_matching: Some(non_matching),
+            });
         }
         let Some(maximum) = self.length().checked_sub(query.len() as u64) else {
             return SearchStart::Complete(false);
@@ -841,15 +977,42 @@ impl Viewer {
 
         SearchStart::Work(SearchWork {
             query,
+            mode,
             forward,
             recorded_forward,
             ranges,
             wrap_range: wrap,
             matches: Vec::new(),
+            non_matching: None,
         })
     }
 
     pub(super) fn step_search_work(&mut self, work: &mut SearchWork) -> io::Result<SearchStep> {
+        if work.mode == SearchMode::NonMatching {
+            return match step_non_matching_work(
+                &mut self.source,
+                &work.query,
+                work.non_matching
+                    .as_mut()
+                    .expect("non-matching work exists"),
+            )? {
+                NonMatchingStep::Continue => Ok(SearchStep::Continue),
+                NonMatchingStep::Complete => Ok(SearchStep::Complete(false)),
+                NonMatchingStep::Found { offset, wrapped } => {
+                    self.set_line_start_position(offset)?;
+                    self.matches.clear();
+                    self.search_wrapped = wrapped;
+                    self.search = Some(SearchState {
+                        query: work.query.clone(),
+                        mode: work.mode,
+                        forward: work.recorded_forward,
+                        offset,
+                    });
+                    self.invalidate_frames();
+                    Ok(SearchStep::Complete(true))
+                }
+            };
+        }
         let Some(range) = work.ranges.front().cloned() else {
             self.search_wrapped = false;
             return Ok(SearchStep::Complete(false));
@@ -910,6 +1073,7 @@ impl Viewer {
             self.search_wrapped = work.wrap_range.contains(&offset);
             self.search = Some(SearchState {
                 query: work.query.clone(),
+                mode: work.mode,
                 forward: work.recorded_forward,
                 offset,
             });
@@ -1063,6 +1227,13 @@ impl Viewer {
         self.ensure_cursor_visible()
     }
 
+    fn set_line_start_position(&mut self, position: u64) -> io::Result<()> {
+        self.position = position.min(self.length());
+        self.preferred_column = 0;
+        self.horizontal = 0;
+        self.ensure_cursor_visible()
+    }
+
     fn cursor_at_cell(&mut self, line: u64, cell: u64) -> io::Result<(u64, u64)> {
         if self.mode == ViewerMode::Hex {
             if self.length() == 0 {
@@ -1192,7 +1363,15 @@ impl Viewer {
         let mut scanner = self
             .cached_reverse_continuation(start)
             .unwrap_or_else(|| LineScanner::reverse(start.min(self.length()), 0, true));
-        Ok(match scanner.step(&mut self.source)? {
+        let step = scanner.step(&mut self.source)?;
+        let step = match step {
+            ScanStep::Yield {
+                position,
+                content_end,
+            } if position == content_end => scanner.step(&mut self.source)?,
+            step => step,
+        };
+        Ok(match step {
             ScanStep::Boundary { end, .. } => end,
             ScanStep::Yield {
                 position,
@@ -1246,7 +1425,15 @@ impl Viewer {
         let mut scanner = self
             .cached_reverse_continuation(length)
             .unwrap_or_else(|| LineScanner::reverse(length, 0, true));
-        Ok(match scanner.step(&mut self.source)? {
+        let step = scanner.step(&mut self.source)?;
+        let step = match step {
+            ScanStep::Yield {
+                position,
+                content_end,
+            } if position == content_end => scanner.step(&mut self.source)?,
+            step => step,
+        };
+        Ok(match step {
             ScanStep::Boundary { end, .. } => end,
             ScanStep::Yield {
                 position,
@@ -1298,6 +1485,249 @@ impl Viewer {
             }
             ScanStep::Done { position } => position,
         })
+    }
+}
+
+fn forward_candidate(start: u64, limit: u64) -> NonMatchingPhase {
+    NonMatchingPhase::ForwardCandidate(ForwardLineWork {
+        start,
+        cursor: start,
+        scanner: LineScanner::forward(start, limit),
+        matched: false,
+        window: VecDeque::new(),
+    })
+}
+
+fn reverse_candidate(end: u64) -> NonMatchingPhase {
+    NonMatchingPhase::ReverseCandidate(ReverseLineWork {
+        scanner: LineScanner::reverse(end, 0, true),
+        scan_end: None,
+        matched: false,
+        window: VecDeque::new(),
+    })
+}
+
+fn advance_forward(work: &mut NonMatchingWork, next: u64) {
+    let limit = if work.wrapped {
+        work.original_line
+    } else {
+        work.length
+    };
+    if next < limit {
+        work.phase = forward_candidate(next, limit);
+    } else if work.wrapped {
+        work.phase = NonMatchingPhase::Done;
+    } else {
+        work.wrapped = true;
+        work.phase = if work.original_line == 0 {
+            NonMatchingPhase::Done
+        } else {
+            forward_candidate(0, work.original_line)
+        };
+    }
+}
+
+fn advance_reverse(work: &mut NonMatchingWork, candidate_start: u64) {
+    if work.wrapped {
+        work.phase = if candidate_start <= work.original_line {
+            NonMatchingPhase::Done
+        } else {
+            reverse_candidate(candidate_start)
+        };
+    } else if candidate_start == 0 {
+        work.wrapped = true;
+        work.phase = reverse_candidate(work.length);
+    } else {
+        work.phase = reverse_candidate(candidate_start);
+    }
+}
+
+fn scan_line_bytes(
+    source: &mut FileSource,
+    query: &SearchQuery,
+    window: &mut VecDeque<u8>,
+    range: Range<u64>,
+    forward: bool,
+    matched: &mut bool,
+) -> io::Result<()> {
+    if *matched || range.start >= range.end {
+        return Ok(());
+    }
+    let bytes = source.read_range(range)?;
+    if forward {
+        for byte in bytes {
+            if scan_window_byte(query, window, byte, true) {
+                *matched = true;
+                break;
+            }
+        }
+    } else {
+        for byte in bytes.into_iter().rev() {
+            if scan_window_byte(query, window, byte, false) {
+                *matched = true;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scan_window_byte(
+    query: &SearchQuery,
+    window: &mut VecDeque<u8>,
+    byte: u8,
+    forward: bool,
+) -> bool {
+    if forward {
+        window.push_back(byte);
+        if window.len() > query.len() {
+            window.pop_front();
+        }
+    } else {
+        window.push_front(byte);
+        if window.len() > query.len() {
+            window.pop_back();
+        }
+    }
+    window.len() == query.len() && query.matches_window(window)
+}
+
+fn step_non_matching_work(
+    source: &mut FileSource,
+    query: &SearchQuery,
+    work: &mut NonMatchingWork,
+) -> io::Result<NonMatchingStep> {
+    let phase = std::mem::replace(&mut work.phase, NonMatchingPhase::Done);
+    match phase {
+        NonMatchingPhase::Done => Ok(NonMatchingStep::Complete),
+        NonMatchingPhase::ForwardSkip(mut scanner) => match scanner.step(source)? {
+            ScanStep::Boundary { end, .. } => {
+                advance_forward(work, end);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Yield { .. } => {
+                work.phase = NonMatchingPhase::ForwardSkip(scanner);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Done { position } => {
+                advance_forward(work, position);
+                Ok(NonMatchingStep::Continue)
+            }
+        },
+        NonMatchingPhase::ForwardCandidate(mut line) => match line.scanner.step(source)? {
+            ScanStep::Boundary { start, end } => {
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    line.cursor..start,
+                    true,
+                    &mut line.matched,
+                )?;
+                if !line.matched {
+                    return Ok(NonMatchingStep::Found {
+                        offset: line.start,
+                        wrapped: work.wrapped,
+                    });
+                }
+                advance_forward(work, end);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Yield { position, .. } => {
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    line.cursor..position,
+                    true,
+                    &mut line.matched,
+                )?;
+                line.cursor = position;
+                work.phase = NonMatchingPhase::ForwardCandidate(line);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Done { position } => {
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    line.cursor..position,
+                    true,
+                    &mut line.matched,
+                )?;
+                if line.start < position && !line.matched {
+                    return Ok(NonMatchingStep::Found {
+                        offset: line.start,
+                        wrapped: work.wrapped,
+                    });
+                }
+                advance_forward(work, position);
+                Ok(NonMatchingStep::Continue)
+            }
+        },
+        NonMatchingPhase::ReverseCandidate(mut line) => match line.scanner.step(source)? {
+            ScanStep::Yield {
+                position,
+                content_end,
+            } => {
+                let upper = line.scan_end.unwrap_or(content_end);
+                line.scan_end = Some(position);
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    position..upper,
+                    false,
+                    &mut line.matched,
+                )?;
+                work.phase = NonMatchingPhase::ReverseCandidate(line);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Boundary { end, .. } => {
+                let upper = line.scan_end.unwrap_or_else(|| line.scanner.content_end());
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    end..upper,
+                    false,
+                    &mut line.matched,
+                )?;
+                if work.wrapped && end == work.original_line {
+                    return Ok(NonMatchingStep::Complete);
+                }
+                if !line.matched {
+                    return Ok(NonMatchingStep::Found {
+                        offset: end,
+                        wrapped: work.wrapped,
+                    });
+                }
+                advance_reverse(work, end);
+                Ok(NonMatchingStep::Continue)
+            }
+            ScanStep::Done { position } => {
+                let upper = line.scan_end.unwrap_or_else(|| line.scanner.content_end());
+                scan_line_bytes(
+                    source,
+                    query,
+                    &mut line.window,
+                    position..upper,
+                    false,
+                    &mut line.matched,
+                )?;
+                if work.wrapped && position == work.original_line {
+                    return Ok(NonMatchingStep::Complete);
+                }
+                if !line.matched {
+                    return Ok(NonMatchingStep::Found {
+                        offset: position,
+                        wrapped: work.wrapped,
+                    });
+                }
+                advance_reverse(work, position);
+                Ok(NonMatchingStep::Continue)
+            }
+        },
     }
 }
 
@@ -1568,7 +1998,7 @@ mod tests {
         let path = temp_path("termfold-viewer-hex-match-geometry");
         let mut data = (0..32).collect::<Vec<_>>();
         data[7..10].copy_from_slice(b"abc");
-        fs::write(&path, data).unwrap();
+        fs::write(&path, &data).unwrap();
         let size = Size {
             columns: 48,
             rows: 4,
@@ -2136,6 +2566,144 @@ mod tests {
     }
 
     #[test]
+    fn non_matching_search_handles_eol_empty_lines_and_direction() {
+        let path = temp_path("termfold-viewer-non-matching-eol");
+        fs::write(&path, b"hit\n\nno\r\nhit\rno").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search_non_matching("hit", true).unwrap());
+        assert_eq!(viewer.position, 4);
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, 5);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, 4);
+
+        viewer.position = 9;
+        assert!(viewer.search_non_matching("hit", false).unwrap());
+        assert_eq!(viewer.position, 5);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_matching_search_wraps_once_and_excludes_original_line() {
+        let path = temp_path("termfold-viewer-non-matching-wrap");
+        fs::write(&path, b"hit\nno\nhit\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.position = 7;
+
+        assert!(viewer.search_non_matching("hit", true).unwrap());
+        assert_eq!(viewer.position, 4);
+        assert!(viewer.search_wrapped());
+        assert!(!viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, 4);
+
+        viewer.position = 0;
+        assert!(viewer.search_non_matching("hit", false).unwrap());
+        assert_eq!(viewer.position, 4);
+        assert!(viewer.search_wrapped());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_matching_search_keeps_query_literal_and_does_not_cross_eol() {
+        let path = temp_path("termfold-viewer-non-matching-literal");
+        fs::write(&path, b"original\nx\nx\n").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search_non_matching("hex:GG", true).unwrap());
+        assert_eq!(viewer.position, 9);
+
+        viewer.position = 0;
+        assert!(viewer.search_non_matching("x\nx", true).unwrap());
+        assert_eq!(viewer.position, 9);
+        let size = Size {
+            columns: 80,
+            rows: 4,
+        };
+        let mut terminal = Terminal::new(size).unwrap();
+        viewer.render(&mut terminal, size).unwrap();
+        let frame = viewer.current_frame().unwrap();
+        assert!(frame.visible_match_ranges.is_empty());
+        assert!(frame.active_match_range.is_none());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_matching_search_streams_long_lines_with_bounded_reads() {
+        let path = temp_path("termfold-viewer-non-matching-long");
+        let mut data = b"original\n".to_vec();
+        data.extend(std::iter::repeat_n(b'x', BLOCK_SIZE as usize * 9));
+        data.extend_from_slice(b"\nlast");
+        fs::write(&path, data).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search_non_matching("z", true).unwrap());
+        assert_eq!(viewer.position, 9);
+        assert!(viewer.source.max_range_bytes() <= BLOCK_SIZE as usize);
+        assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_matching_search_detects_matches_across_raw_blocks() {
+        let path = temp_path("termfold-viewer-non-matching-block-boundary");
+        let mut data = b"original\n".to_vec();
+        data.resize(BLOCK_SIZE as usize - 1, b'x');
+        data.extend_from_slice(b"ab\nlast");
+        fs::write(&path, &data).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search_non_matching("ab", true).unwrap());
+        assert_eq!(viewer.position, BLOCK_SIZE + 2);
+        assert!(viewer.source.max_range_bytes() <= BLOCK_SIZE as usize);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reverse_non_matching_search_streams_long_lines() {
+        let path = temp_path("termfold-viewer-non-matching-reverse-long");
+        let mut data = b"first\nno\n".to_vec();
+        data.extend(std::iter::repeat_n(b'x', BLOCK_SIZE as usize * 9));
+        data.extend_from_slice(b"\nlast");
+        fs::write(&path, &data).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        viewer.position = (data.len() - 4) as u64;
+
+        assert!(viewer.search_non_matching("z", false).unwrap());
+        assert_eq!(viewer.position, 9);
+        assert!(viewer.source.max_range_bytes() <= BLOCK_SIZE as usize);
+        assert!(viewer.source.cache_block_count() <= BLOCK_CACHE_SIZE);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_matching_search_error_rolls_back_successful_state() {
+        let path = temp_path("termfold-viewer-non-matching-rollback");
+        let broken = temp_path("termfold-viewer-non-matching-broken");
+        fs::write(&path, b"hit\nno\n").unwrap();
+        fs::write(&broken, []).unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+        assert!(viewer.search_non_matching("hit", true).unwrap());
+        let position = viewer.position;
+        let search = viewer.search.clone();
+        viewer.source.replace_file(fs::File::open(&broken).unwrap());
+
+        assert!(viewer.search_non_matching("hit", true).is_err());
+        assert_eq!(viewer.position, position);
+        assert_eq!(viewer.search, search);
+
+        fs::remove_file(&broken).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn search_prioritizes_current_and_neighbour_frames() {
         let path = temp_path("termfold-viewer-search-priority");
         fs::write(&path, vec![b'x'; 400]).unwrap();
@@ -2273,7 +2841,7 @@ mod tests {
         let path = temp_path("termfold-viewer-search-block-boundary");
         let mut data = vec![b'x'; BLOCK_SIZE as usize - 1];
         data.extend_from_slice(b"abc");
-        fs::write(&path, &data).unwrap();
+        fs::write(&path, data).unwrap();
         let mut viewer = Viewer::open(path.clone(), 8).unwrap();
 
         assert!(viewer.search("abc", true).unwrap());

@@ -1,4 +1,4 @@
-use std::{io, ops::Range};
+use std::{collections::VecDeque, io, ops::Range};
 
 use super::{
     MAX_QUERY_BYTES,
@@ -20,14 +20,19 @@ pub(super) enum SearchQuery {
 
 impl SearchQuery {
     pub(super) fn parse(input: &[u8]) -> Result<Self, SearchQueryError> {
+        let text = Self::parse_text(input)?;
+        if let Some(hex) = input.strip_prefix(b"hex:") {
+            return parse_hex(hex).map(Self::Hex);
+        }
+        Ok(text)
+    }
+
+    pub(super) fn parse_text(input: &[u8]) -> Result<Self, SearchQueryError> {
         if input.is_empty() {
             return Err(SearchQueryError::Empty);
         }
         if input.len() > MAX_QUERY_BYTES {
             return Err(SearchQueryError::TooLong);
-        }
-        if let Some(hex) = input.strip_prefix(b"hex:") {
-            return parse_hex(hex).map(Self::Hex);
         }
         Ok(Self::Text(input.to_vec()))
     }
@@ -62,6 +67,16 @@ impl SearchQuery {
             Self::Text(_) => query.eq_ignore_ascii_case(&byte),
             Self::Hex(_) => query == byte,
         }
+    }
+
+    pub(super) fn matches_window(&self, window: &VecDeque<u8>) -> bool {
+        self.as_bytes().len() == window.len()
+            && self
+                .as_bytes()
+                .iter()
+                .copied()
+                .zip(window.iter().copied())
+                .all(|(query, byte)| self.matches_byte(query, byte))
     }
 
     pub(super) fn visible_matches(
@@ -210,6 +225,14 @@ mod tests {
     #[test]
     fn rejects_empty_text() {
         assert_eq!(SearchQuery::parse(b""), Err(SearchQueryError::Empty));
+    }
+
+    #[test]
+    fn non_matching_search_keeps_hex_prefix_literal() {
+        assert_eq!(
+            SearchQuery::parse_text(b"hex:00 FF"),
+            Ok(SearchQuery::Text(b"hex:00 FF".to_vec()))
+        );
     }
 
     #[test]

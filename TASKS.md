@@ -1986,13 +1986,13 @@ Rules for every T31 implementation request:
     `cargo build --release --locked --target x86_64-unknown-linux-musl`
     passed.
 
-- [ ] **T31C — Implement bounded non-matching-line search primitives**
+- [x] **T31C — Implement bounded non-matching-line search primitives**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add an explicit search mode that distinguishes byte-match search from
     non-matching logical-line search without overloading the direction flag.
@@ -2024,6 +2024,19 @@ Rules for every T31 implementation request:
     second line index before T31D.
   - Done when: core calls deterministically find the nearest non-matching line in
     either direction while preserving all Viewer memory and fairness limits.
+  - Implementation: added explicit matching and non-matching search modes, a
+    bounded forward/reverse logical-line worker using the existing scanner and
+    raw-block cache, literal Text parsing for `hex:` in non-match mode, line-start
+    cursor placement, one-wrap exclusion, rollback, and non-match highlight
+    suppression. Reverse scanner boundary skips now yield before crossing into a
+    second source block.
+  - Evidence (2026-08-06): Ubuntu 24.04 Linux `cargo fmt --check`,
+    `cargo test --locked viewer:: -- --test-threads=1` passed (107/107), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    The release binary was verified static with `file` and `ldd`. Windows
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as a
+    compile-only check; native MSVC runtime tests and release build are blocked
+    because this environment is Linux.
 
 - [ ] **T31D — Integrate search mode with Worker state, repeat, and highlighting**
   - Recommended model: Luna xHigh.
