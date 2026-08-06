@@ -1447,7 +1447,7 @@ Rules for every T29 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - Add deterministic acceptance coverage for completed-path Backspace, literal
     tilde safety, Vim-style horizontal movement, Viewer Help return state, no
@@ -1487,14 +1487,34 @@ Rules for every T29 implementation request:
     peak cache 458,769 bytes. README behaviour is limited to implemented and
     verified paths.
   - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
-    1.97.1, MSVC 14.44): `cargo fmt --check`, target-specific Clippy with
-    `-D warnings`, all 163 target-specific tests, the exact paging-metrics test,
-    and the MSVC release build passed. The 571,392-byte artifact has SHA-256
-    `F66BD3E155E2CFD99BC94CF5CC74B649C98B9A08D64AE20FBE4B4D73E805DCDC` and no
-    bundled DLL files. The 16x3 paging harness measured initial 114.176 ms, cold
-    down 473.2224 ms, warm up 535.196 ms, long line 135.7797 ms, and peak cache
-    458,769 bytes. Native Windows validation remains incomplete because no
-    before/after latency baseline is present for the required comparative claim.
+    1.97.1, `x86_64-pc-windows-msvc`): focused viewer tests passed 116/116 with
+    `cargo test --locked --target x86_64-pc-windows-msvc viewer --no-fail-fast
+    -- --test-threads=1`; the full suite passed 163/163 with
+    `cargo test --locked --target x86_64-pc-windows-msvc -- --test-threads=1`;
+    `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets
+    --all-features -- -D warnings` passed; and
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
+    The same release test file and temporary PowerShell harness ran on both
+    commits with terminal size 16 columns x 3 rows, 5 warm-ups, and 31 measured
+    samples. Each sample used
+    `cargo test --release --locked --target x86_64-pc-windows-msvc
+    viewer::tests::paging_scans_blocks_without_bytewise_cache_churn -- --exact
+    --nocapture --test-threads=1`; Page Down and Page Up are the committed
+    3-page aggregate operations.
+
+    | Operation | Before `2ccd69f` median / p95 ms | After `9fd883e` median / p95 ms |
+    | --- | ---: | ---: |
+    | Initial render | 48.57 / 58.31 | 47.17 / 52.05 |
+    | Page Down (3-page aggregate) | 273.20 / 366.08 | 212.62 / 228.06 |
+    | Page Up (3-page aggregate) | 301.22 / 362.79 | 242.85 / 259.30 |
+    | Long-line page render | 65.05 / 71.90 | 66.00 / 70.42 |
+
+    Before is the immediate parent of T29H implementation commit `365d946`:
+    `2ccd69fd5ac6bb39a5d2695ed9cab27c9539f137`. After is current HEAD:
+    `9fd883eea6db5e3f1becc139a964c7fb20982df2`. No comparative blocker remains;
+    the initial sandbox-only temporary-file denial required an escalated native
+    rerun and did not reproduce. The measurement covers the in-process viewer
+    terminal fixture, not an external terminal GUI.
 
 ## T30 Execution Contract
 
