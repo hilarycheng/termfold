@@ -1830,8 +1830,8 @@ Rules for every T30 implementation request:
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
-    - [ ] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - Add deterministic acceptance coverage for first-separator pending input,
     `//` root, `~/` Home, entered-folder Backspace parent, error rollback,
     Page Up/Page Down then cursor-anchored `n`/`N`, raw-block eviction/reload, and
@@ -1860,14 +1860,15 @@ Rules for every T30 implementation request:
     assertions. Existing acceptance coverage reverified raw-block reload,
     resize preservation, highlight mapping, close/cancellation, frame/cache
     bounds, work-step bounds, and navigation replacement bounds.
-  - Evidence (2026-08-05): `cargo fmt --check` passed. Focused Linux checks
-    passed: `cargo test --locked viewer:: -- --test-threads=1` 98/98,
-    `cargo test --locked server::tests::viewer_` 12/12, viewer input checks
-    4/4, and the first-separator regression 1/1. The isolated Worker
-    cancellation regression passed. The full Linux suite passed 169/170; the
-    existing Unix socket privacy test is blocked by
-    this sandbox's `Operation not permitted` socket-bind restriction. The musl
-    release build passed. Windows target test compilation passed with
-    `cargo check --locked --tests --target x86_64-pc-windows-msvc`; native
-    Windows focused/full tests and the MSVC release build remain blocked because
-    no native Windows runtime or `link.exe` is available.
+  - Evidence (2026-08-06): Ubuntu-24.04 WSL focused checks passed:
+    `cargo test --locked viewer:: -- --test-threads=1` 98/98,
+    `cargo test --locked server::tests::viewer_ -- --test-threads=1` 12/12,
+    viewer prompt input 1/1, and the first-separator regression 1/1. The full
+    Linux suite passed 170/170 unit tests and 8/8 lifecycle tests. The
+    `x86_64-unknown-linux-musl` release build passed. Native Windows focused
+    checks passed: Viewer 96/96, server viewer 12/12, and input 14/14. The full
+    MSVC suite passed 163/163 tests, and the
+    `x86_64-pc-windows-msvc` release build passed. The initial sandboxed Windows
+    viewer run hit temporary-file `Access is denied`; the elevated native rerun
+    passed. Clippy was not run because it was outside the approved build/test
+    scope.

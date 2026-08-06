@@ -228,8 +228,9 @@ current byte position is preserved where possible, and in-flight viewer work is
 cancelled before the new frame is rendered.
 In Hex mode, normal search queries match ASCII bytes case-insensitively; queries
 starting with `hex:` use exact space-separated bytes, such as `hex:00 FF 1B`.
-Hex rows use the greatest fitting 4/8-byte group layout, with aligned separators
-between complete eight-byte groups and no separators in the ASCII column.
+Hex rows use the greatest fitting multiple-of-eight-byte layout, with a four-byte
+fallback when needed, aligned separators between complete eight-byte groups, and
+no separators in the ASCII column.
 Matches may cross displayed rows and raw file blocks.
 
 Text mode renders valid UTF-8 using terminal display-cell widths. Combining marks
