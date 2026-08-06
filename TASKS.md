@@ -2164,12 +2164,12 @@ Rules for every T31 implementation request:
     `cargo test --locked input:: -- --test-threads=1` (16/16), and
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
 
-- [ ] **T31G — Run matching, non-matching, and Help acceptance**
+- [x] **T31G — Run matching, non-matching, and Help acceptance**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
+    - [x] Task implementation complete.
     - [ ] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add deterministic acceptance coverage for the complete `/ ? n N` direction
@@ -2193,6 +2193,22 @@ Rules for every T31 implementation request:
   - Done when: implementation and each authoritative platform checkbox reflect
     actual execution evidence and no wrap, repeat, line-scan, Help, or
     cross-platform claim relies on compile-only validation.
+  - Implementation: accepted the deterministic coverage already present across
+    Viewer core, Worker, input, render, and bounds regressions; no new harness
+    or production code was required.
+  - Evidence (2026-08-06): Ubuntu 24.04 WSL `cargo fmt --all -- --check`,
+    focused `cargo test --locked viewer:: -- --test-threads=1` (108/108),
+    `cargo test --locked input:: -- --test-threads=1` (16/16), and
+    `cargo test --locked render:: -- --test-threads=1` (13/13) passed.
+    Escalated Ubuntu WSL `cargo test --locked` passed (182/182 unit tests,
+    8/8 lifecycle tests). `cargo build --release --locked --target
+    x86_64-unknown-linux-musl` passed; `file` and `ldd` verified a stripped
+    static-pie executable. `cargo check --locked --tests --target
+    x86_64-pc-windows-msvc` passed as compile-only evidence. Clippy is blocked
+    by two existing `large_enum_variant` diagnostics in `SearchStart` and
+    `Work`; T31G does not authorize production refactoring. Native Windows
+    focused/full tests and MSVC release build are unavailable in this Linux
+    environment.
 
 - [ ] **T31H — Publish verified Viewer search and Help keys**
   - Recommended model: Luna Low.
