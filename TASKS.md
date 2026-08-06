@@ -2210,13 +2210,13 @@ Rules for every T31 implementation request:
     focused/full tests and MSVC release build are unavailable in this Linux
     environment.
 
-- [ ] **T31H — Publish verified Viewer search and Help keys**
+- [x] **T31H — Publish verified Viewer search and Help keys**
   - Recommended model: Luna Low.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent validation complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
   - Update only the implemented Large-file Viewer and key-reminder sections in
     `README.md` after T31G records the required validation.
   - Document `/`, `?`, `]`, `[`, `n`, `N`, one-wrap behaviour, Text-only
@@ -2228,3 +2228,10 @@ Rules for every T31 implementation request:
   - Depends on: T31G.
   - Done when: user-facing documentation matches the verified executable and no
     future or unchecked behaviour is presented as available.
+  - Implementation: Updated the Large-file Viewer and key-reminder sections
+    with verified search, Hex, grouped Help, and configured-prefix behavior.
+  - Evidence (2026-08-06): Ubuntu 24.04 WSL `cargo fmt --all -- --check`,
+    `cargo test --locked viewer:: -- --test-threads=1` (108/108),
+    `cargo test --locked input:: -- --test-threads=1` (16/16), and
+    `cargo test --locked render:: -- --test-threads=1` (13/13) passed; README
+    wording was checked against T31G acceptance evidence.

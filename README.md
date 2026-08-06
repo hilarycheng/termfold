@@ -209,13 +209,16 @@ line in Text mode; in Hex mode they move by one source byte and may cross rows.
 Ctrl-f/Ctrl-b move by one page; Ctrl-u/Ctrl-d move by half a page; Ctrl-e/Ctrl-y
 scroll the viewport by one line without moving the cursor. A page is the visible
 viewer height minus two rows. Repeated page input keeps at most one page in flight
-and one changed-direction replacement. Use `/` for forward search, `?` for reverse search,
-and `n`/`N` to repeat. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
+and one changed-direction replacement. Use `/` for forward matching search, `?` for
+reverse matching search, `]` for forward non-matching-line search, and `[` for
+reverse non-matching-line search (Text mode only). `n` continues in the search
+direction and `N` reverses it; each search wraps at most once at the file boundary
+and reports `wrapped` when it does. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
 In the viewer, plain `?` starts reverse search; the configured prefix followed
-by `?` opens Help. Exiting that Help with `q`, `Ctrl-c`, or `Esc` returns to the
-same viewer without changing its state. The configured prefix followed by `x`
+by `?` opens grouped Help for viewer, search, and mode keys. Exiting that Help
+with `q`, `Ctrl-c`, or `Esc` returns to the same viewer without changing its state. The configured prefix followed by `x`
 asks to close the viewer; confirm with `y`.
 Each new or repeated search starts strictly after or before the current cursor
 in its selected direction; viewport-only scrolling does not change that anchor.
