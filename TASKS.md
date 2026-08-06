@@ -1940,14 +1940,14 @@ Rules for every T31 implementation request:
   - Evidence: approved documentation-only change; Rust source and `README.md`
     remain unchanged.
 
-- [ ] **T31B — Lock the matching-search direction and wrap matrix**
+- [x] **T31B — Lock the matching-search direction and wrap matrix**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
+    - [x] Native Windows validation complete.
   - First add an end-to-end reproduction for the reported `/` then `N` case before
     changing logic. Inspect cached-match selection, cursor anchoring, worker
     repeat dispatch, server `same_direction` routing, and wrapped-status delivery.
@@ -1971,6 +1971,20 @@ Rules for every T31 implementation request:
   - Done when: the same direction/wrap matrix passes through the Viewer core,
     Worker handle, and server action path without changing query or cursor state
     on failure.
+  - Implementation: preserved the recorded search direction separately from the
+    direction used by each repeat operation, including cached and incremental
+    Worker paths. Added `/`/`?` direction, `n`/`N` reversal, and wrapped-result
+    regressions at the Viewer core and Worker-handle boundaries. The existing
+    server boolean routing was verified unchanged.
+  - Evidence (2026-08-06): Native Windows `cargo fmt --check`,
+    `cargo check --locked --tests --target x86_64-pc-windows-msvc`, focused
+    Worker reproduction, and `cargo test --locked --target
+    x86_64-pc-windows-msvc viewer:: -- --test-threads=1` passed (97/97).
+    Native Windows `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed. Ubuntu 24.04 WSL `cargo fmt --check`,
+    `cargo test --locked viewer:: -- --test-threads=1` passed (99/99), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`
+    passed.
 
 - [ ] **T31C — Implement bounded non-matching-line search primitives**
   - Recommended model: Luna xHigh.

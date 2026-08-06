@@ -2165,6 +2165,29 @@ mod tests {
     }
 
     #[test]
+    fn repeat_n_keeps_the_original_search_direction_after_uppercase_n() {
+        let (path, mut worker, mut viewer) = open("search-direction", b"hit---middle---hit");
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 3,
+        })
+        .unwrap();
+
+        viewer.bottom().unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::NavigationComplete
+        ));
+        assert_eq!(viewer.search("hit", true).unwrap(), (true, true));
+        assert_eq!(viewer.repeat_search(false).unwrap(), (true, true));
+        assert_eq!(viewer.repeat_search(true).unwrap(), (true, true));
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn close_discards_late_async_results() {
         let (path, mut worker, mut viewer) = open("async-close", &vec![b'a'; 2 * 1024 * 1024]);
         let size = Size {

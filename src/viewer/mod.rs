@@ -44,6 +44,7 @@ struct SearchState {
 pub(super) struct SearchWork {
     query: SearchQuery,
     forward: bool,
+    recorded_forward: bool,
     ranges: VecDeque<Range<u64>>,
     wrap_range: Range<u64>,
     matches: Vec<u64>,
@@ -757,7 +758,7 @@ impl Viewer {
         let Ok(query) = SearchQuery::parse(&input) else {
             return SearchStart::Complete(false);
         };
-        self.search_work_at(query, forward, self.position)
+        self.search_work_at(query, forward, forward, self.position)
     }
 
     pub(super) fn begin_repeat_search_work(
@@ -777,16 +778,22 @@ impl Viewer {
             self.set_position(offset)?;
             self.search = Some(SearchState {
                 query: previous.query,
-                forward,
+                forward: previous.forward,
                 offset,
             });
             self.invalidate_frames();
             return Ok(SearchStart::Complete(true));
         }
-        Ok(self.search_work_at(previous.query, forward, self.position))
+        Ok(self.search_work_at(previous.query, forward, previous.forward, self.position))
     }
 
-    fn search_work_at(&mut self, query: SearchQuery, forward: bool, start: u64) -> SearchStart {
+    fn search_work_at(
+        &mut self,
+        query: SearchQuery,
+        forward: bool,
+        recorded_forward: bool,
+        start: u64,
+    ) -> SearchStart {
         if query.as_bytes().is_empty() {
             return SearchStart::Complete(false);
         }
@@ -835,6 +842,7 @@ impl Viewer {
         SearchStart::Work(SearchWork {
             query,
             forward,
+            recorded_forward,
             ranges,
             wrap_range: wrap,
             matches: Vec::new(),
@@ -902,7 +910,7 @@ impl Viewer {
             self.search_wrapped = work.wrap_range.contains(&offset);
             self.search = Some(SearchState {
                 query: work.query.clone(),
-                forward: work.forward,
+                forward: work.recorded_forward,
                 offset,
             });
             self.invalidate_frames();
@@ -2189,6 +2197,17 @@ mod tests {
         assert_eq!(viewer.position, first);
         assert!(viewer.repeat_search(true).unwrap());
         assert_eq!(viewer.position, second);
+
+        viewer.position = first;
+        assert!(viewer.search("hit", false).unwrap());
+        assert_eq!(viewer.position, second);
+        assert!(viewer.search_wrapped());
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, first);
+        assert!(viewer.search_wrapped());
+        assert!(viewer.repeat_search(true).unwrap());
+        assert_eq!(viewer.position, second);
+        assert!(viewer.search_wrapped());
 
         fs::remove_file(path).unwrap();
     }
