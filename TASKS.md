@@ -2357,13 +2357,13 @@ Rules for every T32 implementation request:
     --target x86_64-unknown-linux-musl`). Native Windows/MSVC runtime validation
     is unavailable in this Linux workspace and remains unchecked.
 
-- [ ] **T32C — Run cursor-anchored repeat-search acceptance**
+- [x] **T32C — Run cursor-anchored repeat-search acceptance**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Run deterministic acceptance for the full `/`, `?`, `n`, and `N` direction
     matrix, including the exact `/ -> G -> N -> N` report and the symmetric
@@ -2395,3 +2395,14 @@ Rules for every T32 implementation request:
   - Done when: implementation and both authoritative platform checkboxes contain
     actual execution evidence, and no repeat-search result depends on treating a
     partial match list as complete coverage.
+  - Evidence (2026-08-06): Ubuntu 24.04 WSL with Rust 1.97.1 passed focused
+    Viewer/Worker tests (`cargo test --locked viewer:: -- --test-threads=1`,
+    108/108), focused Viewer server tests (`cargo test --locked
+    'server::tests::viewer_' -- --test-threads=1`, 12/12), the full Linux suite
+    (`cargo test --locked -- --test-threads=1`, 182/182 unit tests and 8/8
+    lifecycle tests), formatting, Clippy with `-D warnings`, and the
+    `x86_64-unknown-linux-musl` release build. The Windows target check
+    (`cargo check --locked --target x86_64-pc-windows-msvc`) passed as
+    compile-only evidence. Native Windows focused/full tests and MSVC release
+    build are blocked in this Linux workspace; the latter reports missing
+    `link.exe`, so Native Windows validation remains unchecked.
