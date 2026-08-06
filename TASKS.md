@@ -1100,7 +1100,7 @@ Rules for every T29 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - Keep the Input prompt buffer, server-side visible query, filter, and selected
     entry synchronized after `Tab` completion or keyboard entry selection.
@@ -1121,13 +1121,18 @@ Rules for every T29 implementation request:
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     Full `cargo test --locked` had 135 passing tests and one unrelated runtime
     socket test failed with sandbox `Operation not permitted`.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): target-specific `prompt` and `completion` test runs
+    passed with 8 and 1 tests. The full target-specific suite passed with 163
+    tests, and `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T29C — Prevent literal-tilde path-prompt crashes**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - First add a focused reproduction for entering literal `~` in an empty and a
     non-empty viewer path prompt; identify whether failure occurs in input,
@@ -1152,13 +1157,18 @@ Rules for every T29 implementation request:
     --target x86_64-unknown-linux-musl` passed. Full `cargo test --locked`
     had 137 passing tests and one unrelated runtime socket test failed with
     sandbox `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): target-specific `prompt` tests passed with 8 tests,
+    including literal-tilde and error-state coverage. The full target-specific
+    suite passed with 163 tests, and `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T29D — Implement horizontal viewer cursor primitives**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna High.
   - In Text mode, implement previous/next valid display-token movement within the
     current logical line. Stop at line boundaries and never wrap to another line.
@@ -1185,13 +1195,18 @@ Rules for every T29 implementation request:
     Full `cargo test --locked --no-fail-fast` had 138 passing tests; one runtime
     socket test and eight lifecycle tests were blocked by sandbox
     `Operation not permitted` while binding `/tmp/termfold-test-*/work.sock`.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): target-specific `horizontal` tests passed with 5 tests,
+    including Text/Hex cursor primitives. The full target-specific suite passed
+    with 163 tests, and `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T29E — Wire `h`/`l` and Left/Right through the Viewer Worker**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Recommended model: Luna Max.
   - Add semantic horizontal actions for `h`, `l`, Left Arrow, and Right Arrow.
   - Preserve fragmented escape-prefixed Left/Right sequences in Viewer mode.
@@ -1218,6 +1233,11 @@ Rules for every T29 implementation request:
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     `server.rs` retains no viewer file I/O; horizontal navigation uses the
     existing search cancellation, generation, and stale-result paths.
+  - Native Windows evidence (2026-08-06, Windows 10.0.26100, stable Rust
+    1.97.1, MSVC 14.44): target-specific `horizontal` tests passed with 5 tests,
+    covering input encodings, repeat/reversal gating, primitives, and worker
+    cancellation. The full target-specific suite passed with 163 tests, and
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
 
 - [x] **T29F — Remove the phantom row above the status bar**
   - Required validation: Linux and Native Windows.
