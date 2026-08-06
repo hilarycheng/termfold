@@ -23,7 +23,6 @@ use source::FileSource;
 use source::{BLOCK_CACHE_SIZE, BLOCK_SIZE};
 use text::DecodedText;
 
-const MAX_MATCH_OFFSETS: usize = 4096;
 pub(crate) const MAX_QUERY_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,7 +54,6 @@ pub(super) struct SearchWork {
     recorded_forward: bool,
     ranges: VecDeque<Range<u64>>,
     wrap_range: Range<u64>,
-    matches: Vec<u64>,
     non_matching: Option<NonMatchingWork>,
 }
 
@@ -125,7 +123,6 @@ pub struct Viewer {
     preferred_column: u64,
     visible_rows: usize,
     visible_columns: usize,
-    matches: Vec<u64>,
     search: Option<SearchState>,
     search_wrapped: bool,
     frames: FrameSlots,
@@ -152,7 +149,6 @@ impl Viewer {
             preferred_column: 0,
             visible_rows: 1,
             visible_columns: 1,
-            matches: Vec::new(),
             search: None,
             search_wrapped: false,
             frames: FrameSlots::default(),
@@ -761,7 +757,6 @@ impl Viewer {
     #[cfg(test)]
     pub fn search(&mut self, query: &str, forward: bool) -> io::Result<bool> {
         let state = self.state();
-        let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| match self.begin_search_work(query.as_bytes().to_vec(), forward) {
             SearchStart::Complete(found) => Ok(found),
@@ -775,7 +770,6 @@ impl Viewer {
         })();
         if result.is_err() {
             self.restore_state(state);
-            self.matches = matches;
             self.search = search;
         }
         result
@@ -784,7 +778,6 @@ impl Viewer {
     #[cfg(test)]
     pub fn search_non_matching(&mut self, query: &str, forward: bool) -> io::Result<bool> {
         let state = self.state();
-        let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| match self.begin_search_work_mode(
             query.as_bytes().to_vec(),
@@ -802,7 +795,6 @@ impl Viewer {
         })();
         if result.is_err() {
             self.restore_state(state);
-            self.matches = matches;
             self.search = search;
         }
         result
@@ -811,7 +803,6 @@ impl Viewer {
     #[cfg(test)]
     pub fn repeat_search(&mut self, same_direction: bool) -> io::Result<bool> {
         let state = self.state();
-        let matches = self.matches.clone();
         let search = self.search.clone();
         let result = (|| match self.begin_repeat_search_work(same_direction)? {
             SearchStart::Complete(found) => Ok(found),
@@ -825,7 +816,6 @@ impl Viewer {
         })();
         if result.is_err() {
             self.restore_state(state);
-            self.matches = matches;
             self.search = search;
         }
         result
@@ -870,20 +860,6 @@ impl Viewer {
         } else {
             !previous.forward
         };
-        if previous.mode == SearchMode::Matching
-            && let Some(offset) = self.cached_match(self.position, forward)
-        {
-            self.set_position(offset)?;
-            self.search = Some(SearchState {
-                query: previous.query,
-                mode: previous.mode,
-                forward: previous.forward,
-                offset,
-            });
-            self.search_wrapped = false;
-            self.invalidate_frames();
-            return Ok(SearchStart::Complete(true));
-        }
         Ok(self.search_work_at(
             previous.query,
             previous.mode,
@@ -939,7 +915,6 @@ impl Viewer {
                 recorded_forward,
                 ranges: VecDeque::new(),
                 wrap_range: 0..0,
-                matches: Vec::new(),
                 non_matching: Some(non_matching),
             });
         }
@@ -992,7 +967,6 @@ impl Viewer {
             recorded_forward,
             ranges,
             wrap_range: wrap,
-            matches: Vec::new(),
             non_matching: None,
         })
     }
@@ -1013,7 +987,6 @@ impl Viewer {
                 }
                 NonMatchingStep::Found { offset, wrapped } => {
                     self.set_line_start_position(offset)?;
-                    self.matches.clear();
                     self.search_wrapped = wrapped;
                     self.search = Some(SearchState {
                         query: work.query.clone(),
@@ -1056,7 +1029,6 @@ impl Viewer {
                 let end = offset.saturating_add(query_len);
                 if end <= bytes.len() && work.query.matches_bytes(&bytes[offset..end]) {
                     let source = scan_start + offset as u64;
-                    remember_match(&mut work.matches, source);
                     found.get_or_insert(source);
                 }
             }
@@ -1065,7 +1037,6 @@ impl Viewer {
                 let end = offset.saturating_add(query_len);
                 if end <= bytes.len() && work.query.matches_bytes(&bytes[offset..end]) {
                     let source = scan_start + offset as u64;
-                    remember_match(&mut work.matches, source);
                     found.get_or_insert(source);
                 }
             }
@@ -1082,7 +1053,6 @@ impl Viewer {
         }
         if let Some(offset) = found {
             self.set_position(offset)?;
-            self.matches = std::mem::take(&mut work.matches);
             self.search_wrapped = work.wrap_range.contains(&offset);
             self.search = Some(SearchState {
                 query: work.query.clone(),
@@ -1188,22 +1158,6 @@ impl Viewer {
 
     fn cache_line(&mut self, line: LineBoundary) {
         frame::cache_line(&mut self.lines, line);
-    }
-
-    fn cached_match(&self, start: u64, forward: bool) -> Option<u64> {
-        if forward {
-            self.matches
-                .iter()
-                .copied()
-                .filter(|offset| *offset > start)
-                .min()
-        } else {
-            self.matches
-                .iter()
-                .copied()
-                .filter(|offset| *offset < start)
-                .max()
-        }
     }
 
     fn decode_line(&mut self, line: &LineBoundary) -> io::Result<DecodedText> {
@@ -1785,12 +1739,6 @@ fn order_ranges(ranges: &mut [Range<u64>], forward: bool) {
         ranges.sort_by_key(|range| range.start);
     } else {
         ranges.sort_by_key(|range| Reverse(range.end));
-    }
-}
-
-fn remember_match(matches: &mut Vec<u64>, offset: u64) {
-    if matches.len() < MAX_MATCH_OFFSETS {
-        matches.push(offset);
     }
 }
 
@@ -2841,14 +2789,30 @@ mod tests {
     }
 
     #[test]
-    fn cached_repeat_chooses_the_nearest_match_on_each_side() {
-        let path = temp_path("termfold-viewer-search-cache-order");
-        fs::write(&path, b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap();
+    fn repeat_reverse_search_uses_nearest_match_after_bottom() {
+        let path = temp_path("termfold-viewer-repeat-nearest");
+        let block_size = BLOCK_SIZE as usize;
+        let mut data = vec![b'x'; block_size * 3 + 32];
+        let offsets = [1, block_size + 10, block_size * 2 + 20];
+        for offset in offsets {
+            data[offset..offset + 3].copy_from_slice(b"hit");
+        }
+        fs::write(&path, &data).unwrap();
         let mut viewer = Viewer::open(path.clone(), 8).unwrap();
-        viewer.matches = vec![30, 10, 20];
 
-        assert_eq!(viewer.cached_match(5, true), Some(10));
-        assert_eq!(viewer.cached_match(25, false), Some(20));
+        assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, offsets[0] as u64);
+        viewer.bottom().unwrap();
+
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, offsets[2] as u64);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, offsets[1] as u64);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, offsets[0] as u64);
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.position, offsets[2] as u64);
+        assert!(viewer.search_wrapped());
 
         fs::remove_file(path).unwrap();
     }

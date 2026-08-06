@@ -2301,13 +2301,13 @@ Rules for every T32 implementation request:
   - Evidence: approved documentation-only task definition; no Rust source,
     tests, builds, dependencies, `REQUIREMENTS.md`, or `README.md` were changed.
 
-- [ ] **T32B — Remove unsafe partial-cache completion from matching repeat**
+- [x] **T32B — Remove unsafe partial-cache completion from matching repeat**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Before changing production logic, add a failing regression with a file larger
     than two 64 KiB raw blocks and at least three occurrences of one query: an
@@ -2350,6 +2350,12 @@ Rules for every T32 implementation request:
   - Done when: matching `n` and `N` always return the nearest valid match relative
     to the committed current cursor, regardless of which offsets earlier bounded
     searches happened to observe.
+  - Evidence: Linux x86_64 with Rust 1.97.1 passed the failing regression after
+    correction (`cargo test --locked repeat_reverse_search_uses_nearest_match_after_bottom`,
+    1 test), all Viewer and Worker tests (`cargo test --locked viewer::`, 108
+    tests), and the x86_64 musl release build (`cargo build --release --locked
+    --target x86_64-unknown-linux-musl`). Native Windows/MSVC runtime validation
+    is unavailable in this Linux workspace and remains unchecked.
 
 - [ ] **T32C — Run cursor-anchored repeat-search acceptance**
   - Recommended model: Luna High.
@@ -2389,4 +2395,3 @@ Rules for every T32 implementation request:
   - Done when: implementation and both authoritative platform checkboxes contain
     actual execution evidence, and no repeat-search result depends on treating a
     partial match list as complete coverage.
-
