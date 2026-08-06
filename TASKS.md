@@ -895,7 +895,7 @@ perform file I/O or file scanning.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Use normal parsed text queries for ASCII case-insensitive search in Hex mode
     and parsed `hex:` queries for exact bytes.
   - Permit matches across displayed rows and raw block boundaries.
@@ -915,14 +915,15 @@ perform file I/O or file scanning.
   - Evidence: focused cargo test --locked viewer:: passed 72 viewer tests;
     elevated cargo test --locked passed 134 unit tests and 8 lifecycle tests;
     cargo build --release --locked --target x86_64-unknown-linux-musl passed.
-    Native Windows/MSVC validation was not available in this Linux host.
+    Native Windows/MSVC validation on 2026-08-06 passed 96 viewer tests, 163
+    full-suite tests, and the release build.
 
 - [x] **T28S — Wire mode switching, cancellation, and input actions**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Map `H` in Viewer mode to a semantic mode-toggle action.
   - Mode switch MUST increase generation, cancel search/navigation, clear the one
     replacement, invalidate all frames, preserve source byte position where
@@ -946,14 +947,15 @@ perform file I/O or file scanning.
   - Evidence: `cargo fmt --check`, focused input/viewer/worker tests, elevated
     `cargo test --locked` (131 unit tests and 8 lifecycle tests), and
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
-    Native Windows/MSVC validation was not available.
+    Native Windows/MSVC validation on 2026-08-06 passed 96 viewer tests, 14
+    input tests, 163 full-suite tests, and the release build.
 
 - [x] **T28T — Remove superseded and duplicated viewer code**
   - Required validation: Linux and Native Windows.
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Delete old full-file `collect_forward`/`collect_reverse` loops, metadata
     refresh/truncation logic, duplicated newline scanners, byte-column helpers,
     `viewer_dirty` latest-input coalescing, and old page-string state.
@@ -978,7 +980,9 @@ perform file I/O or file scanning.
   - Evidence: duplicate-symbol `rg` check passed; `cargo fmt --check`, focused
     viewer/input/server tests (72/9/11), `cargo test --locked -- --test-threads=1`
     (133 unit and 8 lifecycle tests), and the x86_64 musl release build passed.
-    Native Windows/MSVC validation was not available in this Linux host.
+    Native Windows/MSVC validation on 2026-08-06 passed focused viewer/input/
+    server tests (96/14/17), 163 full-suite tests, and the warning-free release
+    build.
 
 - [x] **T28U — Run viewer acceptance, resource, and documentation checks**
   - Required validation: Linux and Native Windows.
@@ -1021,25 +1025,30 @@ perform file I/O or file scanning.
     with `-D warnings` passed after the warning fixes, and final-source
     `cargo fmt --check` passed. Runtime tests and release builds were not rerun
     for this warning-only cleanup at that point. Later T29K full Linux validation
-    exercised the final source and retained the T28 bounds. Native Windows
-    validation remains unchecked.
+    exercised the final source and retained the T28 bounds. Native Windows/MSVC
+    validation on 2026-08-06 passed 96 viewer tests, 163 full-suite tests, and
+    the release build. The 571,392-byte artifact matched the prior Windows
+    baseline (0-byte delta), retained SHA-256
+    `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`, and
+    bundled no DLL files. Clippy with Rust 1.97.1 failed on existing
+    `needless_borrow`, `manual_is_multiple_of`, and `single_range_in_vec_init`
+    findings; source fixes were outside the approved scope, so Native Windows
+    validation remains incomplete.
   - Done when: implementation is complete and each required platform checkbox
     records authoritative execution evidence; unavailable native Windows
     acceptance remains an explicit blocker to the cross-platform claim.
 
 ### T28 native Windows confirmation ledger
 
-- Confirmed: T28B, T28C, T28D, T28E, T28F, T28G, T28H, T28I, T28J, T28K,
-  T28L, T28M, T28N, T28O, T28P, and T28Q each record native Windows/MSVC
-  focused tests and release-build evidence. The T28N-T28Q run passed 96 viewer
-  tests and 163 full-suite tests; the 571,392-byte release artifact has SHA-256
+- Confirmed: T28B through T28T each record native Windows/MSVC focused tests and
+  release-build evidence. The T28R-T28T run passed focused viewer/input/server
+  tests (96/14/17) and 163 full-suite tests; the 571,392-byte release artifact
+  matched the prior baseline and has SHA-256
   `A2DC32B0799962649BEC23954C837A019CA4A428B05F63096188641E05D80D74`.
-- Not confirmed: T28R through T28T have Linux/WSL implementation evidence but
-  no recorded native Windows/MSVC focused test and build for their final code;
-  their unchecked status is intentional until that validation is supplied.
 - T28A is platform independent. T28U implementation and Linux validation are
-  complete; its Native Windows checkbox remains the acceptance gate for a final
-  cross-platform claim.
+  complete, and its native Windows tests and release build pass; Rust 1.97.1
+  Clippy findings keep its Native Windows checkbox and the final cross-platform
+  claim incomplete.
 
 ## T29 Execution Contract
 
