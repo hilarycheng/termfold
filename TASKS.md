@@ -1589,7 +1589,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Keep the first separator entered with an empty prompt as editable pending
     input instead of changing directory immediately.
   - A second valid root separator MUST emit one semantic root-navigation action.
@@ -1612,9 +1612,10 @@ Rules for every T30 implementation request:
     separator. `cargo fmt` passed; focused Linux input (14) and server (15) tests
     passed, and the `x86_64-unknown-linux-musl` release build produced a static
     PIE result.
-    `cargo check --locked --target x86_64-pc-windows-msvc` passed as compile-only
-    evidence; native Windows tests and the MSVC release build remain blocked here
-    because `link.exe` and a native Windows runtime are unavailable.
+    Earlier target compilation was compile-only evidence. Native Windows
+    validation (2026-08-06): `cargo test --locked --target
+    x86_64-pc-windows-msvc input::tests:: -- --test-threads=1` passed 14/14;
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
 
 - [x] **T30D — Resolve Ido root and Home paths atomically**
   - Recommended model: Luna xHigh.
@@ -1622,7 +1623,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Resolve Linux `//` to `/` and portable `~/` to the current user's Home using
     standard-library and platform environment data only.
   - On native Windows, resolve `//` or `\\` to the current drive root and
@@ -1650,9 +1651,10 @@ Rules for every T30 implementation request:
     x86_64-unknown-linux-musl` produced a static PIE executable; `file` and `ldd`
     confirmed static linking. `cargo check --locked --target
     `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
-    compile-only evidence. Native Windows tests and the MSVC release build
-    remain blocked because this environment has no native Windows runtime or
-    `link.exe`.
+    compile-only evidence. Native Windows validation (2026-08-06): `cargo test
+    --locked --target x86_64-pc-windows-msvc server::tests::viewer_ --
+    --test-threads=1` passed 12/12; `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T30E — Anchor `n` and `N` at the current Viewer cursor**
   - Recommended model: Luna xHigh.
@@ -1660,7 +1662,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Separate the last successful query and recorded direction from the active
     match and current cursor source offset.
   - `n` MUST search from the current cursor in the recorded direction; `N` MUST
@@ -1687,9 +1689,11 @@ Rules for every T30 implementation request:
     `file` and `ldd` confirmed a static PIE executable. The Worker Hex search
     regression passed 1/1, and
     `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
-    compile-only evidence. Native Windows runtime tests and the MSVC release
-    build remain blocked because this environment has no native Windows runtime
-    or `link.exe`. The full Linux suite passed 152/154 tests; the remaining
+    compile-only evidence. Native Windows validation (2026-08-06): `cargo test
+    --locked --target x86_64-pc-windows-msvc viewer:: -- --test-threads=1`
+    passed 96/96; `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed. The full Linux suite passed 152/154 tests;
+    the remaining
     failures were the sandbox socket-permission error in
     `runtime::tests::socket_is_private_and_only_a_stale_socket_is_replaced` and
     one intermittent Worker timeout that passed when rerun in isolation.
@@ -1700,7 +1704,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Route the corrected repeat anchor through the existing generation-bound
     Viewer Worker and server dispatcher without adding synchronous server file
     I/O or a second search path.
@@ -1733,8 +1737,9 @@ Rules for every T30 implementation request:
     and focused server ViewerGate tests (6/6) passed. The Linux musl release
     build passed; `file` and `ldd` confirmed a stripped static PIE. `cargo check
     --locked --tests --target x86_64-pc-windows-msvc` passed as compile-only
-    evidence. Native Windows runtime tests and the MSVC release build remain
-    blocked because this environment has no native Windows runtime or `link.exe`.
+    evidence. Native Windows validation (2026-08-06): `cargo test --locked
+    --target x86_64-pc-windows-msvc viewer:: -- --test-threads=1` passed 96/96;
+    `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
 
 - [x] **T30G — Build width-derived Hex row geometry**
   - Recommended model: Luna xHigh.
@@ -1742,7 +1747,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Replace the fixed 16/8/4 width thresholds with one geometry calculation that
     selects the greatest fitting eight-byte multiple, falling back to four bytes
     and then the narrow message.
@@ -1769,9 +1774,10 @@ Rules for every T30 implementation request:
     --target x86_64-pc-windows-msvc` passed as compile-only evidence. A full
     filtered Viewer run reached 88/89 because the existing timing-sensitive
     `mode_switch_preempts_async_search` test missed its stale result; that test
-    passed in isolation. Native Windows runtime tests and the MSVC release
-    build remain blocked because this environment has no native Windows runtime
-    or `link.exe`.
+    passed in isolation. Native Windows validation (2026-08-06): `cargo test
+    --locked --target x86_64-pc-windows-msvc viewer:: -- --test-threads=1`
+    passed 96/96; `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T30H — Apply Hex geometry to cursor, highlight, paging, and resize**
   - Recommended model: Luna Max.
@@ -1779,7 +1785,7 @@ Rules for every T30 implementation request:
   - Completion status:
     - [x] Task implementation complete.
     - [x] Linux validation complete.
-    - [ ] Native Windows validation complete.
+    - [x] Native Windows validation complete.
   - Use the T30G geometry for Hex cursor placement, Hex and ASCII search
     highlights, clipping, row movement, page movement, preferred byte column, and
     active-match rendering.
@@ -1814,9 +1820,10 @@ Rules for every T30 implementation request:
     cursor movement, resize, bounds, paging, and worker cancellation coverage.
     `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
     `cargo check --locked --tests --target x86_64-pc-windows-msvc` passed as
-    compile-only evidence. Native Windows runtime tests and the MSVC release
-    build remain blocked because this environment has no native Windows runtime
-    and `link.exe` is unavailable.
+    compile-only evidence. Native Windows validation (2026-08-06): `cargo test
+    --locked --target x86_64-pc-windows-msvc viewer:: -- --test-threads=1`
+    passed 96/96; `cargo build --release --locked --target
+    x86_64-pc-windows-msvc` passed.
 
 - [x] **T30I — Run Ido, repeat-search, and dynamic-Hex acceptance**
   - Recommended model: Luna High.
