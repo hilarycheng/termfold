@@ -232,6 +232,7 @@ pub fn help_max_offset(rows: u16, prefix: u8) -> usize {
 
 fn help_lines(prefix: u8) -> Vec<String> {
     let prefix = format!("Ctrl-{}", char::from(prefix + b'a' - 1));
+    let row = |key: &str, action: &str| format!("{key:<22} = {action}");
     [
         "Termfold key reminder".to_string(),
         String::new(),
@@ -251,13 +252,36 @@ fn help_lines(prefix: u8) -> Vec<String> {
         format!("{prefix} S            = Save retained scrollback"),
         format!("{prefix} ?            = Show this key reminder"),
         String::new(),
-        "Viewer: j/k or Up/Down = line; h/l or Left/Right = horizontal".to_string(),
-        "Home/End or 0/$ = line ends; gg/G or Ctrl-Home/End = file ends".to_string(),
-        "Page Up/Down or Ctrl-b/f = page; Ctrl-u/d = half page; Ctrl-y/e = viewport".to_string(),
-        "H = toggle Text/Hex; / and ? = forward/reverse search; n/N = repeat".to_string(),
-        "Hex search: normal text is ASCII case-insensitive".to_string(),
-        "Hex search: hex:00 FF 1B = exact byte syntax".to_string(),
-        format!("{prefix} ? = Help from Viewer; {prefix} x then y = close Viewer"),
+        "Navigation".to_string(),
+        row("j / k, Up / Down", "Move one line"),
+        row("h / l, Left / Right", "Move horizontally"),
+        row("Home / 0", "Move to line start"),
+        row("End / $", "Move to line end"),
+        row("g g / Ctrl-Home", "Move to file start"),
+        row("G / Ctrl-End", "Move to file end"),
+        row("Page Up / Ctrl-b", "Page up"),
+        row("Page Down / Ctrl-f", "Page down"),
+        row("Ctrl-u / Ctrl-d", "Half page up / down"),
+        row("Ctrl-y / Ctrl-e", "Viewport up / down"),
+        String::new(),
+        "Search".to_string(),
+        row("/", "Forward matching search"),
+        row("?", "Reverse matching search"),
+        row("]", "Forward non-matching search (Text only)"),
+        row("[", "Reverse non-matching search (Text only)"),
+        row("n", "Continue in the search direction"),
+        row("N", "Continue in reverse direction"),
+        row("Wrap", "Once at the file boundary"),
+        String::new(),
+        "Hex Search".to_string(),
+        row("Text query", "ASCII case-insensitive bytes"),
+        row("hex:...", "Exact byte search"),
+        row("hex:00 FF 1B", "Exact byte syntax example"),
+        String::new(),
+        "Viewer".to_string(),
+        row("H", "Toggle Text / Hex mode"),
+        row(&format!("{prefix} ?"), "Show Help"),
+        row(&format!("{prefix} x then y"), "Confirm close Viewer"),
         String::new(),
         "Help: Up/Down or k/j = line, Page Up/Page Down = page, q/Esc = exit".to_string(),
     ]
@@ -1324,8 +1348,40 @@ mod tests {
         assert!(output.contains("HELP 1/3"));
         assert!(help_max_offset(8, 1) > 0);
         let help = help_lines(1).join("\n");
-        assert!(help.contains("Ctrl-a ? = Help from Viewer"));
+        assert!(
+            help.lines()
+                .any(|line| line.starts_with("Ctrl-a ?") && line.contains("Show Help"))
+        );
         assert!(help.contains("hex:00 FF 1B"));
+        for heading in ["Navigation", "Search", "Hex Search", "Viewer"] {
+            assert!(help.contains(heading), "missing {heading}");
+        }
+        for key in ["/", "?", "]", "[", "n", "N", "H", "Ctrl-y / Ctrl-e"] {
+            assert!(
+                help.lines().any(|line| line.starts_with(key)),
+                "missing {key}"
+            );
+        }
+        assert!(help.contains("Text only"));
+        assert!(help.contains("Once at the file boundary"));
+        assert!(!help.contains("Viewer: j/k or Up/Down"));
+        assert!(!help.contains("H = toggle Text/Hex"));
+        assert!(!help.contains("Ctrl-b ? = Help from Viewer"));
+        for columns in [40, 80, 120] {
+            let rendered = full(
+                &session,
+                &[],
+                Size { columns, rows: 8 },
+                status_line(&metrics),
+                None,
+                View::Help {
+                    offset: 0,
+                    prefix: 1,
+                },
+                capabilities(),
+            );
+            assert!(!rendered.is_empty());
+        }
     }
 
     #[test]

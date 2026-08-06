@@ -619,7 +619,7 @@ impl Input {
                     | [27, b'[', b'4', b';']
                     | [27, b'[', b'4', b';', b'5'] => None,
                     _ => Some(Action::Status(
-                        "viewer: j/k arrows Home/End gg/G H Ctrl-u/d Ctrl-b/f / ? ] [ n/N".into(),
+                        "viewer: j/k arrows h/l Home/End gg/G Ctrl-u/d Ctrl-b/f Ctrl-y/e H / ? ] [ n/N".into(),
                     )),
                 };
                 if let Some(action) = action {

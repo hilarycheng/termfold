@@ -2128,13 +2128,13 @@ Rules for every T31 implementation request:
     focused tests and MSVC build remain blocked because this environment is
     Linux.
 
-- [ ] **T31F — Reformat Viewer Help into grouped key rows**
+- [x] **T31F — Reformat Viewer Help into grouped key rows**
   - Recommended model: Luna Medium.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent validation complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
   - Replace the dense Viewer sentences with labelled `Navigation`, `Search`,
     `Hex Search`, and `Viewer` groups using one aligned key column and one short
     action column.
@@ -2155,6 +2155,14 @@ Rules for every T31 implementation request:
   - Depends on: T29G, T31A.
   - Done when: Viewer Help is scannable by category at normal widths and remains
     navigable without truncation or state loss at narrow widths.
+  - Implementation: Replaced dense Viewer Help sentences with aligned
+    Navigation, Search, Hex Search, and Viewer rows; added the required search,
+    wrap, hex, configured-prefix, and Text-only guidance. Updated the unknown
+    Viewer-key reminder with horizontal and viewport keys.
+  - Evidence (2026-08-06): Ubuntu 24.04 WSL `cargo fmt --all -- --check`,
+    `cargo test --locked render:: -- --test-threads=1` (13/13),
+    `cargo test --locked input:: -- --test-threads=1` (16/16), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
 
 - [ ] **T31G — Run matching, non-matching, and Help acceptance**
   - Recommended model: Luna High.
