@@ -331,14 +331,361 @@ This file tracks implementation work. Product behaviour remains authoritative in
     IPC, ConPTY I/O, and shared VT rendering. The harness supplied native host
     query responses; this measures ConPTY rather than the Windows Terminal GUI.
 
-- [ ] **T26 — Add declarative startup profiles**
-  - Add creation-only `config.toml` profiles with validated directories, direct
-    launch targets, tabs, and nested horizontal and vertical split trees.
-  - Roll back every started target if validation or launch fails.
-  - Requirement: Approved Post-First-Release Scope; Startup profiles.
+## T26 Execution Contract
+
+T26 adds compact creation-only startup profiles without changing attach
+semantics, runtime tab-title behaviour, PTY/ConPTY ownership, IPC security, or
+unrelated configuration fields.
+
+Rules for every T26 implementation request:
+
+- Implement exactly one named subtask.
+- Use the listed `Recommended model:` as the starting Luna level. Tuning the
+  level does not broaden scope or combine tasks.
+- T26A defines the approved public contract. Later subtasks MUST NOT replace the
+  compact one-table profile schema with named node sections, node IDs, a layout
+  language, shell command strings, or profile-defined tab titles.
+- Preserve all existing top-level configuration fields and their defaults.
+- Use a standards-compliant, pure-Rust TOML parser only after its dependency,
+  licence, portability, binary-size effect, and alternatives are recorded and
+  approved. Do not retain a second independent parser path.
+- Build and validate the entire profile and in-memory layout before spawning the
+  first target.
+- Keep shared profile parsing, layout, selection, and rollback orchestration
+  platform independent. Keep Linux PTY and native Windows ConPTY launch details
+  in their existing platform modules.
+- Do not add an async runtime, background process manager, shell helper, command
+  interpolation, unbounded queue, or new session-discovery mechanism.
+- A session MUST remain undiscoverable until every configured target, terminal,
+  reader, and bounded event resource starts successfully.
+- Any startup failure MUST terminate and reap every already-started target and
+  release all partially created resources.
+- Run only the focused checks named by the approved implementation request.
+- Stop after reporting changed files, focused results, dependency and binary-size
+  effects where applicable, risks, and blockers.
+- T26B, T26E, T26F, and T26I require review before the next dependent subtask.
+- Do not add `config.example.toml` or update `README.md` until T26J completes
+  authoritative acceptance. T26K performs the final mechanical publication.
+
+Approved source ownership introduced by T26:
+
+```text
+src/profile.rs   Validated profile model, immutable launch plan, and shared
+                 profile-to-session layout preparation
+```
+
+## T26 Tasks
+
+- [x] **T26A — Define the compact startup-profile contract and execution plan**
+  - Recommended model: Luna Medium.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
+  - Define `[profiles.default]`, named profile selection, `--no-profile`, compact
+    recursive tab roots, directory inheritance, launch targets, limits, atomic
+    rollback, attach behaviour, and the no-tab-title milestone boundary in
+    `REQUIREMENTS.md`.
+  - Replace the former monolithic T26 with the T26 execution contract and T26B
+    through T26K, including ownership, dependencies, Luna levels, platform
+    classification, review gates, focused checks, and objective completion.
+  - Allowed files: `REQUIREMENTS.md`, `TASKS.md`.
+  - Production files: none.
   - Depends on: T02, T03, T06, T07.
-  - Done when: profiles create the specified session atomically and attaching never
-    reruns them.
+  - Done when: every later T26 task can execute without inventing syntax, default
+    selection, limits, platform ownership, launch semantics, or rollback order.
+  - Evidence: approved documentation-only change; Rust source, dependencies,
+    `README.md`, builds, tests, and Git state were not changed.
+
+- [ ] **T26B — Replace the flat configuration parser with validated TOML parsing**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Select the smallest suitable standards-compliant pure-Rust TOML parser after
+    recording its purpose, licence, dependency tree, portability, release binary
+    size before/after, and why the current line parser or an existing dependency
+    is insufficient.
+  - Replace the current independent `FIELD = VALUE` parser while preserving every
+    existing top-level field, default, validation range, theme override rule,
+    Windows string-array path, missing-file behaviour, and actionable field error.
+  - Reject duplicate and unknown fields, malformed TOML, invalid UTF-8 input, and
+    unsupported value types without silently accepting partial configuration.
+  - Do not parse or expose startup profiles yet beyond retaining the TOML document
+    structure needed by T26C.
+  - Allowed files: `Cargo.toml`, `Cargo.lock`, `src/config.rs`, `TASKS.md`.
+  - Focused checks: empty and missing configuration, every existing field and
+    default, comments, escaped Windows paths, string arrays, duplicate and unknown
+    fields, invalid types, theme override ordering, and error field paths.
+  - Depends on: T02, T26A.
+  - Review gate: inspect dependency scope, parser uniqueness, backward
+    compatibility, error quality, binary-size delta, and cross-platform parsing
+    before T26C.
+  - Done when: one parser loads the complete existing configuration contract on
+    both targets without changing behaviour or retaining duplicate parse logic.
+
+- [ ] **T26C — Parse and validate compact profile definitions**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent validation complete.
+  - Add `src/profile.rs` with explicit validated types for profile, tab root,
+    recursive node, split direction, launch target, and resolved directory.
+  - Parse `[profiles.NAME]` and the compact `tabs` array. Each node MUST be exactly
+    shell, command, or a two-child split; profile-defined tab names and named node
+    sections remain unsupported.
+  - Validate profile names, at least one tab, the 32-tab limit, the 16-leaf-pane
+    limit per tab, absolute profile and leaf directories, non-empty absolute
+    command executables, literal arguments, split directions, conflicting fields,
+    and complete nested configuration paths in errors.
+  - Resolve directory inheritance into immutable validated descriptions without
+    inspecting the filesystem or starting a process.
+  - Allowed files: `src/config.rs`, `src/profile.rs`, `src/main.rs` only for the
+    required module declaration.
+  - Focused tests: `profiles.default`, named profiles, missing and empty tabs,
+    shell and command leaves, both split directions, nested splits, directory
+    inheritance and override, 32/33 tabs, 16/17 leaves, relative paths, empty
+    command, conflicting fields, unknown nested fields, and no tab-title field.
+  - Depends on: T26B.
+  - Done when: valid TOML produces an unambiguous immutable profile tree and every
+    invalid form fails before filesystem or process work begins.
+
+- [ ] **T26D — Add creation-only profile selection to the CLI**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add `termfold new [NAME] --profile PROFILE` and
+    `termfold new [NAME] --no-profile` while preserving all existing command
+    forms and session-name validation.
+  - With no selector, use `profiles.default` when present; otherwise preserve the
+    existing single-shell creation path. Apply the same rule when bare `termfold`
+    creates the `default` session.
+  - Reject missing named profiles, mutually supplied selectors, selectors on
+    non-creation commands, invalid ordering not explicitly accepted by the CLI,
+    and selectors passed to attach paths.
+  - Carry one explicit creation selection through the client-to-server startup
+    handoff without exposing it as ordinary attach IPC or rerunning it after the
+    server is visible.
+  - Allowed files: `src/main.rs`, `src/client.rs`, `src/server.rs`,
+    `src/config.rs`.
+  - Focused tests: old command matrix, implicit default profile, absent default
+    fallback, named profile, `--no-profile`, unknown profile, mutual exclusion,
+    non-creation rejection, internal server handoff, and attach never receives a
+    profile selector.
+  - Depends on: T26C.
+  - Done when: exactly one explicit creation mode reaches server startup and all
+    non-creation command behaviour remains unchanged.
+
+- [ ] **T26E — Build the complete profile Session layout without spawning**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent validation complete.
+  - Convert a validated profile tree into a complete temporary `Session`, tabs,
+    recursive existing `Layout::Split` trees, deterministic `PaneId` allocation,
+    and a pane-to-launch-target mapping without starting PTYs or ConPTYs.
+  - Preserve the existing `Session` hierarchy and split semantics rather than
+    adding a second layout engine.
+  - Validate the initial terminal size against the normal minimum content area for
+    every resulting pane. Failure MUST discard the temporary Session and mapping
+    without altering live state.
+  - Produce one deterministic depth-first launch order used by both native
+    backends.
+  - Allowed files: `src/session.rs`, `src/profile.rs`.
+  - Focused tests: one shell, multiple tabs, left-right and top-bottom splits,
+    nested mixed splits, deterministic pane IDs and launch order, 16-pane and
+    32-tab boundaries, terminal too small, and failed construction leaves no
+    partial Session.
+  - Depends on: T03, T26C.
+  - Review gate: inspect single layout ownership, limits, size calculations,
+    deterministic IDs, launch mapping, and failure atomicity before T26F.
+  - Done when: profile layout construction is a pure bounded operation that
+    returns either one complete temporary Session plan or no state.
+
+- [ ] **T26F — Build and preflight one immutable launch plan**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Combine T26C directory inheritance and T26E pane mapping into one immutable
+    launch plan before the first target is started.
+  - Resolve the existing approved shell launch for shell leaves and direct
+    absolute executable plus literal argument lists for command leaves.
+  - Validate every resolved directory as an existing directory and every command
+    target using the authoritative native platform rules. Linux MUST verify an
+    executable regular file; Windows MUST validate a native absolute executable
+    path without routing through `cmd.exe /c`.
+  - A single invalid directory, target, or platform-specific launch description
+    MUST reject the complete plan and MUST NOT start a child, reader, listener, or
+    viewer worker.
+  - Keep shared orchestration in `src/profile.rs` and only the unavoidable native
+    executable rules in the existing PTY modules.
+  - Allowed files: `src/profile.rs`, `src/pty.rs`, `src/pty_windows.rs`,
+    `src/server.rs`.
+  - Focused tests: inherited and overridden directories, all targets preflighted,
+    relative and missing paths, non-directory path, empty target, Linux execute
+    permission, Windows drive-root and spaces, configured/default shell, literal
+    arguments, and no spawn call after any preflight failure.
+  - Depends on: T06, T21, T26E.
+  - Review gate: inspect preflight-before-spawn ordering, native validation
+    boundaries, shell reuse, immutable ownership, and absence of partial runtime
+    resources before T26G and T26H.
+  - Done when: server startup receives one fully validated ordered launch plan or
+    fails before any process-visible side effect.
+
+- [ ] **T26G — Launch direct profile targets through Linux PTYs**
+  - Recommended model: Luna High.
+  - Implementation scope: Linux.
+  - Required validation: Linux.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+  - Extend the existing Linux `LaunchContext` and `PtyChild` path to launch either
+    the approved shell or one planned absolute executable with literal arguments
+    and its resolved working directory.
+  - Preserve environment capture and the Termfold-controlled `TERM`, `COLORTERM`,
+    `TERMINFO`, `TERMFOLD_SESSION`, PTY size, process-group, graceful termination,
+    forced termination, and reap behaviour.
+  - Do not invoke a shell for command targets or reinterpret spaces, quotes,
+    wildcard characters, variables, or metacharacters.
+  - Allowed files: `src/pty.rs`; focused same-module fixtures only.
+  - Focused tests: default shell, direct executable, multiple and empty literal
+    arguments, spaces and shell metacharacters, working directory, terminal
+    environment, PTY output, graceful termination, forced termination, and reap.
+  - Depends on: T26F.
+  - Done when: every Linux launch-plan leaf uses the existing PTY lifecycle and
+    direct command targets cannot be shell-interpreted.
+
+- [ ] **T26H — Launch direct profile targets through native Windows ConPTY**
+  - Recommended model: Luna xHigh.
+  - Implementation scope: Native Windows.
+  - Required validation: Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Native Windows validation complete.
+  - Extend the existing Windows `LaunchContext` and `PtyChild` path to launch
+    either the configured/default shell or one planned absolute executable with
+    literal arguments and its resolved working directory through ConPTY.
+  - Implement deterministic Windows command-line quoting for literal argument
+    boundaries, including empty arguments, spaces, quotes, and backslashes,
+    without routing command targets through `cmd.exe /c` or another interpreter.
+  - Preserve the existing ConPTY handles, terminal environment, current-user
+    security assumptions, job-object cleanup, graceful close, forced
+    termination, and reap behaviour.
+  - Allowed files: `src/pty_windows.rs`; focused same-module fixtures only.
+  - Focused tests: configured/default shell, executable path containing spaces,
+    empty argument, spaces, quotes and trailing backslashes, resolved working
+    directory, terminal environment, ConPTY startup/output, job-object cleanup,
+    graceful close, and forced termination.
+  - Depends on: T21, T23, T26F.
+  - Done when: every native Windows launch-plan leaf preserves exact argument
+    boundaries and the existing ConPTY lifecycle.
+
+- [ ] **T26I — Create profile sessions atomically and roll back failures**
+  - Recommended model: Luna Max.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Integrate the selected profile, temporary Session layout, immutable launch
+    plan, native child creation, per-pane terminal models, output readers,
+    bounded server event resources, and normal viewer-worker ownership into one
+    creation transaction.
+  - Spawn in the deterministic T26E order. After every successful child start,
+    retain enough ownership to terminate, force when required, wait, reap, and
+    release that child if a later step fails.
+  - A child, terminal, reader, thread, event-resource, viewer-worker, or listener
+    preparation failure MUST unwind all previously created resources in reverse
+    ownership order. Cleanup failure MUST be reported without abandoning other
+    cleanup steps.
+  - Bind and publish the session listener only after every configured pane is
+    operational. A failed transaction MUST leave no discoverable session and the
+    same name MUST remain available for a later creation attempt.
+  - Preserve the old no-profile single-shell path and normal post-start pane/tab
+    creation behaviour. Attaching MUST only connect to the committed session and
+    MUST NOT rerun or compare the profile.
+  - Allowed files: `src/client.rs`, `src/server.rs`, `src/session.rs`,
+    `src/profile.rs`, `src/pty.rs`, `src/pty_windows.rs`.
+  - Focused tests: first, middle, and final child failure; terminal failure;
+    reader/thread failure; viewer-worker failure; listener failure; all started
+    children terminated and reaped; no endpoint after rollback; name reusable;
+    nested profile success; attach does not relaunch; and no-profile path
+    unchanged.
+  - Depends on: T07, T26D, T26E, T26F, T26G, T26H.
+  - Review gate: inspect transaction ownership, listener publication point,
+    rollback ordering, cleanup error accumulation, native termination semantics,
+    reusability of the session name, and successful-state transfer before T26J.
+  - Done when: a profile creation is externally all-or-nothing on both native
+    platforms and no partial process tree or session endpoint survives failure.
+
+- [ ] **T26J — Run startup-profile acceptance and resource checks**
+  - Recommended model: Luna High.
+  - Implementation scope: Platform independent.
+  - Required validation: Linux and Native Windows.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Linux validation complete.
+    - [ ] Native Windows validation complete.
+  - Add deterministic acceptance coverage for no configuration, absent and
+    present `profiles.default`, named profile selection, `--no-profile`, multiple
+    tabs, nested splits, directory inheritance and override, shell and direct
+    targets, literal arguments, invalid profile rollback, mid-start rollback,
+    name reuse, and attach without relaunch.
+  - Verify the existing 32-session, 32-tab, 16-pane, queue, terminal-restoration,
+    PTY/ConPTY cleanup, current-user IPC, and no-runtime-network contracts remain
+    unchanged.
+  - Run approved focused and full checks on authoritative Linux/WSL and native
+    Windows, including formatting, Clippy, full tests, musl/MSVC release builds,
+    static/DLL checks, release binary-size comparison, startup latency comparison,
+    and failure-path process-leak checks.
+  - Do not update `README.md` or create `config.example.toml` in this task. Record
+    concise commands, environments, measurements, results, and blockers here.
+  - Allowed files: focused unit/integration fixtures and `TASKS.md` evidence only.
+  - Depends on: T26I.
+  - Done when: implementation and both native validation checkboxes have actual
+    execution evidence, atomic rollback is observed, and size/startup regressions
+    are within approved budgets or recorded as blockers.
+
+- [ ] **T26K — Publish the configuration example and README guidance**
+  - Recommended model: Luna Low.
+  - Implementation scope: Platform independent.
+  - Required validation: Platform independent.
+  - Completion status:
+    - [ ] Task implementation complete.
+    - [ ] Platform-independent review complete.
+  - Add a root `config.example.toml` containing all implemented defaults, a
+    commented `prefix = "C-a"` example, one compact `[profiles.default]` example,
+    one named profile example, and no unimplemented key-binding or tab-title
+    syntax.
+  - Update `README.md` with Linux and Windows configuration paths, commands to
+    create/copy the file, prefix configuration, default/named/no-profile creation,
+    absolute target and directory rules, configuration errors, and the fact that
+    changes affect only newly created sessions and attach never reruns a profile.
+  - Parse `config.example.toml` with the production parser in a focused test so
+    future field changes cannot leave the example stale.
+  - Allowed files: `config.example.toml`, `README.md`, `TASKS.md`, and one focused
+    configuration test fixture.
+  - Depends on: T26J.
+  - Done when: the shipped example loads unchanged, README describes only
+    implemented and authoritatively validated behaviour, and all documentation
+    links remain correct.
 
 - [*] **T27 — Add bounded large-file viewer**
   - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the

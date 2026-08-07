@@ -128,15 +128,99 @@ block first-release acceptance.
 
 ### Startup profiles
 
-- Startup profiles MUST be declarative session definitions in `config.toml`.
-- A profile MUST run only when creating a session, never when attaching.
-- A launch target MUST be either the default shell or an absolute executable
-  with literal arguments, executed without command interpolation.
-- A profile MAY set the session's validated initial directory and define
-  multiple tabs with nested horizontal and vertical splits. Each leaf MUST
-  define its launch target and MAY override the profile directory.
-- Every target and directory MUST be validated before spawning. Any launch
-  failure MUST terminate all targets already started for that profile.
+#### Selection and lifecycle
+
+- Startup profiles MUST be optional declarative session definitions in
+  `config.toml`. A missing profile configuration MUST preserve the existing
+  single-shell session behaviour.
+- A profile MUST run only while creating a session. Attaching to an existing
+  session MUST NOT parse, validate, or rerun its startup profile.
+- Profile configuration changes MUST affect only sessions created after the
+  change. A running session MUST retain the layout and processes with which it
+  was created.
+- Profile names MUST match `[A-Za-z0-9_-]{1,64}`.
+- The profile named `default` has creation-time fallback semantics:
+  - `termfold`, when it must create the `default` session, MUST use
+    `profiles.default` when that profile exists;
+  - `termfold new [NAME]` MUST use `profiles.default` when it exists and no
+    profile selector was supplied; and
+  - when `profiles.default` does not exist, both paths MUST preserve the existing
+    single-shell session behaviour.
+- Creation MUST additionally support:
+
+  ```text
+  termfold new [NAME] --profile PROFILE
+  termfold new [NAME] --no-profile
+  ```
+
+- `--profile` MUST select the named profile and fail before server startup when
+  the profile does not exist. `--no-profile` MUST explicitly request the
+  existing single-shell session behaviour. The two selectors are mutually
+  exclusive.
+- Profile selectors MUST be rejected for attach, list, kill, view, diagnose, and
+  other non-creation commands.
+
+#### Compact configuration schema
+
+- Each profile MUST use one `[profiles.NAME]` table. Users MUST NOT be required
+  to create named tab tables, node identifiers, root-node references, or a
+  separate section for every pane.
+- A profile MAY contain one absolute `directory` and MUST contain a non-empty
+  `tabs` array. Each array item is the root of one tab.
+- The T26 milestone MUST NOT add profile-defined tab titles. Existing runtime
+  tab-title behaviour remains unchanged.
+- A node MUST be exactly one of:
+  - `{ shell = true }`, which launches the approved default or configured shell;
+  - `{ command = [ABSOLUTE_EXECUTABLE, ARGUMENT...] }`, which launches the
+    executable directly with literal arguments; or
+  - `{ split = DIRECTION, panes = [FIRST, SECOND] }`, where `DIRECTION` is
+    `left-right` or `top-bottom` and both children are nodes.
+- A shell or command leaf MAY specify an absolute `directory` that overrides the
+  profile directory for that target. A split node MUST NOT specify a launch
+  target or directory.
+- Every split MUST contain exactly two children. A profile MUST contain at most
+  32 tabs and each tab MUST contain at most 16 leaf panes.
+- Shell command strings, command interpolation, environment expansion, macros,
+  node references, and a separate layout language are prohibited.
+- The compact recursive values MUST be valid standard TOML accepted by the
+  selected parser. For TOML 1.0 compatibility, each recursive inline table is
+  written on one line, while the outer `tabs` array MAY span lines. For example:
+
+  ```toml
+  [profiles.default]
+  directory = "/srv/project"
+  tabs = [
+    { shell = true },
+    { split = "left-right", panes = [{ command = ["/usr/bin/tail", "-f", "app.log"] }, { split = "top-bottom", panes = [{ shell = true }, { command = ["/usr/bin/tail", "-f", "error.log"] }] }] },
+  ]
+  ```
+
+- Unknown, duplicate, conflicting, or invalid profile fields MUST fail startup
+  with an error identifying the complete configuration path.
+
+#### Validation and atomic creation
+
+- Profile and leaf directories MUST be validated as absolute existing
+  directories before any target is spawned.
+- A command launch target MUST contain a non-empty absolute executable path.
+  Arguments MUST be passed literally and the executable MUST be launched without
+  shell interpolation.
+- The shell target MUST reuse the existing approved Linux shell or configured
+  Windows shell resolution and the normal Termfold-controlled terminal
+  environment.
+- The complete profile, layout limits, directories, and launch targets MUST pass
+  preflight validation before the first process is spawned.
+- The complete in-memory session layout and deterministic launch order MUST be
+  prepared before spawning. A layout that cannot fit the initial terminal size
+  while preserving the normal minimum pane dimensions MUST fail without creating
+  a session.
+- Session creation MUST be atomic from the client's perspective. The session
+  endpoint MUST NOT become discoverable or attachable until every target,
+  terminal model, output reader, and required bounded event resource has started
+  successfully.
+- If any launch or startup step fails, Termfold MUST terminate and reap every
+  target already started for that profile, release its readers and resources,
+  leave no discoverable session endpoint, and return one actionable error.
 
 ### Large-file viewer
 
