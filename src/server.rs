@@ -302,6 +302,7 @@ pub fn run(
     name: String,
     initial_size: Size,
     config: Config,
+    _profile: Option<String>,
 ) -> Result<(), String> {
     let terminfo_root = runtime.materialize_terminfo()?;
     let mut context = LaunchContext::capture(

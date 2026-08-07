@@ -304,7 +304,12 @@ pub fn discover(runtime: &RuntimeDir) -> Result<Vec<SessionInfo>, String> {
     Ok(sessions)
 }
 
-pub fn create_and_attach(runtime: &RuntimeDir, name: &str, config: &Config) -> Result<(), String> {
+pub fn create_and_attach(
+    runtime: &RuntimeDir,
+    name: &str,
+    config: &Config,
+    profile: Option<String>,
+) -> Result<(), String> {
     if config.inner_term == "xterm-256color" {
         eprintln!(
             "termfold: warning: inner_term=xterm-256color advertises capabilities beyond Termfold's native contract"
@@ -320,7 +325,7 @@ pub fn create_and_attach(runtime: &RuntimeDir, name: &str, config: &Config) -> R
     }
 
     let size = terminal_size();
-    let mut child = spawn_server(name, size)?;
+    let mut child = spawn_server(name, size, profile.as_deref())?;
     let expected_pid = child.id();
     let deadline = Instant::now() + SERVER_START_TIMEOUT;
     loop {
@@ -620,7 +625,7 @@ pub fn query_status(runtime: &RuntimeDir, name: &str) -> Result<SessionInfo, Str
     }
 }
 
-fn spawn_server(name: &str, size: Size) -> Result<Child, String> {
+fn spawn_server(name: &str, size: Size, profile: Option<&str>) -> Result<Child, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("cannot locate termfold executable: {error}"))?;
     let mut command = Command::new(executable);
@@ -629,6 +634,15 @@ fn spawn_server(name: &str, size: Size) -> Result<Child, String> {
         .arg(name)
         .arg(size.columns.to_string())
         .arg(size.rows.to_string())
+        .arg(if profile.is_some() {
+            "--profile"
+        } else {
+            "--no-profile"
+        });
+    if let Some(profile) = profile {
+        command.arg(profile);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

@@ -493,13 +493,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
       could not bind its temporary `/tmp` Unix socket (`Operation not permitted`).
       The isolated test passed on retry; no T26C test failed.
 
-- [ ] **T26D — Add creation-only profile selection to the CLI**
+- [x] **T26D — Add creation-only profile selection to the CLI**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add `termfold new [NAME] --profile PROFILE` and
     `termfold new [NAME] --no-profile` while preserving all existing command
@@ -522,6 +522,19 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Depends on: T26C.
   - Done when: exactly one explicit creation mode reaches server startup and all
     non-creation command behaviour remains unchanged.
+  - Implementation notes: public creation commands resolve implicit `default`,
+    named, and `--no-profile` selections before spawning. The client passes one
+    internal `--profile NAME` or `--no-profile` selector to the server; attach
+    IPC is unchanged. The legacy internal `--server NAME COLS ROWS` form remains
+    accepted for existing lifecycle tests.
+  - Linux evidence: `cargo fmt --check`, `cargo build --locked`, the focused CLI
+    parser and selection test, and all 10 `server_lifecycle` tests passed on
+    Linux. A full `cargo test --locked` run also exposed one unrelated
+    timing-sensitive pre-existing viewer-worker failure:
+    `navigation_cancels_a_long_search_before_the_next_step`
+    (`saw_stale`).
+  - Native Windows blocker: this environment cannot execute the MSVC build or
+    native Windows runtime validation.
 
 - [ ] **T26E — Build the complete profile Session layout without spawning**
   - Recommended model: Luna xHigh.

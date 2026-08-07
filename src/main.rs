@@ -30,7 +30,7 @@ use std::{env, ffi::OsString, process::ExitCode};
 const HELP: &str = "Usage:
   termfold
   termfold PID_PREFIX
-  termfold new [NAME]
+  termfold new [NAME] [--profile PROFILE | --no-profile]
   termfold attach [NAME]
   termfold list
   termfold kill [--yes] [NAME]
@@ -43,7 +43,10 @@ const HELP: &str = "Usage:
 enum Command {
     Select,
     SelectPid(String),
-    New(String),
+    New {
+        name: String,
+        profile: ProfileSelection,
+    },
     Attach(String),
     List,
     Kill {
@@ -62,7 +65,15 @@ enum Command {
     Server {
         name: String,
         size: session::Size,
+        profile: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProfileSelection {
+    Default,
+    Named(String),
+    None,
 }
 
 fn main() -> ExitCode {
@@ -96,12 +107,18 @@ fn run() -> Result<(), String> {
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]
-    if let Command::Server { name, size } = &command {
+    if let Command::Server {
+        name,
+        size,
+        profile,
+    } = &command
+    {
         return server::run(
             runtime::RuntimeDir::discover()?,
             name.clone(),
             *size,
             config,
+            profile.clone(),
         );
     }
     let _ = (
@@ -118,7 +135,12 @@ fn run() -> Result<(), String> {
         match command {
             Command::Select => select(&runtime, &config),
             Command::SelectPid(prefix) => select_pid(&runtime, &prefix, &config),
-            Command::New(name) => client::create_and_attach(&runtime, &name, &config),
+            Command::New { name, profile } => client::create_and_attach(
+                &runtime,
+                &name,
+                &config,
+                resolve_profile(&config, profile)?,
+            ),
             Command::Attach(name) => client::attach(&runtime, &name, &config),
             Command::List => list(&runtime),
             Command::Kill { name, yes } => client::kill(&runtime, &name, yes),
@@ -148,7 +170,12 @@ fn select(runtime: &runtime::RuntimeDir, config: &config::Config) -> Result<(), 
         .filter(|session| !session.is_attached())
         .collect::<Vec<_>>();
     if sessions.is_empty() {
-        client::create_and_attach(runtime, "default", config)
+        client::create_and_attach(
+            runtime,
+            "default",
+            config,
+            resolve_profile(config, ProfileSelection::Default)?,
+        )
     } else if detached.len() == 1 {
         client::attach(runtime, &detached[0].name, config)
     } else {
@@ -276,7 +303,10 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
         [value] if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
             Ok(Command::SelectPid(value.clone()))
         }
-        [command] if command == "new" => Ok(Command::New("default".into())),
+        [command] if command == "new" => Ok(Command::New {
+            name: "default".into(),
+            profile: ProfileSelection::Default,
+        }),
         [command] if command == "attach" => Ok(Command::Attach("default".into())),
         [command] if command == "kill" => Ok(Command::Kill {
             name: "default".into(),
@@ -286,7 +316,28 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
             name: "default".into(),
             yes: true,
         }),
-        [command, name] if command == "new" => Ok(Command::New(valid_name(name)?)),
+        [command, name] if command == "new" => Ok(Command::New {
+            name: valid_name(name)?,
+            profile: ProfileSelection::Default,
+        }),
+        [command, flag] if command == "new" && flag == "--no-profile" => Ok(Command::New {
+            name: "default".into(),
+            profile: ProfileSelection::None,
+        }),
+        [command, flag, profile] if command == "new" && flag == "--profile" => Ok(Command::New {
+            name: "default".into(),
+            profile: ProfileSelection::Named(valid_profile_name(profile)?),
+        }),
+        [command, name, flag] if command == "new" && flag == "--no-profile" => Ok(Command::New {
+            name: valid_name(name)?,
+            profile: ProfileSelection::None,
+        }),
+        [command, name, flag, profile] if command == "new" && flag == "--profile" => {
+            Ok(Command::New {
+                name: valid_name(name)?,
+                profile: ProfileSelection::Named(valid_profile_name(profile)?),
+            })
+        }
         [command, name] if command == "attach" => Ok(Command::Attach(valid_name(name)?)),
         [command, name] if command == "kill" => Ok(Command::Kill {
             name: valid_name(name)?,
@@ -326,7 +377,31 @@ fn parse_command(arguments: Vec<OsString>) -> Result<Command, String> {
                 columns: valid_dimension(columns)?,
                 rows: valid_dimension(rows)?,
             },
+            profile: None,
         }),
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        [command, name, columns, rows, flag] if command == "--server" && flag == "--no-profile" => {
+            Ok(Command::Server {
+                name: valid_name(name)?,
+                size: session::Size {
+                    columns: valid_dimension(columns)?,
+                    rows: valid_dimension(rows)?,
+                },
+                profile: None,
+            })
+        }
+        [command, name, columns, rows, flag, profile]
+            if command == "--server" && flag == "--profile" =>
+        {
+            Ok(Command::Server {
+                name: valid_name(name)?,
+                size: session::Size {
+                    columns: valid_dimension(columns)?,
+                    rows: valid_dimension(rows)?,
+                },
+                profile: Some(valid_profile_name(profile)?),
+            })
+        }
         _ => Err(format!("invalid command\n{HELP}")),
     }
 }
@@ -352,9 +427,41 @@ fn valid_name(name: &str) -> Result<String, String> {
     }
 }
 
+fn valid_profile_name(name: &str) -> Result<String, String> {
+    if (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        Ok(name.to_owned())
+    } else {
+        Err("profile name must match [A-Za-z0-9_-]{1,64}".into())
+    }
+}
+
+fn resolve_profile(
+    config: &config::Config,
+    selection: ProfileSelection,
+) -> Result<Option<String>, String> {
+    match selection {
+        ProfileSelection::Default => Ok(config
+            .profiles
+            .contains_key("default")
+            .then(|| "default".to_owned())),
+        ProfileSelection::Named(name) => {
+            if config.profiles.contains_key(&name) {
+                Ok(Some(name))
+            } else {
+                Err(format!("profile '{name}' does not exist"))
+            }
+        }
+        ProfileSelection::None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Command, parse_command, valid_name};
+    use super::{Command, ProfileSelection, config, parse_command, resolve_profile, valid_name};
 
     #[test]
     fn parses_public_commands_and_validates_names() {
@@ -365,6 +472,64 @@ mod tests {
         assert!(matches!(
             parse_command(vec!["123".into()]),
             Ok(Command::SelectPid(value)) if value == "123"
+        ));
+        assert!(matches!(
+            parse_command(vec!["new".into()]),
+            Ok(Command::New { name, profile: ProfileSelection::Default }) if name == "default"
+        ));
+        assert!(matches!(
+            parse_command(vec!["new".into(), "logs".into(), "--no-profile".into()]),
+            Ok(Command::New { name, profile: ProfileSelection::None }) if name == "logs"
+        ));
+        assert!(matches!(
+            parse_command(vec![
+                "new".into(),
+                "--profile".into(),
+                "dev".into(),
+            ]),
+            Ok(Command::New { name, profile: ProfileSelection::Named(profile) })
+                if name == "default" && profile == "dev"
+        ));
+        assert!(
+            parse_command(vec![
+                "attach".into(),
+                "default".into(),
+                "--profile".into(),
+                "dev".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_command(vec![
+                "new".into(),
+                "--profile".into(),
+                "dev".into(),
+                "--no-profile".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            resolve_profile(&config::Config::default(), ProfileSelection::Default)
+                .is_ok_and(|profile| profile.is_none())
+        );
+        assert!(
+            resolve_profile(
+                &config::Config::default(),
+                ProfileSelection::Named("missing".into())
+            )
+            .is_err()
+        );
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        assert!(matches!(
+            parse_command(vec![
+                "--server".into(),
+                "default".into(),
+                "80".into(),
+                "24".into(),
+                "--profile".into(),
+                "dev".into(),
+            ]),
+            Ok(Command::Server { profile: Some(profile), .. }) if profile == "dev"
         ));
         assert_eq!(valid_name("logs_1").unwrap(), "logs_1");
         assert!(valid_name("../logs").is_err());
