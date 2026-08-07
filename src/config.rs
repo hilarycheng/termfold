@@ -1,6 +1,7 @@
 use std::{env, fs, io::ErrorKind, path::PathBuf};
 
 use crate::terminal::Color;
+use toml::{Table, Value};
 
 #[derive(Debug)]
 pub struct Config {
@@ -24,6 +25,7 @@ pub struct Config {
     pub terminal_profile: String,
     pub inner_term: String,
     pub windows_shell: Vec<String>,
+    pub(crate) document: Table,
 }
 
 impl Default for Config {
@@ -49,6 +51,7 @@ impl Default for Config {
             terminal_profile: "auto".into(),
             inner_term: "termfold-256color".into(),
             windows_shell: Vec::new(),
+            document: Table::new(),
         }
     }
 }
@@ -59,8 +62,8 @@ impl Config {
             return Ok(Self::default());
         };
 
-        match fs::read_to_string(&path) {
-            Ok(source) => Self::parse(&source),
+        match fs::read(&path) {
+            Ok(source) => Self::parse_bytes(&source),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(format!(
                 "cannot read configuration {}: {error}",
@@ -69,53 +72,24 @@ impl Config {
         }
     }
 
+    fn parse_bytes(source: &[u8]) -> Result<Self, String> {
+        let source = std::str::from_utf8(source)
+            .map_err(|_| String::from("configuration: invalid UTF-8"))?;
+        Self::parse(source)
+    }
+
     fn parse(source: &str) -> Result<Self, String> {
+        let document = source
+            .parse::<Table>()
+            .map_err(|error| format!("configuration: invalid TOML: {error}"))?;
         let mut config = Self::default();
-        let mut seen = 0_u32;
-
-        for (index, line) in source.lines().enumerate() {
-            let line = strip_comment(line).trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            let Some((field, value)) = line.split_once('=') else {
-                return Err(format!(
-                    "configuration line {}: expected FIELD = VALUE",
-                    index + 1
-                ));
-            };
-            let field = field.trim();
-            let value = value.trim();
-            let bit = match field {
-                "prefix" => 1,
-                "mouse" => 2,
-                "scrollback_lines" => 4,
-                "date_format" => 8,
-                "time_format" => 16,
-                "terminal_profile" => 32,
-                "inner_term" => 64,
-                "status_format" => 128,
-                "status_label" => 256,
-                "status_refresh_seconds" => 512,
-                "cpu_temperature_path" => 1024,
-                "status_foreground" => 2048,
-                "status_background" => 4096,
-                "label_foreground" => 8192,
-                "label_background" => 16384,
-                "active_tab_foreground" => 32768,
-                "active_tab_background" => 65536,
-                "status_theme" => 131072,
-                "windows_shell" => 262144,
-                "viewer_tab_width" => 524288,
-                _ => return Err(field_error(field, "unknown field")),
-            };
-            if seen & bit != 0 {
-                return Err(field_error(field, "duplicate field"));
-            }
-            seen |= bit;
-
-            match field {
+        for (field, value) in &document {
+            match field.as_str() {
+                "profiles" => {
+                    if !value.is_table() {
+                        return Err(field_error(field, "expected a table"));
+                    }
+                }
                 "prefix" => config.prefix = parse_prefix(field, value)?,
                 "mouse" => config.mouse = parse_bool(field, value)?,
                 "scrollback_lines" => config.scrollback_lines = parse_scrollback(field, value)?,
@@ -144,7 +118,7 @@ impl Config {
                 "active_tab_background" => {
                     config.active_tab_background = parse_color(field, value)?
                 }
-                _ => unreachable!(),
+                _ => return Err(field_error(field, "unknown field")),
             }
         }
 
@@ -163,20 +137,45 @@ impl Config {
             config.label_background = colors[3];
             config.active_tab_foreground = colors[4];
             config.active_tab_background = colors[5];
-            for (bit, configured, value) in [
-                (2048, &mut config.status_foreground, explicit[0]),
-                (4096, &mut config.status_background, explicit[1]),
-                (8192, &mut config.label_foreground, explicit[2]),
-                (16384, &mut config.label_background, explicit[3]),
-                (32768, &mut config.active_tab_foreground, explicit[4]),
-                (65536, &mut config.active_tab_background, explicit[5]),
+            for (field, configured, value) in [
+                (
+                    "status_foreground",
+                    &mut config.status_foreground,
+                    explicit[0],
+                ),
+                (
+                    "status_background",
+                    &mut config.status_background,
+                    explicit[1],
+                ),
+                (
+                    "label_foreground",
+                    &mut config.label_foreground,
+                    explicit[2],
+                ),
+                (
+                    "label_background",
+                    &mut config.label_background,
+                    explicit[3],
+                ),
+                (
+                    "active_tab_foreground",
+                    &mut config.active_tab_foreground,
+                    explicit[4],
+                ),
+                (
+                    "active_tab_background",
+                    &mut config.active_tab_background,
+                    explicit[5],
+                ),
             ] {
-                if seen & bit != 0 {
+                if document.contains_key(field) {
                     *configured = value;
                 }
             }
         }
 
+        config.document = document;
         Ok(config)
     }
 }
@@ -200,122 +199,43 @@ fn config_path() -> Option<PathBuf> {
         .map(|root| PathBuf::from(root).join(".config/termfold/config.toml"))
 }
 
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = false;
-    let mut escaped = false;
-
-    for (index, character) in line.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if quoted && character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == '#' && !quoted {
-            return &line[..index];
-        }
-    }
-
-    line
+fn parse_string(field: &str, value: &Value) -> Result<String, String> {
+    value
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| field_error(field, "expected a quoted string"))
 }
 
-fn parse_string(field: &str, value: &str) -> Result<String, String> {
-    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
-        return Err(field_error(field, "expected a quoted string"));
-    }
-
-    let mut output = String::new();
-    let mut characters = value[1..value.len() - 1].chars();
-    while let Some(character) = characters.next() {
-        if character == '"' {
-            return Err(field_error(field, "unescaped quote in string"));
-        }
-        if character != '\\' {
-            output.push(character);
-            continue;
-        }
-
-        let escaped = match characters.next() {
-            Some('"') => '"',
-            Some('\\') => '\\',
-            Some('n') => '\n',
-            Some('r') => '\r',
-            Some('t') => '\t',
-            _ => return Err(field_error(field, "invalid string escape")),
-        };
-        output.push(escaped);
-    }
-
-    Ok(output)
-}
-
-fn parse_string_array(field: &str, value: &str) -> Result<Vec<String>, String> {
-    let Some(value) = value
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-    else {
+fn parse_string_array(field: &str, value: &Value) -> Result<Vec<String>, String> {
+    let Some(values) = value.as_array() else {
         return Err(field_error(
             field,
             "expected a non-empty array of quoted strings",
         ));
     };
-    let mut rest = value.trim();
-    let mut values = Vec::new();
-    while !rest.is_empty() {
-        if !rest.starts_with('"') {
-            return Err(field_error(
-                field,
-                "expected a non-empty array of quoted strings",
-            ));
-        }
-        let mut escaped = false;
-        let mut end = None;
-        for (index, character) in rest[1..].char_indices() {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                end = Some(index + 2);
-                break;
-            }
-        }
-        let Some(end) = end else {
-            return Err(field_error(
-                field,
-                "expected a non-empty array of quoted strings",
-            ));
-        };
-        values.push(parse_string(field, &rest[..end])?);
-        rest = rest[end..].trim_start();
-        if rest.is_empty() {
-            break;
-        }
-        let Some(after_comma) = rest.strip_prefix(',') else {
-            return Err(field_error(
-                field,
-                "expected a non-empty array of quoted strings",
-            ));
-        };
-        rest = after_comma.trim_start();
-        if rest.is_empty() {
-            return Err(field_error(
-                field,
-                "expected a non-empty array of quoted strings",
-            ));
-        }
-    }
-    if values.is_empty() || values.iter().any(|value| value.contains('\0')) {
+    if values.is_empty() || values.iter().any(|value| value.as_str().is_none()) {
         Err(field_error(
             field,
             "expected a non-empty array of quoted strings",
         ))
     } else {
-        Ok(values)
+        let values = values
+            .iter()
+            .map(|value| value.as_str().expect("validated string array"))
+            .map(String::from)
+            .collect::<Vec<_>>();
+        if values.iter().any(|value| value.contains('\0')) {
+            Err(field_error(
+                field,
+                "expected a non-empty array of quoted strings",
+            ))
+        } else {
+            Ok(values)
+        }
     }
 }
 
-fn parse_prefix(field: &str, value: &str) -> Result<u8, String> {
+fn parse_prefix(field: &str, value: &Value) -> Result<u8, String> {
     let value = parse_string(field, value)?;
     let bytes = value.as_bytes();
     if bytes.len() == 3 && bytes[0] == b'C' && bytes[1] == b'-' && bytes[2].is_ascii_lowercase() {
@@ -325,18 +245,17 @@ fn parse_prefix(field: &str, value: &str) -> Result<u8, String> {
     }
 }
 
-fn parse_bool(field: &str, value: &str) -> Result<bool, String> {
-    match value {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(field_error(field, "expected true or false")),
-    }
+fn parse_bool(field: &str, value: &Value) -> Result<bool, String> {
+    value
+        .as_bool()
+        .ok_or_else(|| field_error(field, "expected true or false"))
 }
 
-fn parse_scrollback(field: &str, value: &str) -> Result<u16, String> {
+fn parse_scrollback(field: &str, value: &Value) -> Result<u16, String> {
     let value = value
-        .parse::<u16>()
-        .map_err(|_| field_error(field, "expected an integer from 0 through 10000"))?;
+        .as_integer()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| field_error(field, "expected an integer from 0 through 10000"))?;
     if value <= 10_000 {
         Ok(value)
     } else {
@@ -347,10 +266,11 @@ fn parse_scrollback(field: &str, value: &str) -> Result<u16, String> {
     }
 }
 
-fn parse_tab_width(field: &str, value: &str) -> Result<u8, String> {
+fn parse_tab_width(field: &str, value: &Value) -> Result<u8, String> {
     let value = value
-        .parse::<u8>()
-        .map_err(|_| field_error(field, "expected an integer from 1 through 16"))?;
+        .as_integer()
+        .and_then(|value| u8::try_from(value).ok())
+        .ok_or_else(|| field_error(field, "expected an integer from 1 through 16"))?;
     if (1..=16).contains(&value) {
         Ok(value)
     } else {
@@ -358,7 +278,7 @@ fn parse_tab_width(field: &str, value: &str) -> Result<u8, String> {
     }
 }
 
-fn parse_format(field: &str, value: &str) -> Result<String, String> {
+fn parse_format(field: &str, value: &Value) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value.chars().count() > 64 {
         return Err(field_error(field, "must contain at most 64 characters"));
@@ -381,7 +301,7 @@ fn parse_format(field: &str, value: &str) -> Result<String, String> {
     Ok(value)
 }
 
-fn parse_text(field: &str, value: &str, maximum: usize) -> Result<String, String> {
+fn parse_text(field: &str, value: &Value, maximum: usize) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value.chars().count() > maximum {
         return Err(field_error(
@@ -395,7 +315,7 @@ fn parse_text(field: &str, value: &str, maximum: usize) -> Result<String, String
     Ok(value)
 }
 
-fn parse_status_format(field: &str, value: &str) -> Result<String, String> {
+fn parse_status_format(field: &str, value: &Value) -> Result<String, String> {
     let value = parse_text(field, value, 512)?;
     let mut rest = value.as_str();
     let mut required = 0_u8;
@@ -432,10 +352,11 @@ fn parse_status_format(field: &str, value: &str) -> Result<String, String> {
     Ok(value)
 }
 
-fn parse_refresh(field: &str, value: &str) -> Result<u16, String> {
+fn parse_refresh(field: &str, value: &Value) -> Result<u16, String> {
     let value = value
-        .parse::<u16>()
-        .map_err(|_| field_error(field, "expected an integer from 1 through 3600"))?;
+        .as_integer()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| field_error(field, "expected an integer from 1 through 3600"))?;
     if (1..=3600).contains(&value) {
         Ok(value)
     } else {
@@ -446,7 +367,7 @@ fn parse_refresh(field: &str, value: &str) -> Result<u16, String> {
     }
 }
 
-fn parse_temperature_path(field: &str, value: &str) -> Result<PathBuf, String> {
+fn parse_temperature_path(field: &str, value: &Value) -> Result<PathBuf, String> {
     let value = parse_string(field, value)?;
     let path = PathBuf::from(value);
     if path.starts_with("/sys")
@@ -460,7 +381,7 @@ fn parse_temperature_path(field: &str, value: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn parse_color(field: &str, value: &str) -> Result<Color, String> {
+fn parse_color(field: &str, value: &Value) -> Result<Color, String> {
     let value = parse_string(field, value)?;
     if value == "default" {
         return Ok(Color::Default);
@@ -502,7 +423,7 @@ fn parse_color(field: &str, value: &str) -> Result<Color, String> {
     ))
 }
 
-fn parse_status_theme(field: &str, value: &str) -> Result<String, String> {
+fn parse_status_theme(field: &str, value: &Value) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value == "default" || theme_colors(&value).is_some() {
         Ok(value)
@@ -534,7 +455,7 @@ fn theme_colors(name: &str) -> Option<[Color; 6]> {
     }))
 }
 
-fn parse_profile(field: &str, value: &str) -> Result<String, String> {
+fn parse_profile(field: &str, value: &Value) -> Result<String, String> {
     let value = parse_string(field, value)?;
     if value == "auto" || crate::outer::built_in(&value).is_some() {
         Ok(value)
@@ -543,7 +464,7 @@ fn parse_profile(field: &str, value: &str) -> Result<String, String> {
     }
 }
 
-fn parse_inner_term(field: &str, value: &str) -> Result<String, String> {
+fn parse_inner_term(field: &str, value: &Value) -> Result<String, String> {
     let value = parse_string(field, value)?;
     match value.as_str() {
         "termfold-256color" | "xterm-256color" => Ok(value),
@@ -557,7 +478,7 @@ fn field_error(field: &str, message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Color, Config};
+    use super::{Color, Config, Value};
 
     #[test]
     fn parses_terminal_configuration_and_rejects_invalid_values() {
@@ -606,8 +527,58 @@ mod tests {
             );
         }
         assert_eq!(
-            Config::parse("viewer_tab_width = 1\nviewer_tab_width = 2").unwrap_err(),
-            "configuration field 'viewer_tab_width': duplicate field"
+            Config::parse("viewer_tab_width = 1\nviewer_tab_width = 2")
+                .unwrap_err()
+                .contains("duplicate key"),
+            true
+        );
+    }
+
+    #[test]
+    fn accepts_toml_syntax_rejects_unknown_types_and_retains_profiles() {
+        let config = Config::parse(
+            "prefix = 'C-a' # standard TOML literal string\n\
+             windows_shell = [\n\
+                 'C:\\msys64\\usr\\bin\\bash.exe',\n\
+                 '--login',\n\
+             ]\n\
+             [profiles.default]\n\
+             directory = '/tmp'",
+        )
+        .unwrap();
+        assert_eq!(config.prefix, 1);
+        assert_eq!(
+            config.windows_shell,
+            ["C:\\msys64\\usr\\bin\\bash.exe", "--login"]
+        );
+        assert_eq!(
+            config
+                .document
+                .get("profiles")
+                .and_then(Value::as_table)
+                .and_then(|profiles| profiles.get("default"))
+                .and_then(Value::as_table)
+                .and_then(|profile| profile.get("directory"))
+                .and_then(Value::as_str),
+            Some("/tmp")
+        );
+
+        assert_eq!(
+            Config::parse("unknown = true").unwrap_err(),
+            "configuration field 'unknown': unknown field"
+        );
+        assert_eq!(
+            Config::parse("mouse = \"false\"").unwrap_err(),
+            "configuration field 'mouse': expected true or false"
+        );
+        assert!(
+            Config::parse("prefix = \"C-b\" = true")
+                .unwrap_err()
+                .contains("invalid TOML")
+        );
+        assert_eq!(
+            Config::parse_bytes(b"prefix = \"C-b\"\xff").unwrap_err(),
+            "configuration: invalid UTF-8"
         );
     }
 

@@ -398,13 +398,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Evidence: approved documentation-only change; Rust source, dependencies,
     `README.md`, builds, tests, and Git state were not changed.
 
-- [ ] **T26B — Replace the flat configuration parser with validated TOML parsing**
+- [x] **T26B — Replace the flat configuration parser with validated TOML parsing**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Select the smallest suitable standards-compliant pure-Rust TOML parser after
     recording its purpose, licence, dependency tree, portability, release binary
@@ -427,6 +427,28 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     before T26C.
   - Done when: one parser loads the complete existing configuration contract on
     both targets without changing behaviour or retaining duplicate parse logic.
+  - Implementation and verification record:
+    - Added `toml` 1.1.4+spec-1.1.0, licensed MIT OR Apache-2.0, with only the
+      `std`, `parse`, and `serde` features. The pure-Rust parser is portable to
+      musl and MSVC. Its normal dependency tree is `serde_core`, `serde_spanned`,
+      `toml_datetime`, `toml_parser`, and `winnow`; `cargo tree --duplicates`
+      reports no duplicates. The previous line parser could not provide
+      standards-compliant TOML comments, multiline values, escaped paths,
+      duplicate-key rejection, or the retained document needed by T26C.
+    - Replaced the independent line parser with one TOML document parse,
+      preserved all existing defaults and validators, rejected unknown fields,
+      invalid types, malformed TOML, duplicate keys, and invalid UTF-8, and
+      retained the `profiles` table without validating or exposing profile
+      semantics.
+    - Linux evidence: `cargo fmt --check`, `cargo test --locked` (190 unit and
+      10 lifecycle tests), and `cargo build --release --locked --target
+      x86_64-unknown-linux-musl` passed. The stripped static binary grew from
+      881,392 bytes before T26B to 1,028,848 bytes after T26B (+147,456 bytes,
+      +16.73%).
+    - Windows evidence: `cargo check --locked --target
+      x86_64-pc-windows-msvc` passed. Native Windows MSVC build, runtime, and
+      configuration acceptance remain blocked because this environment is
+      Linux; compile-only evidence does not complete that checkbox.
 
 - [ ] **T26C — Parse and validate compact profile definitions**
   - Recommended model: Luna High.
