@@ -164,12 +164,17 @@ struct PaneProcess {
     working_directory: PathBuf,
 }
 
-struct PendingViewerSearch {
-    client_id: u64,
-    query: Option<Vec<u8>>,
-    mode: SearchMode,
-    direction: Option<SearchDirection>,
-    repeat: Option<RepeatDirection>,
+enum PendingViewerSearch {
+    New {
+        client_id: u64,
+        query: Vec<u8>,
+        mode: SearchMode,
+        direction: SearchDirection,
+    },
+    Repeat {
+        client_id: u64,
+        relation: RepeatDirection,
+    },
 }
 
 enum ViewerCommand {
@@ -1355,7 +1360,15 @@ fn handle_action(
         }
         Action::ViewerSearch(query, mode, direction) => {
             let status = input::viewer_search_status(mode, direction, &query);
-            match queue_viewer_search(input, client_id, Some(query), mode, Some(direction), None) {
+            match queue_viewer_search(
+                input,
+                PendingViewerSearch::New {
+                    client_id,
+                    query,
+                    mode,
+                    direction,
+                },
+            ) {
                 Ok(()) => set_status(clients, client_id, Some(status), input.full_dirty),
                 Err(error) => set_status(
                     clients,
@@ -1367,10 +1380,14 @@ fn handle_action(
             *input.full_dirty = true;
             return false;
         }
-        Action::ViewerSearchNext(mode, relation) => {
-            if let Err(error) =
-                queue_viewer_search(input, client_id, None, mode, None, Some(relation))
-            {
+        Action::ViewerSearchNext(_, relation) => {
+            if let Err(error) = queue_viewer_search(
+                input,
+                PendingViewerSearch::Repeat {
+                    client_id,
+                    relation,
+                },
+            ) {
                 set_status(
                     clients,
                     client_id,
@@ -1527,24 +1544,9 @@ fn queue_viewer_navigation(
 
 fn queue_viewer_search(
     input: &mut InputContext<'_>,
-    client_id: u64,
-    query: Option<Vec<u8>>,
-    mode: SearchMode,
-    direction: Option<SearchDirection>,
-    repeat: Option<RepeatDirection>,
+    pending: PendingViewerSearch,
 ) -> Result<(), String> {
-    dispatch_viewer_command(
-        input,
-        ViewerCommand::Search {
-            pending: PendingViewerSearch {
-                client_id,
-                query,
-                mode,
-                direction,
-                repeat,
-            },
-        },
-    )
+    dispatch_viewer_command(input, ViewerCommand::Search { pending })
 }
 
 fn dispatch_navigation(pane: &mut PaneProcess, navigation: ViewerNavigation) -> Result<(), String> {
@@ -1603,31 +1605,46 @@ fn dispatch_viewer_command(
         }
         ViewerCommand::Search { pending } => {
             pane.cancel_viewer();
-            let client_id = pending.client_id;
+            let client_id = match &pending {
+                PendingViewerSearch::New { client_id, .. }
+                | PendingViewerSearch::Repeat { client_id, .. } => *client_id,
+            };
             let viewer = pane
                 .viewer
                 .as_mut()
                 .ok_or_else(|| "active pane is not a viewer".to_owned())?;
-            if let Some(relation) = pending.repeat {
-                viewer
-                    .start_repeat_search(relation)
-                    .map_err(|error| error.to_string())?;
-            } else {
-                viewer
-                    .start_search_mode(
-                        pending.query.clone().unwrap_or_default(),
-                        pending.mode,
-                        pending
-                            .direction
-                            .ok_or_else(|| "viewer search direction is missing".to_owned())?,
-                    )
-                    .map_err(|error| error.to_string())?;
+            match &pending {
+                PendingViewerSearch::New {
+                    query,
+                    mode,
+                    direction,
+                    ..
+                } => viewer
+                    .start_search_mode(query.clone(), *mode, *direction)
+                    .map_err(|error| error.to_string())?,
+                PendingViewerSearch::Repeat { relation, .. } => viewer
+                    .start_repeat_search(*relation)
+                    .map_err(|error| error.to_string())?,
             }
             pane.pending_viewer_search = Some(pending);
             pane.pending_viewer_client = Some(client_id);
         }
     }
     Ok(())
+}
+
+fn new_viewer_search_state(
+    pending: &PendingViewerSearch,
+) -> Option<(u64, SearchMode, SearchDirection)> {
+    match pending {
+        PendingViewerSearch::New {
+            client_id,
+            mode,
+            direction,
+            ..
+        } => Some((*client_id, *mode, *direction)),
+        PendingViewerSearch::Repeat { .. } => None,
+    }
 }
 
 fn apply_viewer_results(
@@ -1674,39 +1691,44 @@ fn apply_viewer_results(
                     let Some(pending) = pane.pending_viewer_search.take() else {
                         continue;
                     };
+                    let client_id = match &pending {
+                        PendingViewerSearch::New { client_id, .. }
+                        | PendingViewerSearch::Repeat { client_id, .. } => *client_id,
+                    };
                     if !found {
                         pane.pending_viewer_client = None;
-                        let status = pending.query.map_or_else(
-                            || "no previous viewer search".to_owned(),
-                            |query| {
+                        let status = match &pending {
+                            PendingViewerSearch::New { query, .. } => {
                                 format!(
                                     "no match: {}{}",
                                     search_marker(mode, direction),
-                                    String::from_utf8_lossy(&query)
+                                    String::from_utf8_lossy(query)
                                 )
-                            },
-                        );
-                        set_status(clients, pending.client_id, Some(status), full_dirty);
+                            }
+                            PendingViewerSearch::Repeat { .. } => {
+                                "no previous viewer search".to_owned()
+                            }
+                        };
+                        set_status(clients, client_id, Some(status), full_dirty);
                         continue;
                     }
-                    if let Some(client) = clients
-                        .iter_mut()
-                        .find(|client| client.id == pending.client_id)
+                    if let Some((record_client_id, mode, direction)) =
+                        new_viewer_search_state(&pending)
                     {
-                        client.input.record_viewer_search(pending.mode, direction);
+                        if let Some(client) = clients
+                            .iter_mut()
+                            .find(|client| client.id == record_client_id)
+                        {
+                            client.input.record_viewer_search(mode, direction);
+                        }
                     }
                     if wrapped {
-                        set_status(
-                            clients,
-                            pending.client_id,
-                            Some("wrapped".into()),
-                            full_dirty,
-                        );
+                        set_status(clients, client_id, Some("wrapped".into()), full_dirty);
                     } else {
-                        let status = viewer_status_message(clients, pane, pending.client_id);
-                        set_status(clients, pending.client_id, status, full_dirty);
+                        let status = viewer_status_message(clients, pane, client_id);
+                        set_status(clients, client_id, status, full_dirty);
                     }
-                    pane.pending_viewer_client = Some(pending.client_id);
+                    pane.pending_viewer_client = Some(client_id);
                     let result = pane
                         .viewer
                         .as_mut()
@@ -2762,6 +2784,26 @@ mod tests {
     #[test]
     fn viewer_ready_keeps_the_existing_idle_poll_delay() {
         assert_eq!(LISTENER_POLL_DELAY, Duration::from_millis(50));
+    }
+
+    #[test]
+    fn repeat_search_completion_has_no_new_recorded_state() {
+        let new_search = PendingViewerSearch::New {
+            client_id: 7,
+            query: b"foo".to_vec(),
+            mode: SearchMode::Matching,
+            direction: SearchDirection::Forward,
+        };
+        assert_eq!(
+            new_viewer_search_state(&new_search),
+            Some((7, SearchMode::Matching, SearchDirection::Forward))
+        );
+
+        let repeat = PendingViewerSearch::Repeat {
+            client_id: 7,
+            relation: RepeatDirection::Opposite,
+        };
+        assert_eq!(new_viewer_search_state(&repeat), None);
     }
 
     #[test]

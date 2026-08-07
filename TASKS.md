@@ -2571,13 +2571,13 @@ Rules for every T33 implementation request:
     Native Windows validation is blocked because this workspace has no native
     Windows/MSVC runtime environment; no Windows result is inferred.
 
-- [ ] **T33D — Preserve recorded direction across every repeat result**
+- [x] **T33D — Preserve recorded direction across every repeat result**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Separate new-search completion from repeat completion in pending server state
     or result handling. Do not infer request kind from whether a query vector is
@@ -2610,6 +2610,16 @@ Rules for every T33 implementation request:
     T33E.
   - Done when: only successful new-search commands can change recorded direction,
     and repeat direction cannot oscillate because of its own previous success.
+  - Evidence (2026-08-07): Replaced optional pending search fields with explicit
+    `New` and `Repeat` requests. Only successful `New` results record client search
+    state; repeat results preserve it. Linux checks passed: `cargo fmt -- --check`;
+    focused input, Viewer, Worker, and server tests (17/17, 45/45, 24/24, and
+    18/18; Worker tests serialized after timing-sensitive parallel failures);
+    `cargo build --locked`; and `cargo build --release --locked --target
+    x86_64-unknown-linux-musl`. `cargo check --locked --target
+    x86_64-pc-windows-msvc` also passed as compile-only evidence. Native Windows
+    validation is blocked because this workspace has no native Windows/MSVC
+    runtime environment; no Windows result is inferred.
 
 - [ ] **T33E — Complete bounded one-result and boundary-wrap semantics**
   - Recommended model: Luna xHigh.
