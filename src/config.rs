@@ -631,4 +631,12 @@ mod tests {
             "configuration field 'status_theme': unknown built-in status theme"
         );
     }
+
+    #[test]
+    fn shipped_configuration_example_parses() {
+        let config = Config::parse(include_str!("../config.example.toml")).unwrap();
+        assert_eq!(config.prefix, 2);
+        assert!(config.profiles.contains_key("default"));
+        assert!(config.profiles.contains_key("work"));
+    }
 }

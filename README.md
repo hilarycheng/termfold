@@ -310,6 +310,17 @@ Configuration is optional. Termfold reads:
   `$HOME/.config/termfold/config.toml`.
 - Windows: `%APPDATA%\Termfold\config.toml`.
 
+Start from the shipped [config.example.toml](config.example.toml). On Linux:
+
+```bash
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/termfold"
+cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/termfold/config.toml"
+```
+
+On Windows, create `%APPDATA%\Termfold` and copy the example there as
+`config.toml` (for example, in Command Prompt: `mkdir "%APPDATA%\Termfold"`
+then `copy config.example.toml "%APPDATA%\Termfold\config.toml"`).
+
 The default configuration is:
 
 ```toml
@@ -398,6 +409,16 @@ prefix = "C-a"
 ```
 
 create a tab with `Ctrl-a c` and send a literal `Ctrl-a` with `Ctrl-a Ctrl-a`.
+
+Profiles select the initial tabs and panes for a newly created session. The
+`[profiles.default]` example is used by `termfold new` when no profile is
+specified; a named profile is selected with `termfold new SESSION --profile
+NAME`. Use `--no-profile` to create the ordinary single-shell layout.
+Profile command targets must be absolute executable paths, and profile
+directories must be absolute existing directories. Shell and command
+arguments are passed literally without shell interpolation. Profile changes,
+like all configuration changes, affect only newly created sessions; attaching
+never reruns a profile.
 
 Invalid or unknown configuration fields stop startup with an error naming the
 field. Termfold never rewrites the configuration file.

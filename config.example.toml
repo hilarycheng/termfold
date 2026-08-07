@@ -1,0 +1,30 @@
+# Copy this file to the configuration path shown in README.md.
+prefix = "C-b"
+mouse = false
+scrollback_lines = 2000
+viewer_tab_width = 8
+date_format = "%Y-%m-%d"
+time_format = "%H:%M"
+status_format = "[{session}]  {tabs}{fill}|  {date} {time}"
+status_label = ""
+status_theme = "default"
+status_refresh_seconds = 2
+status_foreground = "black"
+status_background = "cyan"
+label_foreground = "bright-white"
+label_background = "red"
+active_tab_foreground = "black"
+active_tab_background = "bright-yellow"
+terminal_profile = "auto"
+inner_term = "termfold-256color"
+
+# Change the prefix to Ctrl-a if preferred.
+# prefix = "C-a"
+
+# A default profile is used by `termfold new` when no profile is selected.
+[profiles.default]
+tabs = [{ shell = true }]
+
+# Select this profile with: termfold new NAME --profile work
+[profiles.work]
+tabs = [{ shell = true }]

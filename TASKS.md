@@ -820,13 +820,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     x86_64-pc-windows-msvc` passed as compile-only evidence, which is not claimed
     as Native Windows validation.
 
-- [ ] **T26K — Publish the configuration example and README guidance**
+- [x] **T26K — Publish the configuration example and README guidance**
   - Recommended model: Luna Low.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent review complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent review complete.
   - Add a root `config.example.toml` containing all implemented defaults, a
     commented `prefix = "C-a"` example, one compact `[profiles.default]` example,
     one named profile example, and no unimplemented key-binding or tab-title
@@ -843,6 +843,10 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Done when: the shipped example loads unchanged, README describes only
     implemented and authoritatively validated behaviour, and all documentation
     links remain correct.
+  - Implementation complete: added `config.example.toml`, README setup and
+    profile guidance, and a parser test using `include_str!`.
+  - Platform-independent review complete: focused test and documentation link
+    checks passed.
 
 - [*] **T27 — Add bounded large-file viewer**
   - Add `Ctrl-b v`, `termfold view FILE`, OSC 7 working-directory tracking, the
