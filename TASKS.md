@@ -2621,13 +2621,13 @@ Rules for every T33 implementation request:
     validation is blocked because this workspace has no native Windows/MSVC
     runtime environment; no Windows result is inferred.
 
-- [ ] **T33E — Complete bounded one-result and boundary-wrap semantics**
+- [x] **T33E — Complete bounded one-result and boundary-wrap semantics**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Keep the first requested search range strictly after or before the committed
     cursor anchor so the current active result is not returned before reaching a
@@ -2664,6 +2664,16 @@ Rules for every T33 implementation request:
   - Done when: single-result and multi-result repeats follow the same bounded
     one-wrap state machine and cannot incorrectly return `no match` after a valid
     wrapped result.
+  - Evidence (2026-08-07): Matching wrap ranges now include the original anchor
+    only after the strict primary range; matching and non-matching searches return
+    a valid single-result wrapped match and terminate after one complete scan with
+    no result. Added focused regressions for single matching/non-matching results,
+    zero-result termination, and repeated anchor handling. Ubuntu 24.04 WSL with
+    Rust 1.97.1 passed `cargo test --locked viewer:: -- --test-threads=1`
+    (111/111), `cargo build --locked`, and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`.
+    Native Windows validation is blocked because this workspace has no native
+    Windows/MSVC runtime environment; no Windows result is inferred.
 
 - [ ] **T33F — Emit Vim-style directional wrap status and update Viewer Help**
   - Recommended model: Luna High.

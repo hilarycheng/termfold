@@ -987,9 +987,9 @@ impl Viewer {
         ranges.extend(remaining);
 
         let wrap = if direction.is_forward() {
-            0..start.min(limit)
+            0..start.saturating_add(1).min(limit)
         } else {
-            start.saturating_add(1).min(limit)..limit
+            start.min(limit)..limit
         };
         let mut wrapped = subtract_range(wrap.clone(), &selected);
         order_ranges(&mut wrapped, direction.is_forward());
@@ -1526,11 +1526,19 @@ fn advance_forward(work: &mut NonMatchingWork, next: u64) {
     if next < limit {
         work.phase = forward_candidate(next, limit);
     } else if work.wrapped {
-        work.phase = NonMatchingPhase::Done;
+        work.phase = if next == work.original_line && work.original_line < work.length {
+            forward_candidate(work.original_line, work.length)
+        } else {
+            NonMatchingPhase::Done
+        };
     } else {
         work.wrapped = true;
         work.phase = if work.original_line == 0 {
-            NonMatchingPhase::Done
+            if work.original_line < work.length {
+                forward_candidate(work.original_line, work.length)
+            } else {
+                NonMatchingPhase::Done
+            }
         } else {
             forward_candidate(0, work.original_line)
         };
@@ -1704,7 +1712,14 @@ fn step_non_matching_work(
                     &mut line.matched,
                 )?;
                 if work.wrapped && end == work.original_line {
-                    return Ok(NonMatchingStep::Complete);
+                    return Ok(if !line.matched {
+                        NonMatchingStep::Found {
+                            offset: end,
+                            wrapped: true,
+                        }
+                    } else {
+                        NonMatchingStep::Complete
+                    });
                 }
                 if !line.matched {
                     return Ok(NonMatchingStep::Found {
@@ -1726,7 +1741,14 @@ fn step_non_matching_work(
                     &mut line.matched,
                 )?;
                 if work.wrapped && position == work.original_line {
-                    return Ok(NonMatchingStep::Complete);
+                    return Ok(if !line.matched {
+                        NonMatchingStep::Found {
+                            offset: position,
+                            wrapped: true,
+                        }
+                    } else {
+                        NonMatchingStep::Complete
+                    });
                 }
                 if !line.matched {
                     return Ok(NonMatchingStep::Found {
@@ -2599,13 +2621,59 @@ mod tests {
         assert!(viewer.search_non_matching("hit", true).unwrap());
         assert_eq!(viewer.position, 4);
         assert!(viewer.search_wrapped());
-        assert!(!viewer.repeat_search(true).unwrap());
+        assert!(viewer.repeat_search(true).unwrap());
         assert_eq!(viewer.position, 4);
+        assert!(viewer.search_wrapped());
 
         viewer.position = 0;
         assert!(viewer.search_non_matching("hit", false).unwrap());
         assert_eq!(viewer.position, 4);
         assert!(viewer.search_wrapped());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn single_matching_occurrence_wraps_back_to_the_anchor() {
+        let path = temp_path("termfold-viewer-search-single-match");
+        fs::write(&path, b"hit").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search("hit", true).unwrap());
+        assert_eq!(viewer.position, 0);
+        assert!(viewer.search_wrapped());
+        assert!(viewer.repeat_search(true).unwrap());
+        assert!(viewer.repeat_search(false).unwrap());
+        assert_eq!(viewer.search_direction(), Some(SearchDirection::Forward));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn single_non_matching_line_is_returned_after_wrap() {
+        let path = temp_path("termfold-viewer-search-single-non-matching");
+        fs::write(&path, b"no").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(viewer.search_non_matching("hit", true).unwrap());
+        assert_eq!(viewer.position, 0);
+        assert!(viewer.search_wrapped());
+        assert!(viewer.repeat_search(true).unwrap());
+        assert!(viewer.search_wrapped());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_with_no_result_finishes_after_one_wrap() {
+        let path = temp_path("termfold-viewer-search-no-result");
+        fs::write(&path, b"hit").unwrap();
+        let mut viewer = Viewer::open(path.clone(), 8).unwrap();
+
+        assert!(!viewer.search("missing", true).unwrap());
+        assert!(!viewer.search_wrapped());
+        assert!(!viewer.search_non_matching("hit", true).unwrap());
+        assert!(!viewer.search_wrapped());
 
         fs::remove_file(path).unwrap();
     }
