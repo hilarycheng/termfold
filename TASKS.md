@@ -2724,12 +2724,12 @@ Rules for every T33 implementation request:
     build are blocked because this workspace has no native Windows/MSVC
     environment; no Windows validation is inferred.
 
-- [ ] **T33G — Run end-to-end Vim repeat and wrap acceptance**
+- [x] **T33G — Run end-to-end Vim repeat and wrap acceptance**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
+    - [x] Task implementation complete.
     - [ ] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add deterministic acceptance through the complete path:
@@ -2764,6 +2764,23 @@ Rules for every T33 implementation request:
   - Done when: both authoritative platforms prove the same recorded-direction,
     opposite-repeat, nearest-match, one-wrap, and directional-message behaviour
     without relying on direct-core tests alone.
+  - Evidence (2026-08-07): Added Linux session-boundary acceptance tests in
+    `tests/server_lifecycle.rs` covering input bytes through semantic actions,
+    server pending state, Viewer Worker, result application, recorded search
+    state, rendered directional wrap messages, matching `/` and `?` repeats,
+    repeated `N`, `N -> n`, no-match, Text-mode `]` and `[` repeats, one-result
+    wraps, and Hex non-matching rejection with state retention. Ubuntu 24.04
+    WSL with Rust 1.97.1 passed `cargo fmt -- --check`, the two focused
+    acceptance tests, the full `cargo test --locked -- --test-threads=1`
+    suite (189 unit tests and 10 lifecycle tests), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`.
+    The release binary is 881392 bytes and statically linked. `cargo check
+    --locked --target x86_64-pc-windows-msvc` passed as compile-only evidence;
+    the MSVC release build is blocked by missing `link.exe`, and native
+    Windows runtime tests are unavailable. Linux validation remains unchecked
+    because `cargo clippy --all-targets --all-features -- -D warnings` reports
+    a collapsible-if at `src/server.rs:1715`; production changes are outside
+    this test-only task's allowed scope.
 
 - [ ] **T33H — Publish verified Vim repeat and wrap behaviour**
   - Recommended model: Luna Low.

@@ -255,6 +255,95 @@ fn child_exit_closes_its_pane_and_keeps_the_survivor_running() {
     wait_for_missing(&runtime.socket("one"));
 }
 
+#[test]
+fn viewer_matching_repeats_and_wraps_through_the_session() {
+    let runtime = TestRuntime::new();
+    let filename = format!(
+        "termfold-t33g-matching-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    fs::write(&filename, b"hit zero\nmiddle\nhit two\nlast\nhit four\n").unwrap();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = attach_stream(&runtime.socket("one"), 80, 10);
+
+    send_input(&mut stream, b"\x02v");
+    send_input(&mut stream, filename.as_bytes());
+    send_input(&mut stream, b"\n");
+    wait_for_screen(&mut stream, b"hit zero");
+
+    send_input(&mut stream, b"/hit\n");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"search hit TOP, continuing at BOTTOM");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"search hit BOTTOM, continuing at TOP");
+
+    send_input(&mut stream, b"?hit\n");
+    wait_for_screen(&mut stream, b"search hit TOP, continuing at BOTTOM");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"VIEW ");
+
+    send_input(&mut stream, b"/missing\n");
+    wait_for_screen(&mut stream, b"no match: /missing");
+    fs::remove_file(filename).unwrap();
+}
+
+#[test]
+fn viewer_non_matching_repeats_and_hex_rejection_keep_state() {
+    let runtime = TestRuntime::new();
+    let filename = format!(
+        "termfold-t33g-nonmatching-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    fs::write(&filename, b"hit\nno\nhit\n").unwrap();
+    assert!(runtime.run(&["new", "one"]).status.success());
+    let mut stream = attach_stream(&runtime.socket("one"), 80, 10);
+
+    send_input(&mut stream, b"\x02v");
+    send_input(&mut stream, filename.as_bytes());
+    send_input(&mut stream, b"\n");
+    wait_for_screen(&mut stream, b"hit");
+
+    send_input(&mut stream, b"]hit\n");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"search hit BOTTOM, continuing at TOP");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"search hit TOP, continuing at BOTTOM");
+
+    send_input(&mut stream, b"H]");
+    wait_for_screen(&mut stream, b"viewer search is Text-only");
+    send_input(&mut stream, b"H");
+    wait_for_screen(&mut stream, b"VIEW ");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"search hit BOTTOM, continuing at TOP");
+
+    send_input(&mut stream, b"[hit\n");
+    wait_for_screen(&mut stream, b"search hit TOP, continuing at BOTTOM");
+    send_input(&mut stream, b"n");
+    wait_for_screen(&mut stream, b"search hit TOP, continuing at BOTTOM");
+    send_input(&mut stream, b"N");
+    wait_for_screen(&mut stream, b"search hit BOTTOM, continuing at TOP");
+
+    fs::remove_file(filename).unwrap();
+}
+
 fn attached_client(runtime: &TestRuntime, name: &str) -> Child {
     runtime
         .command()
