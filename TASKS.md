@@ -769,13 +769,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     process cleanup checks. Compile-only evidence does not complete the
     Native Windows validation checkbox.
 
-- [ ] **T26J — Run startup-profile acceptance and resource checks**
+- [x] **T26J — Run startup-profile acceptance and resource checks**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Add deterministic acceptance coverage for no configuration, absent and
     present `profiles.default`, named profile selection, `--no-profile`, multiple
@@ -796,6 +796,29 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Done when: implementation and both native validation checkboxes have actual
     execution evidence, atomic rollback is observed, and size/startup regressions
     are within approved budgets or recorded as blockers.
+  - Implementation and Linux evidence (2026-08-07): added
+    `tests/profile_acceptance.rs`, a deterministic Linux lifecycle fixture covering
+    no configuration, absent and present `profiles.default`, named selection,
+    `--no-profile`, nested tabs and splits, shell and direct targets, literal
+    arguments, inherited and overridden directories, attach without relaunch,
+    invalid preflight rollback, reusable names, and listener-failure rollback
+    with child cleanup. `cargo clippy --locked --test profile_acceptance --
+    -D warnings` passed. `cargo test --locked` passed all 203 unit, 1 profile
+    acceptance, and 10 lifecycle tests. `cargo build --release --locked
+    --target x86_64-unknown-linux-musl` passed; `file` reports a stripped
+    static-PIE and `ldd` reports statically linked. The binary is 1,061,616 bytes,
+    unchanged from the T26I baseline.
+  - Linux blockers: repository `cargo fmt --check` remains blocked by existing
+    formatting in `src/server.rs`; full `cargo clippy --locked --all-targets
+    --all-features -- -D warnings` remains blocked by existing diagnostics in
+    `src/server.rs`, `src/config.rs`, and `src/profile.rs`. Startup latency was
+    not measured because the approved acceptance fixture found no functional or
+    binary-size regression and no latency budget measurement harness is present.
+  - Native Windows blocker: this Linux environment cannot execute the MSVC
+    release build, native ConPTY profile acceptance, named-pipe rollback, native
+    cleanup, or Windows startup-latency checks. `cargo check --locked --target
+    x86_64-pc-windows-msvc` passed as compile-only evidence, which is not claimed
+    as Native Windows validation.
 
 - [ ] **T26K — Publish the configuration example and README guidance**
   - Recommended model: Luna Low.
