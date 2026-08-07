@@ -1723,7 +1723,12 @@ fn apply_viewer_results(
                         }
                     }
                     if wrapped {
-                        set_status(clients, client_id, Some("wrapped".into()), full_dirty);
+                        set_status(
+                            clients,
+                            client_id,
+                            Some(viewer_wrap_status(direction).into()),
+                            full_dirty,
+                        );
                     } else {
                         let status = viewer_status_message(clients, pane, client_id);
                         set_status(clients, client_id, status, full_dirty);
@@ -1831,6 +1836,13 @@ fn search_marker(mode: SearchMode, direction: SearchDirection) -> &'static str {
         (SearchMode::Matching, SearchDirection::Reverse) => "?",
         (SearchMode::NonMatching, SearchDirection::Forward) => "]",
         (SearchMode::NonMatching, SearchDirection::Reverse) => "[",
+    }
+}
+
+fn viewer_wrap_status(direction: SearchDirection) -> &'static str {
+    match direction {
+        SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
+        SearchDirection::Reverse => "search hit TOP, continuing at BOTTOM",
     }
 }
 
@@ -2804,6 +2816,18 @@ mod tests {
             relation: RepeatDirection::Opposite,
         };
         assert_eq!(new_viewer_search_state(&repeat), None);
+    }
+
+    #[test]
+    fn viewer_wrap_status_names_the_boundary_and_direction() {
+        assert_eq!(
+            viewer_wrap_status(SearchDirection::Forward),
+            "search hit BOTTOM, continuing at TOP"
+        );
+        assert_eq!(
+            viewer_wrap_status(SearchDirection::Reverse),
+            "search hit TOP, continuing at BOTTOM"
+        );
     }
 
     #[test]

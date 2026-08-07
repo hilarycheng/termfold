@@ -269,9 +269,12 @@ fn help_lines(prefix: u8) -> Vec<String> {
         row("?", "Reverse matching search"),
         row("]", "Forward non-matching search (Text only)"),
         row("[", "Reverse non-matching search (Text only)"),
-        row("n", "Continue in the search direction"),
-        row("N", "Continue in reverse direction"),
-        row("Wrap", "Once at the file boundary"),
+        row("n", "Repeat recorded direction"),
+        row("N", "Repeat opposite direction"),
+        row("N again", "Keep using opposite direction"),
+        row("Wrap", "Once at file boundary"),
+        row("Forward wrap", "search hit BOTTOM, continuing at TOP"),
+        row("Reverse wrap", "search hit TOP, continuing at BOTTOM"),
         String::new(),
         "Hex Search".to_string(),
         row("Text query", "ASCII case-insensitive bytes"),
@@ -1363,7 +1366,12 @@ mod tests {
             );
         }
         assert!(help.contains("Text only"));
-        assert!(help.contains("Once at the file boundary"));
+        assert!(help.contains("Repeat recorded direction"));
+        assert!(help.contains("Repeat opposite direction"));
+        assert!(help.contains("Keep using opposite direction"));
+        assert!(help.contains("Once at file boundary"));
+        assert!(help.contains("search hit BOTTOM, continuing at TOP"));
+        assert!(help.contains("search hit TOP, continuing at BOTTOM"));
         assert!(!help.contains("Viewer: j/k or Up/Down"));
         assert!(!help.contains("H = toggle Text/Hex"));
         assert!(!help.contains("Ctrl-b ? = Help from Viewer"));

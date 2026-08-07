@@ -2675,13 +2675,13 @@ Rules for every T33 implementation request:
     Native Windows validation is blocked because this workspace has no native
     Windows/MSVC runtime environment; no Windows result is inferred.
 
-- [ ] **T33F — Emit Vim-style directional wrap status and update Viewer Help**
+- [x] **T33F — Emit Vim-style directional wrap status and update Viewer Help**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Ensure a successful search result carries or can deterministically recover
     the actual execution direction used for that operation. Do not use the
@@ -2708,6 +2708,21 @@ Rules for every T33 implementation request:
   - Done when: the status identifies the boundary and continuation direction
     exactly, and Help describes the implemented repeat state without requiring
     users to infer it.
+  - Evidence (2026-08-07): `src/server.rs` now emits the exact forward and
+    reverse boundary messages from the actual result direction; the Worker
+    immediate-repeat result also reports the direction requested by `n` or `N`.
+    Viewer Help now names recorded-direction repeats, opposite-direction
+    repeats, repeated `N`, and one-wrap boundary reporting. Focused tests for
+    both exact messages, Help at 40/80/120 columns with the configured prefix,
+    and actual opposite repeat direction passed. Ubuntu 24.04 WSL with Rust
+    1.97.1 passed `cargo fmt -- --check`, `cargo test --locked
+    -- --test-threads=1` after the runtime socket test's elevated rerun
+    (189/189), `cargo build --locked`, and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`.
+    `cargo check --locked --target x86_64-pc-windows-msvc` passed as
+    compile-only evidence. Native Windows runtime tests and the MSVC release
+    build are blocked because this workspace has no native Windows/MSVC
+    environment; no Windows validation is inferred.
 
 - [ ] **T33G — Run end-to-end Vim repeat and wrap acceptance**
   - Recommended model: Luna High.

@@ -931,6 +931,17 @@ fn enqueue(
             ),
         },
         ViewerOperation::RepeatSearch { relation } => {
+            let direction = match relation {
+                RepeatDirection::Same => viewer
+                    .viewer
+                    .search_direction()
+                    .unwrap_or(SearchDirection::Forward),
+                RepeatDirection::Opposite => match viewer.viewer.search_direction() {
+                    Some(SearchDirection::Forward) => SearchDirection::Reverse,
+                    Some(SearchDirection::Reverse) => SearchDirection::Forward,
+                    None => SearchDirection::Forward,
+                },
+            };
             match viewer.viewer.begin_repeat_search_work(relation) {
                 Ok(SearchStart::Complete(value)) => wake.send(
                     &reply,
@@ -938,10 +949,7 @@ fn enqueue(
                         id,
                         generation,
                         mode: viewer.viewer.search_mode().unwrap_or(SearchMode::Matching),
-                        direction: viewer
-                            .viewer
-                            .search_direction()
-                            .unwrap_or(SearchDirection::Forward),
+                        direction,
                         found: value,
                         wrapped: false,
                     },
@@ -2428,6 +2436,47 @@ mod tests {
         assert_eq!(viewer.search("hit", true).unwrap(), (true, true));
         assert_eq!(viewer.repeat_search(false).unwrap(), (true, true));
         assert_eq!(viewer.repeat_search(true).unwrap(), (true, true));
+
+        viewer.close().unwrap();
+        worker.shutdown();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeat_result_reports_the_actual_opposite_direction() {
+        let (path, mut worker, mut viewer) = open("search-result-direction", b"hit\nmiddle\nhit");
+        let mut terminal = Terminal::new(Size {
+            columns: 40,
+            rows: 3,
+        })
+        .unwrap();
+
+        viewer
+            .start_search_mode(
+                b"hit".to_vec(),
+                SearchMode::Matching,
+                SearchDirection::Forward,
+            )
+            .unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete {
+                found: true,
+                direction: SearchDirection::Forward,
+                ..
+            }
+        ));
+        viewer
+            .start_repeat_search(RepeatDirection::Opposite)
+            .unwrap();
+        assert!(matches!(
+            wait_update(&mut viewer, &mut terminal),
+            ViewerUpdate::SearchComplete {
+                found: true,
+                direction: SearchDirection::Reverse,
+                ..
+            }
+        ));
 
         viewer.close().unwrap();
         worker.shutdown();
