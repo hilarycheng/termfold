@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     path::PathBuf,
     sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
 
@@ -13,7 +13,7 @@ use crate::{
     input::{self, Action, Input, MouseEvent},
     ipc::{self, Message},
     outer::{self, Capabilities},
-    profile,
+    profile::{self, LaunchPlan, LaunchTarget, PlannedLaunch},
     pty::{self, LaunchContext, PtyChild},
     render::{self, Metrics, StatusLine},
     runtime::{ClientStream, RuntimeDir, SessionSocket},
@@ -298,6 +298,227 @@ struct InputContext<'a> {
     viewer_worker: &'a ViewerWorkerHandle,
 }
 
+struct CreationTransaction {
+    session: Session,
+    panes: Vec<PaneProcess>,
+    event_sender: SyncSender<ServerEvent>,
+    event_receiver: Receiver<ServerEvent>,
+    reader_threads: Vec<JoinHandle<()>>,
+    viewer_worker: Option<ViewerWorker>,
+    socket: Option<SessionSocket>,
+}
+
+struct PreparedStartup {
+    session: Session,
+    panes: Vec<PaneProcess>,
+    event_sender: SyncSender<ServerEvent>,
+    event_receiver: Receiver<ServerEvent>,
+    reader_threads: Vec<JoinHandle<()>>,
+    viewer_worker: ViewerWorker,
+    socket: SessionSocket,
+}
+
+impl CreationTransaction {
+    fn new(session: Session) -> Self {
+        let (event_sender, event_receiver) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
+        Self {
+            session,
+            panes: Vec::new(),
+            event_sender,
+            event_receiver,
+            reader_threads: Vec::new(),
+            viewer_worker: None,
+            socket: None,
+        }
+    }
+
+    fn start_pane(
+        &mut self,
+        planned: PlannedLaunch,
+        context: &LaunchContext,
+        content_size: Size,
+        scrollback_limit: usize,
+    ) -> Result<(), String> {
+        let pane_size = self
+            .session
+            .pane_size(planned.pane, content_size)
+            .ok_or_else(|| format!("profile pane {} has no layout rectangle", planned.pane.get()))?;
+        let working_directory = planned.launch.working_directory.clone();
+        let child = PtyChild::spawn_with_spec(context, &planned.launch, pane_size)
+            .map_err(|error| format!("cannot start pane {}: {error}", planned.pane.get()))?;
+        let reader = child.output_reader().map_err(|error| {
+            format!("cannot read pane {} output: {error}", planned.pane.get())
+        })?;
+        let terminal = Terminal::with_scrollback(pane_size, scrollback_limit).map_err(|error| {
+            format!("cannot create pane {} terminal: {error}", planned.pane.get())
+        })?;
+        let reader_thread = spawn_pane_reader(planned.pane, reader, self.event_sender.clone())?;
+        self.reader_threads.push(reader_thread);
+        self.panes.push(PaneProcess {
+            id: planned.pane,
+            child: Some(child),
+            viewer: None,
+            viewer_gate: ViewerGate::default(),
+            pending_viewer_search: None,
+            pending_viewer_client: None,
+            terminal,
+            pending_input: PendingInput::new(),
+            working_directory,
+        });
+        Ok(())
+    }
+
+    fn rollback(self, cause: String) -> String {
+        let Self {
+            session: _,
+            mut panes,
+            event_sender,
+            event_receiver,
+            mut reader_threads,
+            viewer_worker,
+            socket,
+        } = self;
+        drop(event_sender);
+        let cleanup = cleanup_resources(
+            socket,
+            event_receiver,
+            &mut panes,
+            &mut reader_threads,
+            viewer_worker,
+        );
+        combine_cleanup_error(cause, cleanup)
+    }
+
+    fn commit(self) -> PreparedStartup {
+        let Self {
+            session,
+            panes,
+            event_sender,
+            event_receiver,
+            reader_threads,
+            viewer_worker,
+            socket,
+        } = self;
+        PreparedStartup {
+            session,
+            panes,
+            event_sender,
+            event_receiver,
+            reader_threads,
+            viewer_worker: viewer_worker.expect("viewer worker is prepared before commit"),
+            socket: socket.expect("session listener is prepared before commit"),
+        }
+    }
+}
+
+fn selected_launch_plan(
+    name: String,
+    profile: Option<&str>,
+    config: &Config,
+    context: &LaunchContext,
+    content_size: Size,
+) -> Result<LaunchPlan, String> {
+    if let Some(profile_name) = profile {
+        let configured = config
+            .profiles
+            .get(profile_name)
+            .ok_or_else(|| format!("profile '{profile_name}' does not exist"))?;
+        return profile::build_launch_plan(name, configured, context, content_size);
+    }
+
+    let session = Session::new(name);
+    let pane = session
+        .active_pane()
+        .expect("new session always contains one pane");
+    let launch = context
+        .resolve_target(&LaunchTarget::Shell, context.working_directory().to_owned())
+        .map_err(|error| format!("cannot preflight default shell: {error}"))?;
+    Ok(LaunchPlan {
+        session,
+        launches: vec![PlannedLaunch { pane, launch }],
+    })
+}
+
+fn prepare_startup(
+    runtime: &RuntimeDir,
+    name: String,
+    initial_size: Size,
+    config: &Config,
+    context: &LaunchContext,
+    profile: Option<&str>,
+) -> Result<PreparedStartup, String> {
+    let content_size = pane_area(initial_size);
+    let LaunchPlan { session, launches } =
+        selected_launch_plan(name, profile, config, context, content_size)?;
+    let mut transaction = CreationTransaction::new(session);
+    for planned in launches {
+        if let Err(error) = transaction.start_pane(
+            planned,
+            context,
+            content_size,
+            usize::from(config.scrollback_lines),
+        ) {
+            return Err(transaction.rollback(error));
+        }
+    }
+
+    transaction.viewer_worker = match ViewerWorker::spawn(transaction.event_sender.clone()) {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            return Err(transaction.rollback(format!("cannot start viewer worker: {error}")));
+        }
+    };
+
+    let socket = match runtime.bind(transaction.session.name()) {
+        Ok(socket) => socket,
+        Err(error) => return Err(transaction.rollback(error)),
+    };
+    if let Err(error) = socket.set_nonblocking(true) {
+        return Err(transaction.rollback(format!(
+            "cannot configure session listener: {error}"
+        )));
+    }
+    transaction.socket = Some(socket);
+    Ok(transaction.commit())
+}
+
+fn cleanup_resources(
+    socket: Option<SessionSocket>,
+    event_receiver: Receiver<ServerEvent>,
+    panes: &mut Vec<PaneProcess>,
+    reader_threads: &mut Vec<JoinHandle<()>>,
+    mut viewer_worker: Option<ViewerWorker>,
+) -> Vec<String> {
+    drop(socket);
+    drop(event_receiver);
+
+    let mut errors = Vec::new();
+    let mut children = panes
+        .iter_mut()
+        .filter_map(|pane| pane.child.as_mut())
+        .collect::<Vec<_>>();
+    if let Err(error) = pty::terminate_all(&mut children) {
+        errors.push(format!("cannot terminate session children: {error}"));
+    }
+    for reader_thread in reader_threads.drain(..) {
+        if reader_thread.join().is_err() {
+            errors.push("PTY reader thread panicked".into());
+        }
+    }
+    if let Some(viewer_worker) = viewer_worker.as_mut() {
+        viewer_worker.shutdown();
+    }
+    errors
+}
+
+fn combine_cleanup_error(cause: String, cleanup: Vec<String>) -> String {
+    if cleanup.is_empty() {
+        cause
+    } else {
+        format!("{cause}; cleanup failed: {}", cleanup.join("; "))
+    }
+}
+
 pub fn run(
     runtime: RuntimeDir,
     name: String,
@@ -313,42 +534,22 @@ pub fn run(
     )
     .map_err(|error| format!("cannot capture shell environment: {error}"))?;
     context.set_session_name(&name);
-    let _launch_plan = profile
-        .as_deref()
-        .map(|profile_name| {
-            let configured = config
-                .profiles
-                .get(profile_name)
-                .ok_or_else(|| format!("profile '{profile_name}' does not exist"))?;
-            profile::build_launch_plan(name.clone(), configured, &context, pane_area(initial_size))
-        })
-        .transpose()?;
-    let mut session = Session::new(name);
-    let first_pane = session
-        .active_pane()
-        .expect("new session always contains one pane");
-    let content_size = pane_area(initial_size);
-    let first_child = PtyChild::spawn(&context, content_size)
-        .map_err(|error| format!("cannot start shell: {error}"))?;
-    let first_reader = first_child
-        .output_reader()
-        .map_err(|error| format!("cannot read shell output: {error}"))?;
-    let (event_sender, event_receiver) = mpsc::sync_channel(CONNECTION_QUEUE_ITEMS);
-    let mut panes = vec![PaneProcess {
-        id: first_pane,
-        child: Some(first_child),
-        viewer: None,
-        viewer_gate: ViewerGate::default(),
-        pending_viewer_search: None,
-        pending_viewer_client: None,
-        terminal: Terminal::with_scrollback(content_size, usize::from(config.scrollback_lines))
-            .map_err(|error| format!("cannot create terminal screen: {error}"))?,
-        pending_input: PendingInput::new(),
-        working_directory: context.working_directory().to_owned(),
-    }];
-    spawn_pane_reader(first_pane, first_reader, event_sender.clone())?;
-    let mut viewer_worker = ViewerWorker::spawn(event_sender.clone())
-        .map_err(|error| format!("cannot start viewer worker: {error}"))?;
+    let PreparedStartup {
+        mut session,
+        mut panes,
+        event_sender,
+        event_receiver,
+        mut reader_threads,
+        viewer_worker,
+        socket,
+    } = prepare_startup(
+        &runtime,
+        name,
+        initial_size,
+        &config,
+        &context,
+        profile.as_deref(),
+    )?;
     let viewer_worker_handle = viewer_worker.handle();
     let mut clients = Vec::<Client>::new();
     let mut next_client_id = 1_u64;
@@ -365,10 +566,6 @@ pub fn run(
     let mut full_dirty = false;
     let mut content_dirty = false;
     let mut terminate = false;
-    let socket = runtime.bind(session.name())?;
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| format!("cannot configure session listener: {error}"))?;
 
     while !terminate {
         accept_clients(
@@ -609,14 +806,18 @@ pub fn run(
     for client in &clients {
         let _ = client.outbound.try_send(Message::Terminating);
     }
-    let mut children = panes
-        .iter_mut()
-        .filter_map(|pane| pane.child.as_mut())
-        .collect::<Vec<_>>();
-    let result = pty::terminate_all(&mut children)
-        .map_err(|error| format!("cannot terminate session children: {error}"));
-    viewer_worker.shutdown();
-    result
+    let cleanup = cleanup_resources(
+        Some(socket),
+        event_receiver,
+        &mut panes,
+        &mut reader_threads,
+        Some(viewer_worker),
+    );
+    if cleanup.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup.join("; "))
+    }
 }
 
 fn accept_clients(
@@ -719,11 +920,10 @@ fn spawn_pane_reader(
     pane_id: PaneId,
     reader: pty::PtyReader,
     sender: SyncSender<ServerEvent>,
-) -> Result<(), String> {
+) -> Result<JoinHandle<()>, String> {
     thread::Builder::new()
         .name(format!("termfold-pty-{pane_id:?}"))
         .spawn(move || read_pane(pane_id, reader, sender))
-        .map(|_| ())
         .map_err(|error| format!("cannot start PTY reader: {error}"))
 }
 
@@ -2630,7 +2830,7 @@ fn add_pane(
         .map_err(|error| format!("cannot read shell output: {error}"))?;
     let terminal = Terminal::with_scrollback(pane_size, scrollback_limit)
         .map_err(|error| format!("cannot create terminal screen: {error}"))?;
-    spawn_pane_reader(pane, reader, events.clone())?;
+    drop(spawn_pane_reader(pane, reader, events.clone())?);
     panes.push(PaneProcess {
         id: pane,
         child: Some(child),
@@ -2665,12 +2865,16 @@ fn resize_all(
     size: Size,
     rollback: Size,
 ) -> io::Result<()> {
-    let rects = session.pane_rects(pane_area(size));
-    let rollback_rects = session.pane_rects(pane_area(rollback));
-    if rects.iter().any(|(_, rect)| {
-        rect.width == 0
-            || rect.height == 0
-            || usize::from(rect.width) * usize::from(rect.height) > MAX_SCREEN_CELLS
+    let pane_size = |pane: PaneId, size: Size| {
+        session
+            .pane_size(pane, pane_area(size))
+            .unwrap_or_else(|| pane_area(size))
+    };
+    if panes.iter().any(|pane| {
+        let size = pane_size(pane.id, size);
+        size.columns == 0
+            || size.rows == 0
+            || usize::from(size.columns) * usize::from(size.rows) > MAX_SCREEN_CELLS
     }) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2678,24 +2882,9 @@ fn resize_all(
         ));
     }
     for index in 0..panes.len() {
-        let pane_size = rects
-            .iter()
-            .find(|(id, _)| *id == panes[index].id)
-            .map(|(_, rect)| Size {
-                columns: rect.width,
-                rows: rect.height,
-            })
-            .unwrap_or_else(|| pane_area(size));
-        if let Err(error) = panes[index].resize(pane_size) {
+        if let Err(error) = panes[index].resize(pane_size(panes[index].id, size)) {
             for resized in &mut panes[..index] {
-                let old = rollback_rects
-                    .iter()
-                    .find(|(id, _)| *id == resized.id)
-                    .map(|(_, rect)| Size {
-                        columns: rect.width,
-                        rows: rect.height,
-                    })
-                    .unwrap_or_else(|| pane_area(rollback));
+                let old = pane_size(resized.id, rollback);
                 let _ = resized.resize(old);
             }
             return Err(error);

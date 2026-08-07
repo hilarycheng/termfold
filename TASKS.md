@@ -708,13 +708,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
       Compile-only evidence does not complete the Native Windows validation
       checkbox.
 
-- [ ] **T26I — Create profile sessions atomically and roll back failures**
+- [x] **T26I — Create profile sessions atomically and roll back failures**
   - Recommended model: Luna Max.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Integrate the selected profile, temporary Session layout, immutable launch
     plan, native child creation, per-pane terminal models, output readers,
@@ -746,6 +746,28 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     reusability of the session name, and successful-state transfer before T26J.
   - Done when: a profile creation is externally all-or-nothing on both native
     platforms and no partial process tree or session endpoint survives failure.
+  - Implementation and Linux evidence (2026-08-07): added a shared creation
+    transaction that consumes the complete launch plan, starts panes and owned
+    reader threads in deterministic order, starts the bounded event resources
+    and viewer worker, and binds the session listener last. Rollback drops the
+    endpoint, releases the event receiver, terminates and reaps all started
+    children, joins reader threads, shuts down the viewer worker, and reports
+    cleanup errors without skipping later cleanup. Profile pane sizes now use
+    every tab during startup and resize; the no-profile shell path uses the
+    same transaction and remains behaviorally unchanged. Focused Linux checks
+    passed: `cargo test --locked server::tests::`,
+    `cargo test --locked session::tests::`,
+    `cargo test --locked profile::tests::`,
+    `cargo test --locked pty::tests::`,
+    `cargo test --locked --test server_lifecycle`, and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`.
+    The stripped Linux release binary is 1,061,616 bytes, up 8,192 bytes
+    (0.78%) from the T26H 1,053,424-byte baseline. The Windows compile-only
+    check `cargo check --locked --target x86_64-pc-windows-msvc` passed.
+  - Native Windows blocker: this Linux environment cannot execute the MSVC
+    release build, ConPTY startup/rollback tests, or native listener and
+    process cleanup checks. Compile-only evidence does not complete the
+    Native Windows validation checkbox.
 
 - [ ] **T26J — Run startup-profile acceptance and resource checks**
   - Recommended model: Luna High.

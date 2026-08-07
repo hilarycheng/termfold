@@ -285,6 +285,18 @@ impl Session {
             .map_or_else(Vec::new, |tab| tab.layout.rects(size))
     }
 
+    pub(crate) fn pane_size(&self, pane: PaneId, size: Size) -> Option<Size> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.layout.rects(size))
+            .find_map(|(candidate, rect)| {
+                (candidate == pane).then_some(Size {
+                    columns: rect.width,
+                    rows: rect.height,
+                })
+            })
+    }
+
     pub fn close_active_pane(&mut self, size: Size) -> Result<CloseResult, StateError> {
         let active = self.active_pane().ok_or(StateError::EmptySession)?;
         self.close_pane(active, size)
