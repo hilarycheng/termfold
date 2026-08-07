@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::profile::{Node, PaneLaunch, Profile, SplitDirection};
+
 pub const MAX_TABS: usize = 32;
 pub const MAX_PANES_PER_TAB: usize = 16;
 pub const MAX_SESSIONS_PER_USER: usize = 32;
@@ -73,6 +75,13 @@ pub enum CloseResult {
     SessionEmpty,
 }
 
+#[allow(dead_code)] // consumed by T26F before process startup
+#[derive(Debug)]
+pub(crate) struct ProfileSessionPlan {
+    pub(crate) session: Session,
+    pub(crate) launches: Vec<PaneLaunch>,
+}
+
 #[derive(Debug)]
 pub struct Session {
     name: String,
@@ -89,6 +98,49 @@ impl Session {
             active_tab: 0,
             next_pane_id: 2,
         }
+    }
+
+    #[allow(dead_code)] // consumed by T26F before process startup
+    pub(crate) fn from_profile(
+        name: String,
+        profile: &Profile,
+        content_size: Size,
+    ) -> Result<ProfileSessionPlan, StateError> {
+        if profile.tabs.is_empty() {
+            return Err(StateError::EmptySession);
+        }
+        if profile.tabs.len() > MAX_TABS {
+            return Err(StateError::TabLimit);
+        }
+
+        let mut next_pane_id = 1;
+        let mut launches = Vec::new();
+        let mut tabs = Vec::with_capacity(profile.tabs.len());
+        for root in &profile.tabs {
+            let (layout, active) =
+                build_profile_layout(&root.node, &mut next_pane_id, &mut launches);
+            let minimum = layout.minimum_size();
+            if minimum.columns > content_size.columns
+                || minimum.rows > content_size.rows
+                || layout
+                    .rects(content_size)
+                    .iter()
+                    .any(|(_, rect)| rect.width == 0 || rect.height == 0)
+            {
+                return Err(StateError::TooSmall);
+            }
+            tabs.push(Tab { layout, active });
+        }
+
+        Ok(ProfileSessionPlan {
+            session: Self {
+                name,
+                tabs,
+                active_tab: 0,
+                next_pane_id,
+            },
+            launches,
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -288,6 +340,41 @@ impl Session {
         self.next_pane_id += 1;
         pane
     }
+}
+
+#[allow(dead_code)] // called by the staged profile constructor
+fn build_profile_layout(
+    node: &Node,
+    next_pane_id: &mut u32,
+    launches: &mut Vec<PaneLaunch>,
+) -> (Layout, PaneId) {
+    if let Some((target, directory)) = node.leaf() {
+        let pane = PaneId(*next_pane_id);
+        *next_pane_id += 1;
+        launches.push(PaneLaunch {
+            pane,
+            target: target.clone(),
+            directory: directory.clone(),
+        });
+        return (Layout::Pane(pane), pane);
+    }
+
+    let (direction, first, second) = node.split().expect("profile node is a leaf or split");
+    let (first, active) = build_profile_layout(first, next_pane_id, launches);
+    let (second, _) = build_profile_layout(second, next_pane_id, launches);
+    let direction = match direction {
+        SplitDirection::LeftRight => Split::LeftRight,
+        SplitDirection::TopBottom => Split::TopBottom,
+    };
+    (
+        Layout::Split {
+            direction,
+            offset: 0,
+            first: Box::new(first),
+            second: Box::new(second),
+        },
+        active,
+    )
 }
 
 #[derive(Debug)]
@@ -642,6 +729,151 @@ mod tests {
         columns: 80,
         rows: 24,
     };
+
+    fn profile_for(source: &str) -> Profile {
+        crate::profile::parse(&source.parse::<toml::Table>().unwrap())
+            .unwrap()
+            .remove("default")
+            .unwrap()
+    }
+
+    fn split_tree(leaves: usize) -> String {
+        if leaves == 1 {
+            "{ shell = true }".into()
+        } else {
+            let first = leaves / 2;
+            format!(
+                "{{ split = \"left-right\", panes = [{}, {}] }}",
+                split_tree(first),
+                split_tree(leaves - first)
+            )
+        }
+    }
+
+    #[test]
+    fn profile_layout_builds_one_shell_without_spawning() {
+        let plan = Session::from_profile(
+            "work".into(),
+            &profile_for("[profiles.default]\ntabs = [{ shell = true }]"),
+            Size {
+                columns: 80,
+                rows: 23,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.session.name(), "work");
+        assert_eq!(plan.session.tab_count(), 1);
+        assert_eq!(plan.session.pane_count(), 1);
+        assert_eq!(plan.launches.len(), 1);
+        assert_eq!(plan.launches[0].pane.get(), 1);
+        assert!(matches!(
+            plan.launches[0].target,
+            crate::profile::LaunchTarget::Shell
+        ));
+    }
+
+    #[test]
+    fn profile_layout_preserves_tabs_splits_and_depth_first_launch_order() {
+        let profile = profile_for(
+            "[profiles.default]\ntabs = [\n  { split = \"left-right\", panes = [{ shell = true }, { shell = true }] },\n  { split = \"top-bottom\", panes = [{ shell = true }, { split = \"left-right\", panes = [{ shell = true }, { command = [\"/bin/echo\", \"hello\"] }] }] },\n]",
+        );
+        let plan = Session::from_profile(
+            "work".into(),
+            &profile,
+            Size {
+                columns: 8,
+                rows: 6,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.session.tab_count(), 2);
+        assert_eq!(
+            plan.launches
+                .iter()
+                .map(|launch| launch.pane.get())
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert!(matches!(
+            plan.session.tabs[0].layout,
+            Layout::Split {
+                direction: Split::LeftRight,
+                ..
+            }
+        ));
+        assert!(matches!(
+            plan.session.tabs[1].layout,
+            Layout::Split {
+                direction: Split::TopBottom,
+                ..
+            }
+        ));
+        assert!(
+            plan.session
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.layout.rects(Size {
+                    columns: 8,
+                    rows: 6
+                }))
+                .all(|(_, rect)| rect.width > 0 && rect.height > 0)
+        );
+    }
+
+    #[test]
+    fn profile_layout_accepts_tab_and_pane_boundaries() {
+        let tabs = (0..32)
+            .map(|_| "{ shell = true }")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let profile = profile_for(&format!("[profiles.default]\ntabs = [{tabs}]"));
+        let plan = Session::from_profile(
+            "work".into(),
+            &profile,
+            Size {
+                columns: 1,
+                rows: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.session.tab_count(), 32);
+        assert_eq!(plan.launches.len(), 32);
+
+        let profile = profile_for(&format!("[profiles.default]\ntabs = [{}]", split_tree(16)));
+        let plan = Session::from_profile(
+            "work".into(),
+            &profile,
+            Size {
+                columns: 31,
+                rows: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.launches.len(), 16);
+        assert_eq!(plan.session.pane_count(), 16);
+    }
+
+    #[test]
+    fn profile_layout_rejects_too_small_without_returning_partial_state() {
+        let profile = profile_for(
+            "[profiles.default]\ntabs = [{ split = \"left-right\", panes = [{ shell = true }, { shell = true }] }]",
+        );
+        assert_eq!(
+            Session::from_profile(
+                "work".into(),
+                &profile,
+                Size {
+                    columns: 2,
+                    rows: 1
+                }
+            )
+            .unwrap_err()
+            .to_string(),
+            "active pane is too small to split"
+        );
+    }
 
     #[test]
     fn state_transitions_preserve_limits_and_hierarchy() {

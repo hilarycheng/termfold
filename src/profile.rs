@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::session::PaneId;
 use toml::{Table, Value};
 
 const MAX_TABS: usize = 32;
@@ -48,6 +49,14 @@ pub(crate) enum LaunchTarget {
     },
 }
 
+#[allow(dead_code)] // consumed by the T26F launch-plan handoff
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PaneLaunch {
+    pub(crate) pane: PaneId,
+    pub(crate) target: LaunchTarget,
+    pub(crate) directory: ResolvedDirectory,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ResolvedDirectory(Option<PathBuf>);
 
@@ -55,6 +64,27 @@ impl ResolvedDirectory {
     #[allow(dead_code)]
     pub(crate) fn path(&self) -> Option<&Path> {
         self.0.as_deref()
+    }
+}
+
+#[allow(dead_code)] // consumed by the T26E session builder
+impl Node {
+    pub(crate) fn leaf(&self) -> Option<(&LaunchTarget, &ResolvedDirectory)> {
+        match self {
+            Self::Leaf { target, directory } => Some((target, directory)),
+            Self::Split { .. } => None,
+        }
+    }
+
+    pub(crate) fn split(&self) -> Option<(SplitDirection, &Node, &Node)> {
+        match self {
+            Self::Leaf { .. } => None,
+            Self::Split {
+                direction,
+                first,
+                second,
+            } => Some((*direction, first, second)),
+        }
     }
 }
 

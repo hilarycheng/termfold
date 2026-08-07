@@ -536,13 +536,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Native Windows blocker: this environment cannot execute the MSVC build or
     native Windows runtime validation.
 
-- [ ] **T26E — Build the complete profile Session layout without spawning**
+- [x] **T26E — Build the complete profile Session layout without spawning**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent validation complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
   - Convert a validated profile tree into a complete temporary `Session`, tabs,
     recursive existing `Layout::Split` trees, deterministic `PaneId` allocation,
     and a pane-to-launch-target mapping without starting PTYs or ConPTYs.
@@ -563,6 +563,15 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     deterministic IDs, launch mapping, and failure atomicity before T26F.
   - Done when: profile layout construction is a pure bounded operation that
     returns either one complete temporary Session plan or no state.
+  - Implementation: added `Session::from_profile` and `ProfileSessionPlan` using
+    the existing recursive `Layout`; pane IDs and ordered launch entries are
+    allocated depth-first, and minimum layout plus every pane rectangle is
+    checked before returning the temporary session. No process or terminal
+    startup occurs, and failure returns before exposing the plan.
+  - Evidence (2026-08-07, Linux): `cargo fmt --check`,
+    `cargo test --locked session::tests::` (8 passed), and `cargo build --locked`
+    passed. No dependency or binary-size change. README unchanged because this
+    task has no independently verified user-facing behaviour.
 
 - [ ] **T26F — Build and preflight one immutable launch plan**
   - Recommended model: Luna xHigh.
