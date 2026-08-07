@@ -116,14 +116,28 @@ pub struct PtyReader(File);
 
 impl PtyChild {
     pub fn spawn(context: &LaunchContext, size: Size) -> io::Result<Self> {
+        let launch = LaunchSpec {
+            executable: context.shell.clone(),
+            arguments: context.arguments.clone(),
+            working_directory: context.working_directory.clone(),
+        };
+        Self::spawn_with_spec(context, &launch, size)
+    }
+
+    pub(crate) fn spawn_with_spec(
+        context: &LaunchContext,
+        launch: &LaunchSpec,
+        size: Size,
+    ) -> io::Result<Self> {
         validate_size(size)?;
         let (master, slave) = open_pty(size)?;
         set_nonblocking(master.as_raw_fd())?;
         let stdin = slave.try_clone()?;
         let stdout = slave.try_clone()?;
-        let mut command = Command::new(&context.shell);
+        let mut command = Command::new(&launch.executable);
+        command.args(&launch.arguments);
         command
-            .current_dir(&context.working_directory)
+            .current_dir(&launch.working_directory)
             .env_clear()
             .envs(context.environment.iter().cloned())
             .env("TERM", &context.inner_term)
@@ -479,6 +493,38 @@ mod tests {
         while child.try_wait().unwrap().is_none() {
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn direct_target_preserves_arguments_directory_environment_and_pty_lifecycle() {
+        let mut child = PtyChild::spawn_with_spec(
+            &context(),
+            &LaunchSpec {
+                executable: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "printf '%s|%s|%s|%s' \"$PWD\" \"$TERM\" \"$TERMFOLD_TEST\" \"$1\"".into(),
+                    "termfold".into(),
+                    "literal value; * $HOME \"quotes\"".into(),
+                ],
+                working_directory: "/tmp".into(),
+            },
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+        let expected = b"/tmp|termfold-256color|inherited|literal value; * $HOME \"quotes\"";
+        let output = read_until(&mut child, expected).unwrap();
+        assert!(
+            output
+                .windows(expected.len())
+                .any(|window| window == expected)
+        );
+
+        terminate_all_with_grace(&mut [&mut child], Duration::from_millis(20)).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

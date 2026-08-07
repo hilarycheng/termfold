@@ -627,13 +627,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     execute. The target check is compile-only evidence and does not complete the
     Native Windows validation checkbox.
 
-- [ ] **T26G — Launch direct profile targets through Linux PTYs**
+- [x] **T26G — Launch direct profile targets through Linux PTYs**
   - Recommended model: Luna High.
   - Implementation scope: Linux.
   - Required validation: Linux.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
   - Extend the existing Linux `LaunchContext` and `PtyChild` path to launch either
     the approved shell or one planned absolute executable with literal arguments
     and its resolved working directory.
@@ -649,6 +649,19 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Depends on: T26F.
   - Done when: every Linux launch-plan leaf uses the existing PTY lifecycle and
     direct command targets cannot be shell-interpreted.
+  - Implementation: added a spec-driven Linux PTY spawn path. The existing
+    shell launch delegates to it, while planned executable, literal arguments,
+    and resolved working directory are passed directly to `Command`; the
+    captured environment and Termfold terminal variables, process-group setup,
+    PTY sizing, termination, and reap behavior remain shared.
+  - Evidence (2026-08-07, Linux): `cargo fmt --check`,
+    `cargo test --locked pty::tests::` (3 passed), `cargo test --locked`
+    (203 unit tests and 10 integration tests passed), and
+    `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+    The stripped Linux release binary is 1,053,424 bytes. The focused direct
+    target test covers literal empty and metacharacter-containing arguments,
+    resolved working directory, terminal environment, PTY output, termination,
+    and reap.
 
 - [ ] **T26H — Launch direct profile targets through native Windows ConPTY**
   - Recommended model: Luna xHigh.
