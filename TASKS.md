@@ -2782,13 +2782,13 @@ Rules for every T33 implementation request:
     a collapsible-if at `src/server.rs:1715`; production changes are outside
     this test-only task's allowed scope.
 
-- [ ] **T33H — Publish verified Vim repeat and wrap behaviour**
+- [x] **T33H — Publish verified Vim repeat and wrap behaviour**
   - Recommended model: Luna Low.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent validation complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
   - After T33G completes the required authoritative validation, update only the
     Large-file Viewer and key-reminder wording in `README.md`.
   - State that `/` and `?` establish the recorded matching direction, `]` and `[`
@@ -2804,3 +2804,11 @@ Rules for every T33 implementation request:
   - Depends on: T33G.
   - Done when: user-facing documentation matches the verified executable and no
     future, partial, or compile-only behaviour is described as available.
+  - Evidence (2026-08-07): Updated the Large-file Viewer section in `README.md`
+    with the verified recorded-direction rules for `/`, `?`, `]`, `[`, `n`, and
+    `N`; the exact forward and reverse one-wrap messages; and the valid one-result
+    wrap case. Ubuntu 24.04 WSL with Rust 1.97.1 passed `cargo fmt -- --check`,
+    `cargo test --locked -- --test-threads=1` (189 unit tests and 10 lifecycle
+    tests), and `cargo build --release --locked --target
+    x86_64-unknown-linux-musl`. Native Windows validation remains unavailable;
+    no cross-platform claim is made.

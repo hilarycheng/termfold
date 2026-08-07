@@ -211,9 +211,14 @@ scroll the viewport by one line without moving the cursor. A page is the visible
 viewer height minus two rows. Repeated page input keeps at most one page in flight
 and one changed-direction replacement. Use `/` for forward matching search, `?` for
 reverse matching search, `]` for forward non-matching-line search, and `[` for
-reverse non-matching-line search (Text mode only). `n` continues in the search
-direction and `N` reverses it; each search wraps at most once at the file boundary
-and reports `wrapped` when it does. Close the viewer with `Ctrl-b x` and confirm with `y`; `q`
+reverse non-matching-line search (Text mode only). These keys establish the
+recorded matching or non-matching direction. `n` repeats that direction; `N` uses
+the opposite direction without changing the recorded direction, so repeated `N`
+commands continue opposite to the recorded direction. Each search wraps at most
+once at the file boundary: forward wrap reports `search hit BOTTOM, continuing
+at TOP`, and reverse wrap reports `search hit TOP, continuing at BOTTOM`. A
+one-result search may wrap back to the same result. Close the viewer with
+`Ctrl-b x` and confirm with `y`; `q`
 and Esc do not close it. The prompt uses OSC 7 when the active shell reports it
 and otherwise starts from the session's startup directory.
 In the viewer, plain `?` starts reverse search; the configured prefix followed
