@@ -450,13 +450,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
       configuration acceptance remain blocked because this environment is
       Linux; compile-only evidence does not complete that checkbox.
 
-- [ ] **T26C — Parse and validate compact profile definitions**
+- [x] **T26C — Parse and validate compact profile definitions**
   - Recommended model: Luna High.
   - Implementation scope: Platform independent.
   - Required validation: Platform independent.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Platform-independent validation complete.
+    - [x] Task implementation complete.
+    - [x] Platform-independent validation complete.
   - Add `src/profile.rs` with explicit validated types for profile, tab root,
     recursive node, split direction, launch target, and resolved directory.
   - Parse `[profiles.NAME]` and the compact `tabs` array. Each node MUST be exactly
@@ -477,6 +477,21 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Depends on: T26B.
   - Done when: valid TOML produces an unambiguous immutable profile tree and every
     invalid form fails before filesystem or process work begins.
+  - Implementation and verification record:
+    - Added `src/profile.rs` with immutable validated profile, tab-root, recursive
+      node, split-direction, launch-target, and inherited-directory types. Integrated
+      profile parsing into the existing TOML configuration parse without filesystem
+      or process work; no dependency changes.
+    - Focused platform-independent checks in the Linux environment:
+      `cargo test --locked profile::tests::` passed all 7 profile tests, covering
+      named/default profiles, limits, leaves, splits,
+      inheritance, invalid paths, conflicts, unknown fields, and tab-title rejection.
+      `cargo build --release --locked --target x86_64-unknown-linux-musl` and
+      `cargo fmt --check` passed. Current stripped release binary is 1,041,136 bytes.
+    - Full locked test execution reached 196 passing tests and one unrelated
+      pre-existing runtime failure: `runtime::tests::socket_is_private_and_only_a_stale_socket_is_replaced`
+      could not bind its temporary `/tmp` Unix socket (`Operation not permitted`).
+      The isolated test passed on retry; no T26C test failed.
 
 - [ ] **T26D — Add creation-only profile selection to the CLI**
   - Recommended model: Luna High.

@@ -1,4 +1,4 @@
-use std::{env, fs, io::ErrorKind, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, io::ErrorKind, path::PathBuf};
 
 use crate::terminal::Color;
 use toml::{Table, Value};
@@ -25,6 +25,7 @@ pub struct Config {
     pub terminal_profile: String,
     pub inner_term: String,
     pub windows_shell: Vec<String>,
+    pub(crate) profiles: BTreeMap<String, crate::profile::Profile>,
     pub(crate) document: Table,
 }
 
@@ -51,6 +52,7 @@ impl Default for Config {
             terminal_profile: "auto".into(),
             inner_term: "termfold-256color".into(),
             windows_shell: Vec::new(),
+            profiles: BTreeMap::new(),
             document: Table::new(),
         }
     }
@@ -82,6 +84,7 @@ impl Config {
         let document = source
             .parse::<Table>()
             .map_err(|error| format!("configuration: invalid TOML: {error}"))?;
+        let profiles = crate::profile::parse(&document)?;
         let mut config = Self::default();
         for (field, value) in &document {
             match field.as_str() {
@@ -175,6 +178,7 @@ impl Config {
             }
         }
 
+        config.profiles = profiles;
         config.document = document;
         Ok(config)
     }
@@ -543,7 +547,8 @@ mod tests {
                  '--login',\n\
              ]\n\
              [profiles.default]\n\
-             directory = '/tmp'",
+             directory = '/tmp'\n\
+             tabs = [{ shell = true }]",
         )
         .unwrap();
         assert_eq!(config.prefix, 1);

@@ -5,6 +5,7 @@ mod config;
 mod input;
 pub mod ipc;
 mod outer;
+mod profile;
 #[cfg(target_os = "linux")]
 pub mod pty;
 #[cfg(target_os = "windows")]
