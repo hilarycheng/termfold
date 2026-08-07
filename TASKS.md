@@ -663,12 +663,12 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     resolved working directory, terminal environment, PTY output, termination,
     and reap.
 
-- [ ] **T26H — Launch direct profile targets through native Windows ConPTY**
+- [x] **T26H — Launch direct profile targets through native Windows ConPTY**
   - Recommended model: Luna xHigh.
   - Implementation scope: Native Windows.
   - Required validation: Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
+    - [x] Task implementation complete.
     - [ ] Native Windows validation complete.
   - Extend the existing Windows `LaunchContext` and `PtyChild` path to launch
     either the configured/default shell or one planned absolute executable with
@@ -687,6 +687,26 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
   - Depends on: T21, T23, T26F.
   - Done when: every native Windows launch-plan leaf preserves exact argument
     boundaries and the existing ConPTY lifecycle.
+  - Implementation and verification record:
+    - Added `PtyChild::spawn_with_spec` and routed the existing shell path through
+      it. `CreateProcessW` now receives the planned executable, deterministic
+      quoted command line, and resolved working directory while preserving the
+      existing ConPTY handles, environment block, job object, close, terminate,
+      and reap lifecycle. Added same-module checks for empty, spaced, quoted, and
+      trailing-backslash arguments plus direct output and termination coverage.
+    - Linux evidence (2026-08-07): `cargo fmt --check`,
+      `cargo test --locked pty::tests::` (3 passed),
+      `cargo check --locked --target x86_64-pc-windows-msvc --tests`, and
+      `cargo build --release --locked --target x86_64-unknown-linux-musl` passed.
+      The stripped Linux release binary remains 1,053,424 bytes; no dependency
+      or Linux binary-size change was introduced. A full locked test run passed
+      all 203 unit tests and 9 of 10 lifecycle tests before the known timing-
+      sensitive `viewer_matching_repeats_and_wraps_through_the_session` failure;
+      its isolated rerun passed.
+    - Native Windows blocker: this Linux environment cannot run the MSVC build,
+      ConPTY startup/output tests, or native job-object and termination checks.
+      Compile-only evidence does not complete the Native Windows validation
+      checkbox.
 
 - [ ] **T26I — Create profile sessions atomically and roll back failures**
   - Recommended model: Luna Max.

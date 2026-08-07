@@ -266,6 +266,19 @@ pub struct PtyChild {
 
 impl PtyChild {
     pub fn spawn(context: &LaunchContext, size: Size) -> io::Result<Self> {
+        let launch = LaunchSpec {
+            executable: context.shell.clone(),
+            arguments: context.arguments.clone(),
+            working_directory: context.working_directory.clone(),
+        };
+        Self::spawn_with_spec(context, &launch, size)
+    }
+
+    pub(crate) fn spawn_with_spec(
+        context: &LaunchContext,
+        launch: &LaunchSpec,
+        size: Size,
+    ) -> io::Result<Self> {
         validate_size(size)?;
         let (console, mut master, console_input, console_output) = create_pseudo_console(size)?;
         let mut attribute_size = 0;
@@ -322,9 +335,9 @@ impl PtyChild {
         startup.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
         startup.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         startup.lpAttributeList = attribute_list;
-        let application = wide(&context.shell);
-        let mut command_line = command_line(context);
-        let current_directory = wide(context.working_directory.as_os_str());
+        let application = wide(&launch.executable);
+        let mut command_line = command_line(launch);
+        let current_directory = wide(launch.working_directory.as_os_str());
         let environment = environment_block(context);
         let mut process = PROCESS_INFORMATION::default();
         let flags = EXTENDED_STARTUPINFO_PRESENT
@@ -718,10 +731,10 @@ pub(crate) fn validate_executable(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn command_line(context: &LaunchContext) -> Vec<u16> {
+fn command_line(launch: &LaunchSpec) -> Vec<u16> {
     let mut command = Vec::new();
-    for argument in std::iter::once(context.shell.as_os_str())
-        .chain(context.arguments.iter().map(OsString::as_os_str))
+    for argument in std::iter::once(launch.executable.as_os_str())
+        .chain(launch.arguments.iter().map(OsString::as_os_str))
     {
         if !command.is_empty() {
             command.push(b' ' as u16);
@@ -835,4 +848,127 @@ fn hresult_error(operation: &str, result: i32) -> io::Error {
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn context() -> LaunchContext {
+        let working_directory = env::current_dir().unwrap();
+        let (shell, arguments) = approved_shell(&[]).unwrap();
+        LaunchContext {
+            shell,
+            arguments,
+            working_directory: working_directory.clone(),
+            environment: vec![("TERMFOLD_TEST".into(), "inherited".into())],
+            terminfo_root: working_directory.join("terminfo"),
+            inner_term: "termfold-256color".into(),
+            session_name: Some("test".into()),
+        }
+    }
+
+    fn read_until(child: &mut PtyChild, expected: &[u8]) -> io::Result<Vec<u8>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        while Instant::now() < deadline {
+            let mut buffer = [0; 256];
+            match child.master().read(&mut buffer) {
+                Ok(0) => break,
+                Ok(length) => output.extend_from_slice(&buffer[..length]),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(error) if is_eof_error(&error) => break,
+                Err(error) => return Err(error),
+            }
+            if output
+                .windows(expected.len())
+                .any(|window| window == expected)
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(output)
+    }
+
+    #[test]
+    fn command_line_quotes_literal_windows_arguments() {
+        let launch = LaunchSpec {
+            executable: r"C:\Program Files\Termfold\termfold.exe".into(),
+            arguments: vec![
+                OsString::new(),
+                "plain".into(),
+                "two words".into(),
+                "quote\"value".into(),
+                r"C:\trailing\".into(),
+            ],
+            working_directory: PathBuf::new(),
+        };
+        let line = command_line(&launch);
+        assert_eq!(line.last(), Some(&0));
+        assert_eq!(
+            String::from_utf16(&line[..line.len() - 1]).unwrap(),
+            "\"C:\\Program Files\\Termfold\\termfold.exe\" \"\" \"plain\" \"two words\" \"quote\\\"value\" \"C:\\trailing\\\\\""
+        );
+    }
+
+    #[test]
+    fn direct_target_preserves_context_and_conpty_output() {
+        let context = context();
+        let mut child = PtyChild::spawn_with_spec(
+            &context,
+            &LaunchSpec {
+                executable: context.shell.clone(),
+                arguments: vec![
+                    "/D".into(),
+                    "/C".into(),
+                    "echo %CD% %TERM% %TERMFOLD_TEST%".into(),
+                ],
+                working_directory: context.working_directory.clone(),
+            },
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+        let expected = format!(
+            "{} termfold-256color inherited",
+            context.working_directory.display()
+        );
+        let output = read_until(&mut child, expected.as_bytes()).unwrap();
+        assert!(
+            output
+                .windows(expected.len())
+                .any(|window| window == expected.as_bytes())
+        );
+        while child.try_wait().unwrap().is_none() {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn default_shell_termination_closes_conpty_and_reaps_process() {
+        let mut child = PtyChild::spawn(
+            &context(),
+            Size {
+                columns: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+        child
+            .master()
+            .write_all(b"echo termfold-shell\r\n")
+            .unwrap();
+        assert!(
+            read_until(&mut child, b"termfold-shell")
+                .unwrap()
+                .windows(14)
+                .any(|window| window == b"termfold-shell")
+        );
+        terminate_all(&mut [&mut child]).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
 }
