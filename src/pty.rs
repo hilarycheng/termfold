@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::session::Size;
+use crate::{profile::LaunchTarget, session::Size};
 
 pub const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 
@@ -24,6 +24,7 @@ pub(crate) fn is_eof_error(error: &io::Error) -> bool {
 #[derive(Debug)]
 pub struct LaunchContext {
     shell: OsString,
+    arguments: Vec<OsString>,
     working_directory: PathBuf,
     environment: Vec<(OsString, OsString)>,
     terminfo_root: PathBuf,
@@ -39,6 +40,7 @@ impl LaunchContext {
     ) -> io::Result<Self> {
         Ok(Self {
             shell: approved_shell(),
+            arguments: Vec::new(),
             working_directory: env::current_dir()?,
             environment: env::vars_os().collect(),
             terminfo_root,
@@ -58,6 +60,48 @@ impl LaunchContext {
     pub fn set_session_name(&mut self, name: &str) {
         self.session_name = Some(name.into());
     }
+
+    pub(crate) fn resolve_target(
+        &self,
+        target: &LaunchTarget,
+        working_directory: PathBuf,
+    ) -> io::Result<LaunchSpec> {
+        let (executable, arguments) = match target {
+            LaunchTarget::Shell => (self.shell.clone(), self.arguments.clone()),
+            LaunchTarget::Command {
+                executable,
+                arguments,
+            } => {
+                validate_executable(executable)?;
+                (
+                    executable.as_os_str().to_owned(),
+                    arguments.iter().map(OsString::from).collect(),
+                )
+            }
+        };
+        if executable.to_string_lossy().contains('\0')
+            || arguments
+                .iter()
+                .any(|argument| argument.to_string_lossy().contains('\0'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "launch target contains a NUL byte",
+            ));
+        }
+        Ok(LaunchSpec {
+            executable,
+            arguments,
+            working_directory,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LaunchSpec {
+    pub(crate) executable: OsString,
+    pub(crate) arguments: Vec<OsString>,
+    pub(crate) working_directory: PathBuf,
 }
 
 #[derive(Debug)]
@@ -262,6 +306,20 @@ fn approved_shell() -> OsString {
         .unwrap_or_else(|| OsString::from("/bin/sh"))
 }
 
+pub(crate) fn validate_executable(path: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "launch target '{}' is not an executable regular file",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_size(size: Size) -> io::Result<()> {
     if size.columns == 0 || size.rows == 0 {
         Err(io::Error::new(
@@ -352,6 +410,7 @@ mod tests {
     fn context() -> LaunchContext {
         LaunchContext {
             shell: "/bin/sh".into(),
+            arguments: Vec::new(),
             working_directory: "/tmp".into(),
             environment: vec![
                 ("TERM".into(), "wrong".into()),

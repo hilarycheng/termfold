@@ -13,6 +13,7 @@ use crate::{
     input::{self, Action, Input, MouseEvent},
     ipc::{self, Message},
     outer::{self, Capabilities},
+    profile,
     pty::{self, LaunchContext, PtyChild},
     render::{self, Metrics, StatusLine},
     runtime::{ClientStream, RuntimeDir, SessionSocket},
@@ -302,7 +303,7 @@ pub fn run(
     name: String,
     initial_size: Size,
     config: Config,
-    _profile: Option<String>,
+    profile: Option<String>,
 ) -> Result<(), String> {
     let terminfo_root = runtime.materialize_terminfo()?;
     let mut context = LaunchContext::capture(
@@ -312,6 +313,16 @@ pub fn run(
     )
     .map_err(|error| format!("cannot capture shell environment: {error}"))?;
     context.set_session_name(&name);
+    let _launch_plan = profile
+        .as_deref()
+        .map(|profile_name| {
+            let configured = config
+                .profiles
+                .get(profile_name)
+                .ok_or_else(|| format!("profile '{profile_name}' does not exist"))?;
+            profile::build_launch_plan(name.clone(), configured, &context, pane_area(initial_size))
+        })
+        .transpose()?;
     let mut session = Session::new(name);
     let first_pane = session
         .active_pane()

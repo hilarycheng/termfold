@@ -573,13 +573,13 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     passed. No dependency or binary-size change. README unchanged because this
     task has no independently verified user-facing behaviour.
 
-- [ ] **T26F — Build and preflight one immutable launch plan**
+- [x] **T26F — Build and preflight one immutable launch plan**
   - Recommended model: Luna xHigh.
   - Implementation scope: Platform independent.
   - Required validation: Linux and Native Windows.
   - Completion status:
-    - [ ] Task implementation complete.
-    - [ ] Linux validation complete.
+    - [x] Task implementation complete.
+    - [x] Linux validation complete.
     - [ ] Native Windows validation complete.
   - Combine T26C directory inheritance and T26E pane mapping into one immutable
     launch plan before the first target is started.
@@ -606,6 +606,26 @@ src/profile.rs   Validated profile model, immutable launch plan, and shared
     resources before T26G and T26H.
   - Done when: server startup receives one fully validated ordered launch plan or
     fails before any process-visible side effect.
+  - Implementation: added an owned `LaunchPlan` containing the complete T26E
+    session layout and ordered resolved launch specs. Profile startup now checks
+    every inherited or overridden directory and every direct executable before
+    the first PTY, reader, event queue, viewer worker, or listener is created.
+    Linux requires an executable regular file; Windows requires a native absolute
+    regular-file path. Shell leaves reuse the captured approved shell and its
+    configured arguments, while command arguments remain literal. No dependency
+    or README change.
+  - Linux evidence (2026-08-07): `cargo fmt --check`,
+    `cargo test --locked profile::tests::` (8 passed),
+    `cargo test --locked pty::tests::` (2 passed),
+    `cargo test --locked session::tests::` (8 passed),
+    `cargo build --release --locked --target x86_64-unknown-linux-musl`, and
+    `cargo check --locked --target x86_64-pc-windows-msvc` passed. The stripped
+    Linux release binary is 1,053,424 bytes, up 12,288 bytes (1.18%) from the
+    1,041,136-byte T26C/T26E baseline.
+  - Native Windows blocker: this environment is Linux, so the MSVC release
+    build, native filesystem validation, and Windows runtime tests could not
+    execute. The target check is compile-only evidence and does not complete the
+    Native Windows validation checkbox.
 
 - [ ] **T26G — Launch direct profile targets through Linux PTYs**
   - Recommended model: Luna High.

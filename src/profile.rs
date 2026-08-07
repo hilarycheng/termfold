@@ -1,9 +1,13 @@
 use std::{
     collections::BTreeMap,
+    fs,
     path::{Path, PathBuf},
 };
 
-use crate::session::PaneId;
+use crate::{
+    pty::{LaunchContext, LaunchSpec},
+    session::{PaneId, ProfileSessionPlan, Session, Size},
+};
 use toml::{Table, Value};
 
 const MAX_TABS: usize = 32;
@@ -57,6 +61,20 @@ pub(crate) struct PaneLaunch {
     pub(crate) directory: ResolvedDirectory,
 }
 
+#[allow(dead_code)] // consumed by the T26I session-creation handoff
+#[derive(Debug)]
+pub(crate) struct LaunchPlan {
+    pub(crate) session: Session,
+    pub(crate) launches: Vec<PlannedLaunch>,
+}
+
+#[allow(dead_code)] // consumed by the T26I session-creation handoff
+#[derive(Debug)]
+pub(crate) struct PlannedLaunch {
+    pub(crate) pane: PaneId,
+    pub(crate) launch: LaunchSpec,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ResolvedDirectory(Option<PathBuf>);
 
@@ -64,6 +82,53 @@ impl ResolvedDirectory {
     #[allow(dead_code)]
     pub(crate) fn path(&self) -> Option<&Path> {
         self.0.as_deref()
+    }
+}
+
+pub(crate) fn build_launch_plan(
+    name: String,
+    profile: &Profile,
+    context: &LaunchContext,
+    content_size: Size,
+) -> Result<LaunchPlan, String> {
+    let ProfileSessionPlan { session, launches } =
+        Session::from_profile(name, profile, content_size)
+            .map_err(|error| format!("cannot build profile '{}': {error}", profile.name))?;
+    let mut planned = Vec::with_capacity(launches.len());
+    for (index, pane) in launches.into_iter().enumerate() {
+        let directory = pane
+            .directory
+            .path()
+            .unwrap_or_else(|| context.working_directory())
+            .to_owned();
+        validate_directory(&directory, index)?;
+        let launch = context
+            .resolve_target(&pane.target, directory)
+            .map_err(|error| format!("cannot preflight profile target {}: {error}", index + 1))?;
+        planned.push(PlannedLaunch {
+            pane: pane.pane,
+            launch,
+        });
+    }
+    Ok(LaunchPlan {
+        session,
+        launches: planned,
+    })
+}
+
+fn validate_directory(path: &Path, index: usize) -> Result<(), String> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "profile target {} directory '{}' is not a directory",
+            index + 1,
+            path.display()
+        )),
+        Err(error) => Err(format!(
+            "profile target {} directory '{}' is unavailable: {error}",
+            index + 1,
+            path.display()
+        )),
     }
 }
 
@@ -315,8 +380,12 @@ fn error(path: &str, message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LaunchTarget, Node, ResolvedDirectory, SplitDirection, parse};
-    use std::path::Path;
+    use super::{
+        LaunchTarget, Node, Profile, ResolvedDirectory, SplitDirection, TabRoot, build_launch_plan,
+        parse,
+    };
+    use crate::{pty::LaunchContext, session::Size};
+    use std::{env, path::Path};
     use toml::{Table, Value};
 
     fn parse_source(
@@ -496,5 +565,79 @@ mod tests {
             .into_iter()
             .collect::<Table>();
         assert!(parse(&document).unwrap_err().contains("profiles"));
+    }
+
+    #[test]
+    fn preflights_direct_targets_and_directories_before_returning_a_plan() {
+        let directory = env::current_dir().unwrap();
+        let executable = env::current_exe().unwrap();
+        let profile = Profile {
+            name: "default".into(),
+            directory: ResolvedDirectory(Some(directory.clone())),
+            tabs: vec![TabRoot {
+                node: Node::Split {
+                    direction: SplitDirection::LeftRight,
+                    first: Box::new(Node::Leaf {
+                        target: LaunchTarget::Shell,
+                        directory: ResolvedDirectory::default(),
+                    }),
+                    second: Box::new(Node::Leaf {
+                        target: LaunchTarget::Command {
+                            executable: executable.clone(),
+                            arguments: vec!["literal value".into(), "".into()],
+                        },
+                        directory: ResolvedDirectory(Some(directory.clone())),
+                    }),
+                },
+            }],
+        };
+        let context =
+            LaunchContext::capture(directory.join("terminfo"), "termfold-256color".into(), &[])
+                .unwrap();
+        let plan = build_launch_plan(
+            "default".into(),
+            &profile,
+            &context,
+            Size {
+                columns: 80,
+                rows: 23,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.launches.len(), 2);
+        assert_eq!(
+            plan.launches[1].launch.executable,
+            executable.into_os_string()
+        );
+        assert_eq!(
+            plan.launches[1].launch.arguments,
+            vec![
+                std::ffi::OsString::from("literal value"),
+                std::ffi::OsString::new()
+            ]
+        );
+
+        let mut invalid = profile;
+        if let Node::Split { second, .. } = &mut invalid.tabs[0].node {
+            if let Node::Leaf {
+                directory: leaf_directory,
+                ..
+            } = second.as_mut()
+            {
+                *leaf_directory = ResolvedDirectory(Some(directory.join("missing")));
+            }
+        }
+        assert!(
+            build_launch_plan(
+                "default".into(),
+                &invalid,
+                &context,
+                Size {
+                    columns: 80,
+                    rows: 23,
+                }
+            )
+            .is_err()
+        );
     }
 }

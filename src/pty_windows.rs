@@ -42,7 +42,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::session::Size;
+use crate::{profile::LaunchTarget, session::Size};
 
 pub const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
@@ -95,6 +95,48 @@ impl LaunchContext {
     pub fn set_session_name(&mut self, name: &str) {
         self.session_name = Some(name.into());
     }
+
+    pub(crate) fn resolve_target(
+        &self,
+        target: &LaunchTarget,
+        working_directory: PathBuf,
+    ) -> io::Result<LaunchSpec> {
+        let (executable, arguments) = match target {
+            LaunchTarget::Shell => (self.shell.clone(), self.arguments.clone()),
+            LaunchTarget::Command {
+                executable,
+                arguments,
+            } => {
+                validate_executable(executable)?;
+                (
+                    executable.as_os_str().to_owned(),
+                    arguments.iter().map(OsString::from).collect(),
+                )
+            }
+        };
+        if executable.to_string_lossy().contains('\0')
+            || arguments
+                .iter()
+                .any(|argument| argument.to_string_lossy().contains('\0'))
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "launch target contains a NUL byte",
+            ));
+        }
+        Ok(LaunchSpec {
+            executable,
+            arguments,
+            working_directory,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LaunchSpec {
+    pub(crate) executable: OsString,
+    pub(crate) arguments: Vec<OsString>,
+    pub(crate) working_directory: PathBuf,
 }
 
 #[derive(Debug)]
@@ -657,6 +699,23 @@ fn approved_shell(configured: &[String]) -> io::Result<(OsString, Vec<OsString>)
         .map(PathBuf::into_os_string)
         .map(|shell| (shell, Vec::new()))
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "cannot locate cmd.exe"))
+}
+
+pub(crate) fn validate_executable(path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "launch target must be an absolute path",
+        ));
+    }
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("launch target '{}' is not a regular file", path.display()),
+        ));
+    }
+    Ok(())
 }
 
 fn command_line(context: &LaunchContext) -> Vec<u16> {
