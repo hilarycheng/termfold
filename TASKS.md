@@ -3320,3 +3320,63 @@ Rules for every T33 implementation request:
     tests), and `cargo build --release --locked --target
     x86_64-unknown-linux-musl`. Native Windows validation remains unavailable;
     no cross-platform claim is made.
+
+## T34 — Legacy ncurses terminfo compatibility
+
+- [x] **T34 — Supply a Linux legacy terminfo fallback**
+  - Implementation scope: Linux.
+  - Required validation: Linux.
+  - Completion status:
+    - [x] Task implementation complete.
+    - [ ] Linux validation complete.
+  - Reproduction: RHEL 7.7 with ncurses 5.9 and Vim minimal 7.4 reports an
+    unknown `termfold-256color` terminal inside a Termfold shell.
+  - Root cause: the embedded entry has magic `0x021e` and 32-bit numbers;
+    ncurses 5.9 accepts the legacy `0x011a` format. The source's 65536 colour
+    pairs require the modern format.
+  - Keep the modern entry and terminal name; embed a second legacy entry with
+    the same capabilities and a 32767 colour-pair limit. Reuse Linux private
+    extraction and validation, and prepend its database to `TERMINFO_DIRS`
+    while preserving inherited search paths. Do not detect library versions
+    or add runtime helper programs or dependencies.
+  - Requirement: Shell Launch and Inner Terminal Identity; Inner Terminal
+    Behaviour; IPC and Filesystem Security.
+  - Depends on: T04A, T06, T19.
+  - Focused checks: compiled formats and capability equivalence; both entries'
+    private modes, stale replacement and invalid-file rejection; shell and
+    direct-command fallback environment, including inherited search paths;
+    ncurses 5.9/Vim 7.4 fallback and modern ncurses primary selection.
+  - Windows-side checks: shared compiled-entry regression, formatting, and
+    `cargo build --release --locked --target x86_64-pc-windows-msvc`.
+  - Done when: both entries are validated before shell launch, current ncurses
+    retains the modern entry, and ncurses 5.9/Vim 7.4 can read the legacy entry
+    with no system terminfo installation.
+  - Validation constraint: the user requested Windows-side work and will compile
+    Linux themselves. Linux runtime checks and the musl build remain pending;
+    Windows evidence does not complete Linux validation.
+  - Upstream evidence: [ncurses 5.9 reader](https://github.com/mirror/ncurses/blob/v5.9/ncurses/tinfo/read_entry.c#L491)
+    continues database search after a failed read; [database iterator](https://github.com/mirror/ncurses/blob/v5.9/ncurses/tinfo/db_iterator.c#L146)
+    searches `TERMINFO` before `TERMINFO_DIRS`; [binary formats](https://invisible-island.net/ncurses/man/term.5.html)
+    define the legacy and extended numeric encodings.
+  - Implementation (2026-10-05): added the legacy compiled artifact at
+    `terminfo/compiled/legacy/t/termfold-256color`. Windows MSYS2 ncurses
+    6.4.20221231 `tic -x` generated it from the existing source with only
+    `pairs#65536` changed to `pairs#32767`; the modern artifact is unchanged.
+    Linux `RuntimeDir` reuses the existing atomic extraction and secure byte
+    validation for both entries. Linux `PtyChild::spawn_with_spec` prepends the
+    legacy database to captured `TERMINFO_DIRS`, preserving empty path segments
+    and inherited directories. Existing Linux security and shell/direct-command
+    tests cover both entries and the added environment variable.
+  - Windows evidence (2026-10-05, native Windows, Rust 1.97.1/MSVC):
+    `cargo test --locked --target x86_64-pc-windows-msvc --test terminfo`
+    passed (1/1), confirming format headers, 256 colours, distinct pair limits,
+    and identical names, booleans, other numbers and string capabilities.
+    `rustfmt --edition 2024 --check src/runtime.rs src/pty.rs tests/terminfo.rs`
+    and `cargo build --release --locked --target x86_64-pc-windows-msvc` passed.
+    Full `cargo fmt --all -- --check` remains blocked by existing formatting in
+    `src/server.rs` at lines 342-355 and 474-480, outside this fix's scope.
+  - Remaining validation: Linux-focused runtime/PTY tests, the musl release
+    build, ncurses 5.9/Vim 7.4 acceptance, and modern ncurses primary selection
+    were not run, per the user's Windows-only validation instruction. Windows
+    checks do not compile or execute the changed Linux modules. `README.md`
+    publication remains pending Linux runtime verification.

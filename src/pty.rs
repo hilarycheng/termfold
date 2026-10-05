@@ -130,6 +130,16 @@ impl PtyChild {
         size: Size,
     ) -> io::Result<Self> {
         validate_size(size)?;
+        let inherited_dirs = context
+            .environment
+            .iter()
+            .find(|(name, _)| name == "TERMINFO_DIRS")
+            .map_or(OsStr::new(""), |(_, value)| value.as_os_str());
+        let terminfo_dirs = env::join_paths(
+            std::iter::once(context.terminfo_root.join("legacy"))
+                .chain(env::split_paths(inherited_dirs)),
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let (master, slave) = open_pty(size)?;
         set_nonblocking(master.as_raw_fd())?;
         let stdin = slave.try_clone()?;
@@ -143,6 +153,7 @@ impl PtyChild {
             .env("TERM", &context.inner_term)
             .env("COLORTERM", "truecolor")
             .env("TERMINFO", &context.terminfo_root)
+            .env("TERMINFO_DIRS", terminfo_dirs)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(slave));
@@ -430,6 +441,10 @@ mod tests {
                 ("TERM".into(), "wrong".into()),
                 ("COLORTERM".into(), "wrong".into()),
                 ("TERMINFO".into(), "wrong".into()),
+                (
+                    "TERMINFO_DIRS".into(),
+                    "/custom/terminfo::/other/terminfo".into(),
+                ),
                 ("TERMFOLD_TEST".into(), "inherited".into()),
             ],
             terminfo_root: "/tmp/terminfo".into(),
@@ -480,10 +495,10 @@ mod tests {
         child
             .master()
             .write_all(
-                b"printf '%s|%s|%s|%s|%s|' \"$PWD\" \"$TERM\" \"$COLORTERM\" \"$TERMINFO\" \"$TERMFOLD_TEST\"; /bin/stty size; exit\n",
+                b"printf '%s|%s|%s|%s|%s|%s|' \"$PWD\" \"$TERM\" \"$COLORTERM\" \"$TERMINFO\" \"$TERMINFO_DIRS\" \"$TERMFOLD_TEST\"; /bin/stty size; exit\n",
             )
             .unwrap();
-        let expected = b"/tmp|termfold-256color|truecolor|/tmp/terminfo|inherited|40 100";
+        let expected = b"/tmp|termfold-256color|truecolor|/tmp/terminfo|/tmp/terminfo/legacy:/custom/terminfo::/other/terminfo|inherited|40 100";
         let output = read_until(&mut child, expected).unwrap();
         assert!(
             output
@@ -497,13 +512,17 @@ mod tests {
 
     #[test]
     fn direct_target_preserves_arguments_directory_environment_and_pty_lifecycle() {
+        let mut context = context();
+        context
+            .environment
+            .retain(|(name, _)| name != "TERMINFO_DIRS");
         let mut child = PtyChild::spawn_with_spec(
-            &context(),
+            &context,
             &LaunchSpec {
                 executable: "/bin/sh".into(),
                 arguments: vec![
                     "-c".into(),
-                    "printf '%s|%s|%s|%s' \"$PWD\" \"$TERM\" \"$TERMFOLD_TEST\" \"$1\"".into(),
+                    "printf '%s|%s|%s|%s|%s' \"$PWD\" \"$TERM\" \"$TERMINFO_DIRS\" \"$TERMFOLD_TEST\" \"$1\"".into(),
                     "termfold".into(),
                     "literal value; * $HOME \"quotes\"".into(),
                 ],
@@ -515,7 +534,7 @@ mod tests {
             },
         )
         .unwrap();
-        let expected = b"/tmp|termfold-256color|inherited|literal value; * $HOME \"quotes\"";
+        let expected = b"/tmp|termfold-256color|/tmp/terminfo/legacy:|inherited|literal value; * $HOME \"quotes\"";
         let output = read_until(&mut child, expected).unwrap();
         assert!(
             output

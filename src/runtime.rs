@@ -13,6 +13,8 @@ use std::{
 };
 
 const TERMINFO_ENTRY: &[u8] = include_bytes!("../terminfo/compiled/t/termfold-256color");
+const LEGACY_TERMINFO_ENTRY: &[u8] =
+    include_bytes!("../terminfo/compiled/legacy/t/termfold-256color");
 
 #[derive(Debug)]
 pub struct ClientStream(UnixStream);
@@ -178,13 +180,19 @@ impl RuntimeDir {
 
     pub fn materialize_terminfo(&self) -> Result<PathBuf, String> {
         let root = self.path.join("terminfo");
+        self.materialize_terminfo_entry(&root, TERMINFO_ENTRY)?;
+        self.materialize_terminfo_entry(&root.join("legacy"), LEGACY_TERMINFO_ENTRY)?;
+        Ok(root)
+    }
+
+    fn materialize_terminfo_entry(&self, root: &Path, entry: &[u8]) -> Result<(), String> {
         let entries = root.join("t");
-        ensure_private_dir(&root, self.uid)?;
+        ensure_private_dir(root, self.uid)?;
         ensure_private_dir(&entries, self.uid)?;
         let target = entries.join("termfold-256color");
 
-        let replace = match validate_terminfo(&target, self.uid)? {
-            Some(true) => return Ok(root),
+        let replace = match validate_terminfo(&target, self.uid, entry)? {
+            Some(true) => return Ok(()),
             Some(false) => true,
             None => false,
         };
@@ -209,7 +217,7 @@ impl RuntimeDir {
                 }
             };
             let result = file
-                .write_all(TERMINFO_ENTRY)
+                .write_all(entry)
                 .and_then(|()| file.sync_all())
                 .and_then(|()| {
                     if replace {
@@ -230,8 +238,8 @@ impl RuntimeDir {
                     ));
                 }
             }
-            return validate_materialized_terminfo(&target, self.uid).and_then(|valid| {
-                valid.then_some(root).ok_or_else(|| {
+            return validate_materialized_terminfo(&target, self.uid, entry).and_then(|valid| {
+                valid.then_some(()).ok_or_else(|| {
                     format!(
                         "private terminfo entry {} does not match this Termfold binary",
                         target.display()
@@ -353,9 +361,9 @@ fn ensure_private_dir(path: &Path, uid: u32) -> Result<(), String> {
     }
 }
 
-fn validate_terminfo(path: &Path, uid: u32) -> Result<Option<bool>, String> {
+fn validate_terminfo(path: &Path, uid: u32, entry: &[u8]) -> Result<Option<bool>, String> {
     match fs::symlink_metadata(path) {
-        Ok(_) => validate_materialized_terminfo(path, uid).map(Some),
+        Ok(_) => validate_materialized_terminfo(path, uid, entry).map(Some),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!(
             "cannot inspect private terminfo entry {}: {error}",
@@ -364,7 +372,7 @@ fn validate_terminfo(path: &Path, uid: u32) -> Result<Option<bool>, String> {
     }
 }
 
-fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<bool, String> {
+fn validate_materialized_terminfo(path: &Path, uid: u32, entry: &[u8]) -> Result<bool, String> {
     let expected = fs::symlink_metadata(path).map_err(|error| {
         format!(
             "cannot inspect private terminfo entry {}: {error}",
@@ -414,7 +422,7 @@ fn validate_materialized_terminfo(path: &Path, uid: u32) -> Result<bool, String>
             path.display()
         )
     })?;
-    Ok(contents == TERMINFO_ENTRY)
+    Ok(contents == entry)
 }
 
 fn secure_socket(listener: UnixListener, path: PathBuf, uid: u32) -> Result<SessionSocket, String> {
@@ -589,20 +597,39 @@ mod tests {
             uid,
         };
         let root = runtime.materialize_terminfo().unwrap();
-        let entry = root.join("t/termfold-256color");
-        assert_eq!(fs::read(&entry).unwrap(), TERMINFO_ENTRY);
-        assert_eq!(
-            fs::symlink_metadata(&entry).unwrap().st_mode() & 0o777,
-            0o600
-        );
+        for (directory, bytes) in [
+            (&root, TERMINFO_ENTRY),
+            (&root.join("legacy"), LEGACY_TERMINFO_ENTRY),
+        ] {
+            let entry = directory.join("t/termfold-256color");
+            assert_eq!(fs::read(&entry).unwrap(), bytes);
+            for path in [directory.clone(), directory.join("t")] {
+                assert_eq!(fs::symlink_metadata(path).unwrap().st_mode() & 0o777, 0o700);
+            }
+            assert_eq!(
+                fs::symlink_metadata(&entry).unwrap().st_mode() & 0o777,
+                0o600
+            );
 
-        fs::write(&entry, b"invalid").unwrap();
-        runtime.materialize_terminfo().unwrap();
-        assert_eq!(fs::read(&entry).unwrap(), TERMINFO_ENTRY);
-        fs::remove_file(&entry).unwrap();
-        fs::create_dir(&entry).unwrap();
-        assert!(runtime.materialize_terminfo().is_err());
-        assert!(entry.is_dir());
+            fs::write(&entry, b"invalid").unwrap();
+            runtime.materialize_terminfo().unwrap();
+            assert_eq!(fs::read(&entry).unwrap(), bytes);
+            fs::remove_file(&entry).unwrap();
+            symlink("missing", &entry).unwrap();
+            assert!(runtime.materialize_terminfo().is_err());
+            assert!(
+                fs::symlink_metadata(&entry)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            fs::remove_file(&entry).unwrap();
+            fs::create_dir(&entry).unwrap();
+            assert!(runtime.materialize_terminfo().is_err());
+            assert!(entry.is_dir());
+            fs::remove_dir(&entry).unwrap();
+            runtime.materialize_terminfo().unwrap();
+        }
         fs::remove_dir_all(path).unwrap();
     }
 }

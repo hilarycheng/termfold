@@ -634,6 +634,17 @@ compiled form embedded in the release binary. At runtime Termfold MUST materiali
 that entry inside its validated user-owned runtime directory before launching the
 first pane. It MUST NOT invoke `tic` or require a system installation step.
 
+On Linux, Termfold MUST also embed and securely materialize a legacy 16-bit
+`termfold-256color` entry readable by ncurses 5.9 in a separate private database.
+The modern entry MUST remain the primary `TERMINFO` database. The legacy database
+MUST be prepended to `TERMINFO_DIRS`, preserving any inherited search directories,
+so an application that rejects the modern format can continue to the legacy
+entry without changing `TERM` or detecting its ncurses version. Both entries
+MUST describe the same capabilities, except that the legacy colour-pair limit
+MUST fit a signed 16-bit value. Both databases MUST pass the existing ownership,
+permission, file-type, atomic-creation, and embedded-byte validation rules before
+the first pane starts.
+
 The embedded entry MUST describe only capabilities that the Termfold parser and
 renderer actually implement. A release MUST NOT advertise a capability merely
 because common xterm-compatible terminals support it.
